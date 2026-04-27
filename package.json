@@ -1,0 +1,19 @@
+{
+  "name": "wilderness-game",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "gsap": "^3.12.5",
+    "inkjs": "^2.3.0",
+    "phaser": "^3.80.1"
+  },
+  "devDependencies": {
+    "vite": "^5.2.0",
+    "vite-plugin-ink": "^0.3.0"
+  }
+}
