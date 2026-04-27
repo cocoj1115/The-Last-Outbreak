@@ -1,4 +1,4 @@
-# Wilderness Game
+#The-Last-Outbreak
 
 生存技能叙事游戏。Phaser 3 + Ink + GSAP。
 
