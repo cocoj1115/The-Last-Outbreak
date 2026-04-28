@@ -1,30 +1,35 @@
 // prologue.ink
 
 === prologue ===
+# scene:background1
 # speaker:Aiden
 My name is Aiden.
 
 My village died when I was young.
 
-A disease no one could stop.
+A disease no one could name.
 
-I became a doctor to find the cure. It took me twenty years.
+I spent twenty years becoming a doctor. 
 
-The ingredients have been extinct for centuries.
+Twenty years searching for a cure.
 
-But I found a way back.
+But the last ingredient — the Moonleaf, the Silverroot — 
+they've been extinct for two hundred years.
+
+# scene:background2
+# hide_character
+The village witch found me. She said she could send me back.
 
 -> time_transition
 
 === time_transition ===
+# time_transition
 # speaker:
-One chance. A few nights before I have to return.
+Five days. That is all she could give me.
 
-# speaker:Aiden
-Five days. Two herbs. I need to move fast.
-
-The Moonleaf first — that village is closer.
+The village with the Moonleaf seems closer.
 
 Let's move.
 
--> day1_arrival
+-> END
+// -> day1_arrival  (restore when day1.ink exists)

@@ -32,6 +32,11 @@ export const GameEvents = {
    *  id values: 'campsite' | 'fire' */
   MINIGAME_TRIGGER: 'ink:minigame_trigger',
 
+  /** Ink requests hiding/showing the main character portrait.
+   *  No payload. */
+  HIDE_CHARACTER: 'ink:hide_character',
+  SHOW_CHARACTER: 'ink:show_character',
+
   /** Ink signals the narrative is waiting (no more text, no choices yet).
    *  Used to pause dialogue UI while waiting for minigame result. */
   INK_WAITING: 'ink:waiting',

@@ -136,5 +136,12 @@ export class InkBridge {
         difficulty: tags.difficulty ?? 'learn',
       })
     }
+    if (tags.hide_character) {
+      console.log('[InkBridge] emitting HIDE_CHARACTER')
+      this.events.emit(GameEvents.HIDE_CHARACTER)
+    }
+    if (tags.show_character) {
+      this.events.emit(GameEvents.SHOW_CHARACTER)
+    }
   }
 }
