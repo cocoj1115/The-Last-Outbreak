@@ -41,31 +41,37 @@ export class InkBridge {
     })
   }
 
-  /** Start or resume ticking through the story. */
+  /** Advance exactly one line of the story, then stop. */
   tick() {
+    // Skip tag-only lines (no visible text) without requiring a click
     while (this.story.canContinue) {
       const text = this.story.Continue()
       const tags = this._parseTags(this.story.currentTags)
 
-      // Handle tags before emitting dialogue
       this._processTags(tags)
 
-      // Emit text only if there's visible content (not just tag-only lines)
       const clean = text.trim()
       if (clean) {
+        // Visible line — emit and stop. Next click will call tick() again.
         this.events.emit(GameEvents.DIALOGUE_LINE, {
           text: clean,
           speaker: this._pendingSpeaker,
           tags,
         })
         this._pendingSpeaker = null
+
+        // If a minigame was triggered on this line, stop and wait for result
+        if (tags.minigame) return
+
+        // Stop after one visible line — wait for player click
+        return
       }
 
-      // If a minigame was triggered, stop ticking — wait for result
+      // Tag-only line: if a minigame was triggered, stop here too
       if (tags.minigame) return
     }
 
-    // No more content — emit choices if available
+    // canContinue is false — emit choices or end state
     if (this.story.currentChoices.length > 0) {
       this.events.emit(GameEvents.CHOICES_AVAILABLE, {
         choices: this.story.currentChoices.map((c, i) => ({
@@ -74,7 +80,6 @@ export class InkBridge {
         })),
       })
     } else {
-      // Story ended or waiting state
       this.events.emit(GameEvents.INK_WAITING)
     }
   }

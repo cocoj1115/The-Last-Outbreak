@@ -46,13 +46,14 @@ export class NarrativeScene extends Phaser.Scene {
     this._bindEvents()
 
     // ── Start Ink story ──────────────────────────────────────────────────
-    // TODO: Replace null with actual story JSON once .ink is compiled:
-    //   const storyJson = this.cache.json.get('story')
-    //   this._bridge = new InkBridge(this, storyJson)
-    //   this._bridge.tick()
-
-    // For now, show placeholder dialogue so the scene is not blank
-    this._showPlaceholderDialogue()
+    const storyJson = this.cache.json.get('story')
+    if (storyJson) {
+      this._bridge = new InkBridge(this, storyJson)
+      this._bridge.tick()
+    } else {
+      // No compiled story loaded yet — show placeholder
+      this._showPlaceholderDialogue()
+    }
   }
 
   // ── UI builders ─────────────────────────────────────────────────────────
@@ -252,8 +253,8 @@ export class NarrativeScene extends Phaser.Scene {
 
   _showPlaceholderDialogue() {
     this._showDialogue(
-      '主角',
-      '林子边缘。光线渐暗。\n\n[占位对话 — 连接 Ink 后替换]'
+      'Aiden',
+      'The forest edge. Light fading. I am the only one still standing.'
     )
   }
 }

@@ -29,7 +29,7 @@ export class BootScene extends Phaser.Scene {
     // this.load.image('bg_forest_night', 'assets/images/bg_forest_night.jpg')
 
     // Ink story JSON (compile .ink → .ink.json with Inky app or inklecate)
-    // this.load.json('story', 'assets/story/main.ink.json')
+    this.load.json('story', 'assets/story/main.ink.json')
 
     // ── Dev placeholder graphics (drawn in code, no files needed) ────────
     // These let the game run before any real art exists.
