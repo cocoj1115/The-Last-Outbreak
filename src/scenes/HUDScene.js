@@ -42,9 +42,10 @@ export class HUDScene extends Phaser.Scene {
   // ── Stamina flames ───────────────────────────────────────────────────────
 
   _buildFlames() {
-    const startX = 24
-    const startY = 24
-    const spacing = 32
+    const dpr = window.devicePixelRatio || 1
+    const startX = 24 * dpr
+    const startY = 24 * dpr
+    const spacing = 32 * dpr
 
     for (let i = 0; i < 5; i++) {
       const flame = this._drawFlame(startX + i * spacing, startY, true)
@@ -63,18 +64,19 @@ export class HUDScene extends Phaser.Scene {
   }
 
   _renderFlame(g, x, y, lit) {
+    const dpr = window.devicePixelRatio || 1
     g.clear()
     if (lit) {
       // Outer flame
       g.fillStyle(0xff6600, 0.9)
-      g.fillTriangle(x, y - 20, x - 8, y + 8, x + 8, y + 8)
+      g.fillTriangle(x, y - 20 * dpr, x - 8 * dpr, y + 8 * dpr, x + 8 * dpr, y + 8 * dpr)
       // Inner flame
       g.fillStyle(0xffcc00, 0.95)
-      g.fillTriangle(x, y - 12, x - 4, y + 6, x + 4, y + 6)
+      g.fillTriangle(x, y - 12 * dpr, x - 4 * dpr, y + 6 * dpr, x + 4 * dpr, y + 6 * dpr)
     } else {
       // Extinguished — just a small grey ember
       g.fillStyle(0x444444, 0.6)
-      g.fillCircle(x, y + 4, 4)
+      g.fillCircle(x, y + 4 * dpr, 4 * dpr)
     }
   }
 
@@ -105,22 +107,24 @@ export class HUDScene extends Phaser.Scene {
   // ── Day counter ──────────────────────────────────────────────────────────
 
   _buildDayCounter(W) {
+    const dpr = window.devicePixelRatio || 1
     // Moon icon (drawn in code)
     this._moonIcon = this.add.graphics()
     this._renderMoon(1, 7)
 
-    this._dayText = this.add.text(W - 20, 20, 'Day 1 / 7', {
-      fontSize: '16px',
+    this._dayText = this.add.text(W - 20 * dpr, 20 * dpr, 'Day 1 / 7', {
+      fontSize: `${16 * dpr}px`,
       fontFamily: 'monospace',
       color: '#888888',
     }).setOrigin(1, 0)
   }
 
   _renderMoon(currentDay, maxDays) {
+    const dpr = window.devicePixelRatio || 1
     const W = this.scale.width
-    const x = W - 110
-    const y = 32
-    const r = 12
+    const x = W - 110 * dpr
+    const y = 32 * dpr
+    const r = 12 * dpr
     const phase = currentDay / maxDays // 0 → 1
 
     this._moonIcon.clear()

@@ -27,6 +27,7 @@ export class NarrativeScene extends Phaser.Scene {
   }
 
   create() {
+    const dpr = window.devicePixelRatio || 1
     const W = this.scale.width
     const H = this.scale.height
 
@@ -34,8 +35,8 @@ export class NarrativeScene extends Phaser.Scene {
     this._bg = this.add.image(W / 2, H / 2, 'bg_placeholder')
       .setDisplaySize(W, H)
 
-    // ── Portrait ─────────────────────────────────────────────────────────
-    this._portrait = this.add.image(120, H - 160, 'portrait_placeholder')
+    // ── Portrait ───────────────────────────────────────────────────────────
+    this._portrait = this.add.image(120 * dpr, H - 160 * dpr, 'portrait_placeholder')
       .setOrigin(0.5, 1)
       .setAlpha(0)
 
@@ -59,34 +60,35 @@ export class NarrativeScene extends Phaser.Scene {
   // ── UI builders ─────────────────────────────────────────────────────────
 
   _buildDialogueBox(W, H) {
-    const boxH = 180
-    const boxY = H - boxH - 20
-    const pad = 24
+    const dpr = window.devicePixelRatio || 1
+    const boxH = 180 * dpr
+    const boxY = H - boxH - 20 * dpr
+    const pad  = 24 * dpr
 
     // Semi-transparent box
-    const box = this.add.rectangle(W / 2, boxY + boxH / 2, W - 40, boxH, 0x000000, 0.75)
-      .setStrokeStyle(1, 0x555555)
+    const box = this.add.rectangle(W / 2, boxY + boxH / 2, W - 40 * dpr, boxH, 0x000000, 0.75)
+      .setStrokeStyle(dpr, 0x555555)
 
     // Speaker name
-    this._speakerText = this.add.text(pad + 20, boxY + 16, '', {
-      fontSize: '16px',
+    this._speakerText = this.add.text(pad + 20 * dpr, boxY + 16 * dpr, '', {
+      fontSize: `${16 * dpr}px`,
       fontFamily: 'monospace',
       color: '#aaaaaa',
       fontStyle: 'italic',
     })
 
     // Dialogue text
-    this._dialogueText = this.add.text(pad + 20, boxY + 44, '', {
-      fontSize: '20px',
+    this._dialogueText = this.add.text(pad + 20 * dpr, boxY + 44 * dpr, '', {
+      fontSize: `${20 * dpr}px`,
       fontFamily: 'serif',
       color: '#ffffff',
-      wordWrap: { width: W - 40 - pad * 2 },
-      lineSpacing: 6,
+      wordWrap: { width: W - 40 * dpr - pad * 2 },
+      lineSpacing: 6 * dpr,
     })
 
     // "Click to continue" hint
-    this._continueHint = this.add.text(W - 60, H - 30, '▶', {
-      fontSize: '14px',
+    this._continueHint = this.add.text(W - 60 * dpr, H - 30 * dpr, '▶', {
+      fontSize: `${14 * dpr}px`,
       color: '#666666',
     }).setAlpha(0)
 
@@ -104,7 +106,7 @@ export class NarrativeScene extends Phaser.Scene {
     })
 
     // Choice container
-    this._choiceContainer = this.add.container(W / 2, H - 220)
+    this._choiceContainer = this.add.container(W / 2, H - 220 * dpr)
 
     this._dialogueElements = { box, boxY, pad }
   }
@@ -182,14 +184,15 @@ export class NarrativeScene extends Phaser.Scene {
   _showChoices(choices) {
     this._clearChoices()
     this._continueHint.setAlpha(0)
+    const dpr = window.devicePixelRatio || 1
 
     choices.forEach((choice, i) => {
-      const btn = this.add.text(0, i * 48, `▷  ${choice.text}`, {
-        fontSize: '18px',
+      const btn = this.add.text(0, i * 48 * dpr, `▷  ${choice.text}`, {
+        fontSize: `${18 * dpr}px`,
         fontFamily: 'serif',
         color: '#cccccc',
         backgroundColor: '#111111',
-        padding: { x: 16, y: 8 },
+        padding: { x: 16 * dpr, y: 8 * dpr },
       })
         .setOrigin(0.5, 0)
         .setInteractive({ useHandCursor: true })
