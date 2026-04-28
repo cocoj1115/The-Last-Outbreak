@@ -60,36 +60,43 @@ export class NarrativeScene extends Phaser.Scene {
   // ── UI builders ─────────────────────────────────────────────────────────
 
   _buildDialogueBox(W, H) {
-    const dpr = window.devicePixelRatio || 1
-    const boxH = 180 * dpr
-    const boxY = H - boxH - 20 * dpr
-    const pad  = 24 * dpr
+    const dpr  = window.devicePixelRatio || 1
+    const boxW = W * 1.3                   // 30% wider than canvas, bleeds off both edges
+    const boxY = Math.round(H * 0.699)     // top edge at H×69.9%
+    const boxH = (H - boxY) * 1.3         // 30% taller, bleeds off the bottom
+    const pad  = 120 * dpr   // horizontal inset keeps text clear of corner art
 
-    // Semi-transparent box
-    const box = this.add.rectangle(W / 2, boxY + boxH / 2, W - 40 * dpr, boxH, 0x000000, 0.75)
-      .setStrokeStyle(dpr, 0x555555)
+    // 9-slice ornamental box — corners: 80px all sides (source: 1536×1024)
+    const box = this.add.nineslice(
+      W / 2, boxY + boxH / 2,
+      'dialogue_card', undefined,
+      boxW, boxH,
+      80, 80, 80, 80,
+    )
 
     // Speaker name
-    this._speakerText = this.add.text(pad + 20 * dpr, boxY + 16 * dpr, '', {
-      fontSize: `${16 * dpr}px`,
-      fontFamily: 'monospace',
-      color: '#aaaaaa',
+    const textX = W * 0.098
+    const textY = H * 0.765
+    this._speakerText = this.add.text(textX, textY, '', {
+      fontSize: `${Math.round(19.5 * dpr)}px`,
+      fontFamily: '"IM Fell English", serif',
+      color: '#5c3a00',
       fontStyle: 'italic',
     })
 
     // Dialogue text
-    this._dialogueText = this.add.text(pad + 20 * dpr, boxY + 44 * dpr, '', {
-      fontSize: `${20 * dpr}px`,
-      fontFamily: 'serif',
-      color: '#ffffff',
-      wordWrap: { width: W - 40 * dpr - pad * 2 },
+    this._dialogueText = this.add.text(textX, textY + 30 * dpr, '', {
+      fontSize: `${Math.round(24.7 * dpr)}px`,
+      fontFamily: '"IM Fell English", serif',
+      color: '#2a1500',
+      wordWrap: { width: W - textX - 80 * dpr },
       lineSpacing: 6 * dpr,
     })
 
     // "Click to continue" hint
-    this._continueHint = this.add.text(W - 60 * dpr, H - 30 * dpr, '▶', {
+    this._continueHint = this.add.text(W - 80 * dpr, H - 36 * dpr, '▶', {
       fontSize: `${14 * dpr}px`,
-      color: '#666666',
+      color: '#8b5e00',
     }).setAlpha(0)
 
     // Click anywhere on box to advance
@@ -108,7 +115,7 @@ export class NarrativeScene extends Phaser.Scene {
     // Choice container
     this._choiceContainer = this.add.container(W / 2, H - 220 * dpr)
 
-    this._dialogueElements = { box, boxY, pad }
+    this._dialogueElements = { box, boxY, boxH, pad }
   }
 
   // ── Event binding ────────────────────────────────────────────────────────
