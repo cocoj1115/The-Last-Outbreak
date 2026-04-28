@@ -32,6 +32,8 @@ export class BootScene extends Phaser.Scene {
 
     // ── UI & narrative assets ────────────────────────────────────────────
     this.load.image('onboarding1', 'assets/onboarding1.png')
+    this.load.image('dialog_box', 'assets/dialog_box.png')
+    this.load.image('dialogue_card', 'assets/dialogue_card.png')
 
     // ── Placeholder assets (replace with real files later) ───────────────
     // Backgrounds
