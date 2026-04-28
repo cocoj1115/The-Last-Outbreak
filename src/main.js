@@ -1,9 +1,11 @@
 import Phaser from 'phaser'
 import { BootScene } from './scenes/BootScene.js'
+import { OnboardingScene } from './scenes/OnboardingScene.js'
 import { NarrativeScene } from './scenes/narrative/NarrativeScene.js'
 import { CampsiteMinigame } from './scenes/minigames/campsite/CampsiteMinigame.js'
 import { FireMinigame } from './scenes/minigames/fire/FireMinigame.js'
 import { HUDScene } from './scenes/HUDScene.js'
+import { DebugScene } from './scenes/DebugScene.js'
 
 const dpr = window.devicePixelRatio || 1
 
@@ -25,7 +27,7 @@ const config = {
     roundPixels: false,
     resolution: dpr,
   },
-  scene: [BootScene, NarrativeScene, CampsiteMinigame, FireMinigame, HUDScene],
+  scene: [BootScene, OnboardingScene, NarrativeScene, CampsiteMinigame, FireMinigame, HUDScene, DebugScene],
 }
 
 const game = new Phaser.Game(config)

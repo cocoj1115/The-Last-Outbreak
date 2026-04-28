@@ -24,6 +24,15 @@ export class BootScene extends Phaser.Scene {
       bar.setSize(400 * dpr * value, 4 * dpr)
     })
 
+    // ── Montserrat (used by OnboardingScene button) ──────────────────────
+    const _fontLink = document.createElement('link')
+    _fontLink.rel  = 'stylesheet'
+    _fontLink.href = 'https://fonts.googleapis.com/css2?family=Montserrat:wght@700&family=IM+Fell+English&display=swap'
+    document.head.appendChild(_fontLink)
+
+    // ── UI & narrative assets ────────────────────────────────────────────
+    this.load.image('onboarding1', 'assets/onboarding1.png')
+
     // ── Placeholder assets (replace with real files later) ───────────────
     // Backgrounds
     // this.load.image('bg_forest_day', 'assets/images/bg_forest_day.jpg')
@@ -46,12 +55,10 @@ export class BootScene extends Phaser.Scene {
     this.registry.set('stamina', stamina)
     this.registry.set('days', days)
 
-    // ── Start persistent HUD on top of everything ────────────────────────
-    this.scene.launch('HUDScene')
-
-    // ── Hand off to narrative ────────────────────────────────────────────
+    // ── Hand off to onboarding (HUDScene is launched after the player clicks in) ─
     this.game.events.emit(GameEvents.GAME_READY)
-    this.scene.start('NarrativeScene')
+    this.scene.launch('DebugScene')
+    this.scene.start('OnboardingScene')
   }
 
   // ── Private ─────────────────────────────────────────────────────────────
