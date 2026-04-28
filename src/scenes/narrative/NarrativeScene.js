@@ -32,13 +32,25 @@ export class NarrativeScene extends Phaser.Scene {
     const H = this.scale.height
 
     // ── Background ───────────────────────────────────────────────────────
-    this._bg = this.add.image(W / 2, H / 2, 'bg_placeholder')
+    const hasBg1 = this.textures.exists('bg_background1')
+    console.log('[NarrativeScene] bg_background1 exists:', hasBg1, '| all textures:', this.textures.list ? Object.keys(this.textures.list).join(',') : 'n/a')
+    const initBg = hasBg1 ? 'bg_background1' : 'bg_placeholder'
+    this._bg = this.add.image(W / 2, H / 2, initBg)
       .setDisplaySize(W, H)
+
+    // ── Dark overlay ─────────────────────────────────────────────────────
+    this._bgOverlay = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.45)
 
     // ── Portrait ───────────────────────────────────────────────────────────
     this._portrait = this.add.image(120 * dpr, H - 160 * dpr, 'portrait_placeholder')
       .setOrigin(0.5, 1)
       .setAlpha(0)
+
+    // ── Main character ───────────────────────────────────────────────────
+    const charSize = H * 0.558
+    this._mainCharacter = this.add.image(W * 0.682, H * 0.259, 'maincharacter')
+      .setOrigin(0, 0)
+      .setDisplaySize(charSize, charSize)
 
     // ── Dialogue box ─────────────────────────────────────────────────────
     this._buildDialogueBox(W, H)
@@ -61,9 +73,10 @@ export class NarrativeScene extends Phaser.Scene {
 
   _buildDialogueBox(W, H) {
     const dpr  = window.devicePixelRatio || 1
-    const boxW = W * 1.3                   // 30% wider than canvas, bleeds off both edges
-    const boxY = Math.round(H * 0.699)     // top edge at H×69.9%
-    const boxH = (H - boxY) * 1.3         // 30% taller, bleeds off the bottom
+    const boxW      = W * 1.3
+    const boxH      = (H - Math.round(H * 0.699)) * 0.873
+    const boxBottom = H * 0.994                          // bottom-left Y
+    const boxY      = boxBottom - boxH                   // top edge derived from bottom
     const pad  = 120 * dpr   // horizontal inset keeps text clear of corner art
 
     // 9-slice ornamental box — corners: 80px all sides (source: 1536×1024)
@@ -75,8 +88,8 @@ export class NarrativeScene extends Phaser.Scene {
     )
 
     // Speaker name
-    const textX = W * 0.098
-    const textY = H * 0.765
+    const textX = W * 0.099
+    const textY = H * 0.795
     this._speakerText = this.add.text(textX, textY, '', {
       fontSize: `${Math.round(19.5 * dpr)}px`,
       fontFamily: '"IM Fell English", serif',
@@ -123,8 +136,12 @@ export class NarrativeScene extends Phaser.Scene {
   _bindEvents() {
     const e = this.game.events
 
-    e.on(GameEvents.DIALOGUE_LINE, ({ text, speaker }) => {
-      this._showDialogue(speaker, text)
+    e.on(GameEvents.DIALOGUE_LINE, ({ text, speaker, tags }) => {
+      if (tags && tags.time_transition) {
+        this._playTimeTransition(() => this._showDialogue(speaker, text))
+      } else {
+        this._showDialogue(speaker, text)
+      }
     })
 
     e.on(GameEvents.CHOICES_AVAILABLE, ({ choices }) => {
@@ -135,6 +152,15 @@ export class NarrativeScene extends Phaser.Scene {
       this._changeBackground(key)
     })
 
+    e.on(GameEvents.HIDE_CHARACTER, () => {
+      console.log('[NarrativeScene] HIDE_CHARACTER received, char:', !!this._mainCharacter)
+      if (this._mainCharacter) this._mainCharacter.setVisible(false)
+    })
+
+    e.on(GameEvents.SHOW_CHARACTER, () => {
+      if (this._mainCharacter) this._mainCharacter.setVisible(true)
+    })
+
     e.on(GameEvents.MINIGAME_TRIGGER, ({ id, day, difficulty }) => {
       this._launchMinigame(id, day, difficulty)
     })
@@ -142,6 +168,7 @@ export class NarrativeScene extends Phaser.Scene {
     e.on(GameEvents.MINIGAME_COMPLETE, () => {
       // Wake up after minigame finishes
       this.scene.wake('NarrativeScene')
+      if (this._mainCharacter) this._mainCharacter.setVisible(true)
     })
 
     e.on(GameEvents.STAMINA_DEPLETED, ({ day }) => {
@@ -221,10 +248,12 @@ export class NarrativeScene extends Phaser.Scene {
 
   _changeBackground(key) {
     const textureKey = `bg_${key}`
+    console.log('[NarrativeScene] _changeBackground', key, 'exists:', this.textures.exists(textureKey))
     if (this.textures.exists(textureKey)) {
-      this._bg.setTexture(textureKey)
+      const W = this.scale.width
+      const H = this.scale.height
+      this._bg.setTexture(textureKey).setDisplaySize(W, H)
     }
-    // Graceful fallback: keep current bg if texture not loaded yet
   }
 
   // ── Minigame handoff ────────────────────────────────────────────────────
@@ -239,6 +268,7 @@ export class NarrativeScene extends Phaser.Scene {
       console.warn(`[NarrativeScene] Unknown minigame id: ${id}`)
       return
     }
+    if (this._mainCharacter) this._mainCharacter.setVisible(false)
     this.scene.sleep('NarrativeScene')
     this.scene.launch(targetScene, { day, difficulty })
   }
@@ -257,6 +287,59 @@ export class NarrativeScene extends Phaser.Scene {
       this._bridge.setVariable('forced_worst_ending', true)
       this._bridge.tick()
     }
+  }
+
+  // ── Time travel transition ─────────────────────────────────────────────────────
+
+  _playTimeTransition(onComplete) {
+    const cam = this.cameras.main
+
+    // — Hide all UI ——————————————————————————————————————————————
+    const { box } = this._dialogueElements
+    box.setVisible(false)
+    this._speakerText.setVisible(false)
+    this._dialogueText.setVisible(false)
+    this._continueHint.setVisible(false)
+    if (this._mainCharacter) this._mainCharacter.setVisible(false)
+    if (this._bgOverlay)     this._bgOverlay.setAlpha(0)
+
+    // — Phase 1: Blur in ——————————————————————————————————————————
+    const blurFX = cam.postFX.addBlur(0, 0.5, 0.5, 0)
+    this.tweens.addCounter({
+      from: 0, to: 6, duration: 2400, ease: 'Sine.easeIn',
+      onUpdate: t => { blurFX.strength = t.getValue() },
+    })
+
+    // — Phase 2: Spin + zoom ——————————————————————————————————————
+    this.tweens.add({
+      targets: cam, rotation: Phaser.Math.DegToRad(30),
+      duration: 3300, ease: 'Expo.easeIn',
+    })
+    cam.zoomTo(2.2, 3300, 'Expo.easeIn')
+
+    // — Phase 3: Camera fade to black (screen-space, rotation-proof) ————
+    this.time.delayedCall(2400, () => {
+      cam.fadeOut(1500, 0, 0, 0)
+      cam.once('camerafadeoutcomplete', () => {
+        // Reset camera while screen is fully black
+        cam.postFX.remove(blurFX)
+        cam.zoomTo(1, 1)
+        cam.setRotation(0)
+
+        // Hold black 3s then fade in
+        this.time.delayedCall(3000, () => {
+          cam.fadeIn(600, 0, 0, 0)
+          cam.once('camerafadeincomplete', () => {
+            if (this._bgOverlay) this._bgOverlay.setAlpha(0.45)
+            box.setVisible(true)
+            this._speakerText.setVisible(true)
+            this._dialogueText.setVisible(true)
+            // ► Audio placeholder: ambient forest sounds here
+            onComplete()
+          })
+        })
+      })
+    })
   }
 
   // ── Placeholder (remove when Ink is wired up) ───────────────────────────

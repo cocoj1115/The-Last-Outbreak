@@ -34,6 +34,9 @@ export class BootScene extends Phaser.Scene {
     this.load.image('onboarding1', 'assets/onboarding1.png')
     this.load.image('dialog_box', 'assets/dialog_box.png')
     this.load.image('dialogue_card', 'assets/dialogue_card.png')
+    this.load.image('maincharacter', 'assets/maincharacter-default2.png')
+    this.load.image('bg_background1', 'assets/background1.jpg')
+    this.load.image('bg_background2', 'assets/background2.jpg')
 
     // ── Placeholder assets (replace with real files later) ───────────────
     // Backgrounds

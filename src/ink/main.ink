@@ -12,8 +12,8 @@ VAR forced_worst_ending = false
 
 // ── Story files ───────────────────────────────────────────────────────────
 INCLUDE prologue.ink
-INCLUDE day1.ink
-INCLUDE day2.ink
+// INCLUDE day1.ink
+// INCLUDE day2.ink
 
 // ── Start ─────────────────────────────────────────────────────────────────
 -> prologue
