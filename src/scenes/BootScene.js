@@ -14,13 +14,14 @@ export class BootScene extends Phaser.Scene {
   }
 
   preload() {
-    // ── Loading bar ──────────────────────────────────────────────────────
+    const dpr = window.devicePixelRatio || 1
+    // ── Loading bar ───────────────────────────────────────────────────────
     const { width, height } = this.scale
-    const bar = this.add.rectangle(width / 2, height / 2, 4, 4, 0x888888)
-    const track = this.add.rectangle(width / 2, height / 2, 400, 4, 0x333333)
+    const bar = this.add.rectangle(width / 2, height / 2, 4 * dpr, 4 * dpr, 0x888888)
+    const track = this.add.rectangle(width / 2, height / 2, 400 * dpr, 4 * dpr, 0x333333)
 
     this.load.on('progress', (value) => {
-      bar.setSize(400 * value, 4)
+      bar.setSize(400 * dpr * value, 4 * dpr)
     })
 
     // ── Placeholder assets (replace with real files later) ───────────────
@@ -56,21 +57,22 @@ export class BootScene extends Phaser.Scene {
   // ── Private ─────────────────────────────────────────────────────────────
 
   _createPlaceholderTextures() {
+    const dpr = window.devicePixelRatio || 1
     const g = this.make.graphics({ x: 0, y: 0, add: false })
 
     // Background placeholder
     g.fillStyle(0x1a2a1a)
-    g.fillRect(0, 0, 1280, 720)
-    g.generateTexture('bg_placeholder', 1280, 720)
+    g.fillRect(0, 0, 1280 * dpr, 720 * dpr)
+    g.generateTexture('bg_placeholder', 1280 * dpr, 720 * dpr)
 
     // Character portrait placeholder
     g.clear()
     g.fillStyle(0x2a2a2a)
-    g.fillRect(0, 0, 200, 300)
+    g.fillRect(0, 0, 200 * dpr, 300 * dpr)
     g.fillStyle(0x888888)
-    g.fillCircle(100, 80, 50)
-    g.fillRect(50, 140, 100, 150)
-    g.generateTexture('portrait_placeholder', 200, 300)
+    g.fillCircle(100 * dpr, 80 * dpr, 50 * dpr)
+    g.fillRect(50 * dpr, 140 * dpr, 100 * dpr, 150 * dpr)
+    g.generateTexture('portrait_placeholder', 200 * dpr, 300 * dpr)
 
     g.destroy()
   }
