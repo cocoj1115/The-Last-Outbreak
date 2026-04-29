@@ -12,7 +12,7 @@ import Phaser from 'phaser'
 export class DebugScene extends Phaser.Scene {
   constructor() {
     super({ key: 'DebugScene' })
-    this._visible  = true
+    this._visible  = false
     this._showGrid = true
     this._locked   = false   // when true, crosshair is frozen at _lockX/_lockY
     this._lockX    = 0
@@ -51,11 +51,19 @@ export class DebugScene extends Phaser.Scene {
       this._applyVisibility()
     })
 
+    this.input.keyboard.on('keydown-O', () => {
+      this._visible = !this._visible
+      this._applyVisibility()
+    })
+
     this.input.keyboard.on('keydown-G', () => {
       this._showGrid = !this._showGrid
       this._gridGfx.setVisible(this._showGrid)
       this._gridLabels.forEach(l => l.setVisible(this._showGrid))
     })
+
+    // ── Apply initial visibility (starts hidden) ──────────────────────────
+    this._applyVisibility()
 
     // ── L — lock position + copy to clipboard ────────────────────────────
     this.input.keyboard.on('keydown-L', () => {
@@ -109,7 +117,7 @@ export class DebugScene extends Phaser.Scene {
       `Y  ${Math.round(y).toString().padStart(4)}   H × ${yR}`,
       '',
       status,
-      '`  hide    G  grid',
+      'O  hide    G  grid',
     ])
     this._readout.setColor(this._locked ? '#80e0ff' : '#f0d890')
 

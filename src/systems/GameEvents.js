@@ -80,4 +80,14 @@ export const GameEvents = {
 
   /** Prologue (pre-time-transition) finished — show HUD. */
   PROLOGUE_END: 'game:prologue_end',
+
+  // ── Village scene ─────────────────────────────────────────────────────
+
+  /** Player clicked an NPC portrait in the village scene.
+   *  payload: { id: 'mara' | 'finn' | 'isla' } */
+  VILLAGE_NPC_CLICKED: 'village:npc_clicked',
+
+  /** Player clicked the "Head out" button in the village scene.
+   *  No payload. */
+  VILLAGE_LEAVE: 'village:leave',
 }
