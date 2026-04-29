@@ -150,12 +150,25 @@ export class NarrativeScene extends Phaser.Scene {
     })
 
     e.on(GameEvents.CHOICES_AVAILABLE, ({ choices }) => {
+      // While the map scene is handling navigation, suppress the choice UI
+      if (this._mapActive) return
       this._showChoices(choices)
     })
 
     e.on(GameEvents.SCENE_CHANGE, ({ key }) => {
-      this._changeBackground(key)
+      if (key === 'map') {
+        // Launch map as overlay — NarrativeScene stays awake
+        this._mapActive = true
+        this.scene.launch('MapScene')
+      } else {
+        // Stop MapScene if still running
+        if (this.scene.isActive('MapScene')) this.scene.stop('MapScene')
+        this._changeBackground(key)
+      }
     })
+
+    // Reset map flag when MapScene stops
+    this.events.on('wake', () => { this._mapActive = false })
 
     e.on(GameEvents.HIDE_CHARACTER, () => {
       console.log('[NarrativeScene] HIDE_CHARACTER received, char:', !!this._mainCharacter)
@@ -335,7 +348,7 @@ export class NarrativeScene extends Phaser.Scene {
 
         // Switch bg while fully black so background2 never shows
         this._changeBackground('village_morning')
-        if (this._bgOverlay) this._bgOverlay.setAlpha(0.675)
+        if (this._bgOverlay) this._bgOverlay.setAlpha(1.0)
 
         // Hold black 2s, then simple fade in
         this.time.delayedCall(2000, () => {
@@ -345,26 +358,12 @@ export class NarrativeScene extends Phaser.Scene {
             const W = this.scale.width
             const H = this.scale.height
 
-            // — Wait 3s, then show sleeping character + dialogue ————
-            this.time.delayedCall(3000, () => {
-              const charH    = H * 0.65
-              // centered horizontally; bottom at H*0.857
-              const sleeping = this.add.image(W * 0.5, H * 0.857, 'char_sleeping')
-                .setOrigin(0.5, 1)
-                .setDisplaySize(charH, charH)
-                .setAlpha(0)
-                .setDepth(5050)
-
-              this.tweens.add({
-                targets: sleeping, alpha: 1,
-                duration: 500, ease: 'Sine.easeOut',
-              })
-
-              box.setVisible(true)
-              this._speakerText.setVisible(true)
-              this._dialogueText.setVisible(true)
-              onComplete()
-            })
+            // Show dialogue box immediately — map will overlay on top
+            box.setVisible(true)
+            this._speakerText.setVisible(true)
+            this._dialogueText.setVisible(true)
+            this.game.events.emit(GameEvents.PROLOGUE_END)
+            onComplete()
           })
         })
       })

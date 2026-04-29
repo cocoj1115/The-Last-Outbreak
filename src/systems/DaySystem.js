@@ -16,7 +16,7 @@ import { GameEvents } from './GameEvents.js'
 export class DaySystem {
   constructor(eventEmitter) {
     this.events = eventEmitter
-    this.maxDays = 7
+    this.maxDays = 5
     this.currentDay = 1
   }
 

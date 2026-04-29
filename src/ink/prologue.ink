@@ -29,6 +29,12 @@ Five days. That is all she could give me.
 
 The village with the Moonleaf seems closer.
 
+# scene:map
+* [proceed]
+    -> after_map
+
+=== after_map ===
+# speaker:
 Let's move.
 
 -> END
