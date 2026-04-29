@@ -39,7 +39,7 @@ export class MapScene extends Phaser.Scene {
     // Village marker: bottom-left at (W*0.463, H*0.655)
     const markerX = W * 0.463
     const markerY = H * 0.655
-    this._buildActiveMarker(markerX, markerY, 'Village of Thornwall', 0xc49850)
+    this._buildActiveMarker(markerX, markerY, 'Moonleaf', 0xc49850)
 
     const lockedX = mapX + mapW * 0.234
     const lockedY = mapY + mapH * 0.486
@@ -50,7 +50,7 @@ export class MapScene extends Phaser.Scene {
 
   _createLabelUI() {
     const dpr = window.devicePixelRatio || 1
-    const w   = 300 * dpr
+    const w   = 180 * dpr
     const h   = 52 * dpr
 
     this._labelBg = this.add.rectangle(0, 0, w, h, 0x1a1008, 0.92)
@@ -58,7 +58,7 @@ export class MapScene extends Phaser.Scene {
     this._labelEdge = this.add.rectangle(0, 0, w, 3 * dpr, 0xc49850)
       .setOrigin(0, 0).setDepth(1001).setVisible(false)
     this._labelText = this.add.text(0, 0, '', {
-      fontSize: `${14 * dpr}px`,
+      fontSize: `${24 * dpr}px`,
       fontFamily: 'IM Fell English, serif',
       color: '#e8d5a3',
     }).setOrigin(0, 0).setDepth(1002).setVisible(false)
@@ -86,7 +86,7 @@ export class MapScene extends Phaser.Scene {
 
   _buildActiveMarker(x, y, label, color) {
     const dpr      = window.devicePixelRatio || 1
-const iconSize = 128 * dpr
+const iconSize = 256 * dpr
 
     // ── Village icon sprite (falls back to circle) ────────────────────────
     let dot

@@ -27,15 +27,13 @@ The village witch found me. She said she could send me back.
 # speaker:
 Five days. That is all she could give me.
 
-The village with the Moonleaf seems closer.
-
 # scene:map
 * [proceed]
     -> after_map
 
 === after_map ===
 # speaker:
-Let's move.
+I'll enter the village to find the Moonleaf.
 
 -> END
 // -> day1_arrival  (restore when day1.ink exists)
