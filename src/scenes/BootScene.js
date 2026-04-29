@@ -3,6 +3,28 @@ import { GameEvents } from '../systems/GameEvents.js'
 import { StaminaSystem } from '../systems/StaminaSystem.js'
 import { DaySystem } from '../systems/DaySystem.js'
 
+/** Set to false for normal game (Onboarding → story). */
+const DEV_PATH_B_DAY2_FIRE = true
+
+/**
+ * Minimal stub so fire minigames can read Ink variables without NarrativeScene.
+ * Tweak `_vars` for poor site / HARD ignition, etc.
+ */
+function createInkBridgeStub() {
+  const _vars = {
+    campsite_quality: 'good', // 'poor' = rain bias in collect + ignite
+    mg_fire_collect_score: 'EASY', // EASY | MEDIUM | HARD (read by FireIgnite after collect)
+  }
+  return {
+    getVariable(name) {
+      return _vars[name]
+    },
+    setVariable(name, value) {
+      _vars[name] = value
+    },
+  }
+}
+
 /**
  * BootScene
  * Loads all assets, initialises global systems, then hands off to NarrativeScene.
@@ -64,9 +86,18 @@ export class BootScene extends Phaser.Scene {
     this.registry.set('stamina', stamina)
     this.registry.set('days', days)
 
-    // ── Hand off to onboarding (HUDScene is launched after the player clicks in) ─
     this.game.events.emit(GameEvents.GAME_READY)
     this.scene.launch('DebugScene')
+
+    if (DEV_PATH_B_DAY2_FIRE) {
+      this.registry.set('inkBridge', createInkBridgeStub())
+      this.registry.set('fuelStock', 5)
+      /** When true, FireCollectMinigame jumps to FireIgniteMinigame after pack is full. */
+      this.registry.set('devQuickFireChain', true)
+      this.scene.start('FireCollectMinigame', { day: 2 })
+      return
+    }
+
     this.scene.start('OnboardingScene')
   }
 

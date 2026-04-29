@@ -1,14 +1,20 @@
 import Phaser from 'phaser'
 import { GameEvents } from '../../../systems/GameEvents.js'
 
-const TARGET_BY = { EASY: 10, MEDIUM: 15, HARD: 20 }
-const DECAY_BY = { EASY: 800, MEDIUM: 600, HARD: 500 }
+// ─── Difficulty configuration ─────────────────────────────────────────────────
 
-/**
- * Flint-strike ignition minigame (Day 2 / Day 3 narrative).
- * Expects registry: ignitionDifficulty ('EASY'|'MEDIUM'|'HARD'), campsiteQuality ('good'|'poor').
- * Optional: fuelStock (number), stamina (StaminaSystem).
- */
+// Rain interference only applies when difficulty = HARD AND campsite = poor.
+const DIFFICULTY_CONFIG = {
+  EASY:   { target: 10, decayMs: 800,  rainInterference: false },
+  MEDIUM: { target: 15, decayMs: 600,  rainInterference: false },
+  HARD:   { target: 20, decayMs: 500,  rainInterference: true  },
+}
+
+const MAX_CLICKS     = 30    // total clicks allowed before fail
+const IDLE_THRESHOLD = 2000  // ms of no input before idle warning fires
+
+// ─── Scene ────────────────────────────────────────────────────────────────────
+
 export class FireIgniteMinigame extends Phaser.Scene {
   constructor() {
     super({ key: 'FireIgniteMinigame' })
@@ -17,273 +23,352 @@ export class FireIgniteMinigame extends Phaser.Scene {
   init(data) {
     this.day = data?.day ?? 2
 
-    const diffRaw = this.registry.get('ignitionDifficulty') ?? 'EASY'
-    this.difficulty = typeof diffRaw === 'string' ? diffRaw.toUpperCase() : 'EASY'
-    if (!TARGET_BY[this.difficulty]) this.difficulty = 'EASY'
+    this._sparks      = 0
+    this._totalClicks = 0
+    this._retryUsed   = false
+    this._fuelStock   = 5
 
-    const siteQ = this.registry.get('campsiteQuality')
-    this.isPoor = siteQ === 'poor'
+    this._decayTimer           = null
+    this._rainTimer            = null
+    this._idleCheckTimer       = null
+    this._dialogueTimer        = null
+    this._lastClickTime        = 0
+    this._midClickWarningShown = false
 
-    this.target = TARGET_BY[this.difficulty]
-    this.baseDecayMs = DECAY_BY[this.difficulty]
-
-    this.sparks = 0
-    this.totalClicks = 0
-    this.maxClicks = this.day === 3 ? 35 : 30
-
-    this.isShielding = false
-
-    this._decayTimer = null
-    this._rainTimer = null
-    this._windTimer = null
-    this._shieldEndTimer = null
-    this._monoClearTimer = null
+    this._difficulty = null
+    this._target     = 0
+    this._useRain    = false
   }
 
   create() {
     const W = this.scale.width
     const H = this.scale.height
 
-    this.add.rectangle(W / 2, H / 2, W, H, 0x0d0b08)
+    // ── Read inputs ─────────────────────────────────────────────────────────
+    // Difficulty comes from the Ink story variable written by InkBridge
+    // after FireCollectMinigame completes (mg_fire_collect_score).
+    // campsite_quality is set by Dev A's Ink story after campsite selection.
+    const inkBridge = this.registry.get('inkBridge')
+    const rawDiff   = inkBridge?.getVariable('mg_fire_collect_score') ?? 'EASY'
+    const quality   = inkBridge?.getVariable('campsite_quality') ?? 'good'
 
-    this.add
-      .text(W / 2, 48, 'Strike the flint.', {
-        fontSize: '22px',
-        fill: '#f0e6c8',
-        fontFamily: 'Georgia, serif',
-      })
+    this._difficulty = DIFFICULTY_CONFIG[rawDiff] ?? DIFFICULTY_CONFIG.EASY
+    this._target     = this._difficulty.target
+    this._useRain    = this._difficulty.rainInterference && quality === 'poor'
+    this._fuelStock  = this.registry.get('fuelStock') ?? 5
+
+    // ── UI ──────────────────────────────────────────────────────────────────
+    this._buildBackground(W, H)
+    this._buildFirePit(W, H)
+    this._buildFlintButton(W, H)
+    this._buildSparkCounter(W, H)
+    this._buildDialogueBox(W, H)
+
+    // ── Timers ──────────────────────────────────────────────────────────────
+    this._startDecayTimer()
+    if (this._useRain) this._startRainTimer()
+
+    this._idleCheckTimer = this.time.addEvent({
+      delay: 500,
+      callback: this._checkIdle,
+      callbackScope: this,
+      loop: true,
+    })
+
+    this._lastClickTime = this.time.now
+  }
+
+  // ── Background ───────────────────────────────────────────────────────────────
+
+  _buildBackground(W, H) {
+    this.add.rectangle(W / 2, H / 2, W, H, 0x0a0d08)
+
+    this.add.text(W / 2, 28, 'Strike the flint — reach the spark target.', {
+      fontSize: '18px',
+      fontFamily: 'Georgia, serif',
+      fill: '#d0c098',
+      stroke: '#1a0f00',
+      strokeThickness: 3,
+    }).setOrigin(0.5)
+  }
+
+  // ── Fire pit visual ───────────────────────────────────────────────────────────
+
+  _buildFirePit(W, H) {
+    const pitX = W / 2 - 80
+    const pitY = H * 0.44
+
+    this.add.circle(pitX, pitY, 65, 0x1a1208).setStrokeStyle(3, 0x5a4a28)
+
+    // Tinder layer — flashes dark during rain interference (HARD + poor).
+    this._tinderSprite = this.add
+      .text(pitX, pitY, '🌿', { fontSize: '36px' })
       .setOrigin(0.5)
+      .setAlpha(0.7)
+  }
 
-    this._counterText = this.add
-      .text(W / 2, 100, `0 / ${this.target}`, {
-        fontSize: '20px',
-        fill: '#e8d8a0',
-        fontFamily: 'monospace',
-      })
-      .setOrigin(0.5)
+  // ── Flint button ──────────────────────────────────────────────────────────────
 
-    const flintW = 120
-    const flintH = 72
-    this._flint = this.add
-      .rectangle(W / 2, H * 0.42, flintW, flintH, 0x8b7355)
+  _buildFlintButton(W, H) {
+    const btnX = W / 2 + 100
+    const btnY = H * 0.44
+
+    this._flintBg = this.add
+      .rectangle(btnX, btnY, 110, 110, 0x3a2a18)
+      .setStrokeStyle(3, 0xa08040)
       .setInteractive({ useHandCursor: true })
-    this._flint.on('pointerup', () => this._onFlintClick())
 
-    if (this.day === 3) {
-      const sw = 140
-      const sh = 44
-      this._shieldBtn = this.add
-        .rectangle(W / 2, H * 0.58, sw, sh, 0x3a3a3a)
-        .setInteractive({ useHandCursor: true })
-      this._shieldLabel = this.add
-        .text(W / 2, H * 0.58, 'Shield', {
-          fontSize: '16px',
-          fill: '#e0e0e0',
-          fontFamily: 'Georgia, serif',
-        })
-        .setOrigin(0.5)
-      this._shieldBtn.on('pointerup', () => this._onShieldClick())
-    }
+    this.add.text(btnX, btnY - 10, '🪨', { fontSize: '42px' }).setOrigin(0.5)
 
-    const boxH = 88
-    const boxY = H - boxH / 2 - 24
-    this.add.rectangle(W / 2, boxY, W - 48, boxH, 0x1a1610, 0.9).setStrokeStyle(2, 0x4a3a20)
-    this._monoText = this.add
-      .text(W / 2, boxY, '', {
-        fontSize: '16px',
-        fill: '#d4c4a0',
-        fontFamily: 'Georgia, serif',
-        wordWrap: { width: W - 80 },
-        align: 'center',
-      })
-      .setOrigin(0.5)
+    this.add.text(btnX, btnY + 36, 'STRIKE', {
+      fontSize: '12px',
+      fontFamily: 'monospace',
+      fill: '#a08040',
+    }).setOrigin(0.5)
 
-    if (this.day === 2 && this.isPoor && this.difficulty === 'HARD') {
-      this._rainTimer = this.time.addEvent({
-        delay: 4000,
-        loop: true,
-        callback: () => {
-          this.sparks = Math.max(0, this.sparks - 3)
-          this._updateCounter()
-          this._showMonologue('Rain is getting in.')
-        },
-      })
-    }
-
-    if (this.day === 3 && this.isPoor) {
-      this._windTimer = this.time.addEvent({
-        delay: 3000,
-        loop: true,
-        callback: () => {
-          this.sparks = Math.max(0, this.sparks - 4)
-          this._updateCounter()
-        },
-      })
-    }
-
-    this._scheduleDecay()
+    this._flintBg.on('pointerover', () => this._flintBg.setFillStyle(0x4a3a28))
+    this._flintBg.on('pointerout',  () => this._flintBg.setFillStyle(0x3a2a18))
+    this._flintBg.on('pointerup',   () => this._onFlintClick())
   }
 
-  _getDecayIntervalMs() {
-    if (this.day === 3 && !this.isShielding) {
-      return this.baseDecayMs * 0.4
-    }
-    return this.baseDecayMs
+  // ── Spark counter ─────────────────────────────────────────────────────────────
+
+  _buildSparkCounter(W, H) {
+    this.add.text(W / 2, H * 0.22, 'Sparks', {
+      fontSize: '14px',
+      fontFamily: 'Georgia, serif',
+      fill: '#887050',
+    }).setOrigin(0.5)
+
+    this._counterText = this.add.text(W / 2, H * 0.30, this._counterLabel(), {
+      fontSize: '38px',
+      fontFamily: 'monospace',
+      fill: '#ffcc44',
+      stroke: '#331a00',
+      strokeThickness: 5,
+    }).setOrigin(0.5)
+
+    this._clicksText = this.add.text(W / 2, H * 0.38, `Clicks: 0 / ${MAX_CLICKS}`, {
+      fontSize: '13px',
+      fontFamily: 'monospace',
+      fill: '#665038',
+    }).setOrigin(0.5)
   }
 
-  _getSparkGain() {
-    if (this.day === 3 && !this.isShielding) {
-      return 1
-    }
-    return Phaser.Math.Between(1, 3)
+  // ── Dialogue box ──────────────────────────────────────────────────────────────
+
+  _buildDialogueBox(W, H) {
+    const boxY = H * 0.88
+
+    this._dialogueBg = this.add
+      .rectangle(W / 2, boxY, W * 0.78, 52, 0x0d0a04, 0.88)
+      .setStrokeStyle(1, 0x6b5020)
+      .setVisible(false)
+
+    this._dialogueText = this.add.text(W / 2, boxY, '', {
+      fontSize: '15px',
+      fontFamily: 'Georgia, serif',
+      fontStyle: 'italic',
+      fill: '#f5e8c0',
+      wordWrap: { width: W * 0.74 },
+      align: 'center',
+    }).setOrigin(0.5).setVisible(false)
   }
 
-  _scheduleDecay() {
-    if (this._decayTimer) {
-      this._decayTimer.remove(false)
-      this._decayTimer = null
-    }
-    const delay = this._getDecayIntervalMs()
-    this._decayTimer = this.time.delayedCall(delay, () => {
-      this._decayTimer = null
-      this.sparks = Math.max(0, this.sparks - 1)
-      this._updateCounter()
-      this._scheduleDecay()
+  // ── Timers ────────────────────────────────────────────────────────────────────
+
+  _startDecayTimer() {
+    this._decayTimer = this.time.addEvent({
+      delay: this._difficulty.decayMs,
+      callback: this._decaySpark,
+      callbackScope: this,
+      loop: true,
     })
   }
 
-  _updateCounter() {
-    this._counterText.setText(`${this.sparks} / ${this.target}`)
+  _startRainTimer() {
+    this._rainTimer = this.time.addEvent({
+      delay: 4000,
+      callback: this._applyRainInterference,
+      callbackScope: this,
+      loop: true,
+    })
   }
+
+  // ── Spark mechanics ───────────────────────────────────────────────────────────
 
   _onFlintClick() {
-    this.totalClicks += 1
-    this.sparks += this._getSparkGain()
-    this._updateCounter()
-    this._scheduleDecay()
+    this._lastClickTime = this.time.now
+    this._totalClicks++
 
-    if (this.sparks >= this.target) {
-      this.onSuccess()
+    const gained = Phaser.Math.Between(1, 3)
+    this._sparks += gained
+
+    this._refreshUI()
+
+    // Mid-click feedback: 15 clicks and sparks still below half the target.
+    if (
+      this._totalClicks >= 15 &&
+      this._sparks < this._target * 0.5 &&
+      !this._midClickWarningShown
+    ) {
+      this._midClickWarningShown = true
+      this._showDialogue(
+        '"The material is slowing this down. Wet tinder needs more sparks to catch."'
+      )
+    }
+
+    // Check win.
+    if (this._sparks >= this._target) {
+      this._onSuccess()
       return
     }
-    if (this.totalClicks >= this.maxClicks && this.sparks < this.target) {
-      this.onFail()
+
+    // Check fail (exhausted all clicks).
+    if (this._totalClicks >= MAX_CLICKS) {
+      this._onFail()
     }
   }
 
-  _onShieldClick() {
-    if (this.day !== 3) return
-
-    if (this._shieldEndTimer) {
-      this._shieldEndTimer.remove(false)
-      this._shieldEndTimer = null
+  _decaySpark() {
+    if (this._sparks > 0) {
+      this._sparks = Math.max(0, this._sparks - 1)
+      this._refreshUI()
     }
+  }
 
-    this.isShielding = true
-    this._shieldBtn.setFillStyle(0x228822)
-    if (this._shieldLabel) this._shieldLabel.setColor('#ccffcc')
+  _applyRainInterference() {
+    this._sparks = Math.max(0, this._sparks - 3)
+    this._refreshUI()
 
-    this._scheduleDecay()
-
-    this._shieldEndTimer = this.time.delayedCall(5000, () => {
-      this._shieldEndTimer = null
-      this.isShielding = false
-      this._shieldBtn.setFillStyle(0x3a3a3a)
-      if (this._shieldLabel) this._shieldLabel.setColor('#e0e0e0')
-      this._scheduleDecay()
+    // Tinder sprite flashes dark for 0.6 s to show a raindrop hit.
+    this.tweens.add({
+      targets:  this._tinderSprite,
+      alpha:    0.15,
+      duration: 300,
+      yoyo:     true,
+      ease:     'Linear',
     })
   }
 
-  _showMonologue(line) {
-    this._monoText.setText(line)
-    if (this._monoClearTimer) {
-      this._monoClearTimer.remove(false)
-      this._monoClearTimer = null
+  _checkIdle() {
+    const elapsed = this.time.now - this._lastClickTime
+    if (elapsed >= IDLE_THRESHOLD) {
+      this._showDialogue('"Keep going — sparks die fast in this rain."')
+      // Reset so the warning only fires once per idle period.
+      this._lastClickTime = this.time.now
     }
-    this._monoClearTimer = this.time.delayedCall(3200, () => {
-      if (this._monoText && this._monoText.text === line) {
-        this._monoText.setText('')
-      }
-      this._monoClearTimer = null
+  }
+
+  // ── Outcomes ──────────────────────────────────────────────────────────────────
+
+  _onSuccess() {
+    this._stopAllTimers()
+    this._flintBg.disableInteractive()
+    this._showDialogue('"There it is."')
+
+    this.time.delayedCall(800, () => {
+      this.game.events.emit(GameEvents.MINIGAME_COMPLETE, {
+        id:      'fire_ignite',
+        success: true,
+        score:   0,
+      })
+
+      // GDD Step 4 → Step 5: sustain begins immediately after ignition succeeds.
+      // Without starting the next scene, only DebugScene stays up → apparent black screen.
+      this.scene.stop('FireIgniteMinigame')
+      this.scene.start('FireSustainMinigame', { day: this.day })
     })
   }
 
-  resetPhase() {
-    this.sparks = 0
-    this.totalClicks = 0
-    this._updateCounter()
-    if (this._monoClearTimer) {
-      this._monoClearTimer.remove(false)
-      this._monoClearTimer = null
-    }
-    this._monoText.setText('')
-    this._scheduleDecay()
-  }
-
-  onFail() {
-    if (this._monoClearTimer) {
-      this._monoClearTimer.remove(false)
-      this._monoClearTimer = null
-    }
-    this._monoText.setText('The spark won\'t hold. Too wet.')
+  _onFail() {
+    this._stopAllTimers()
+    this._flintBg.disableInteractive()
+    this._showDialogue('"The spark won\'t hold."')
 
     const stamina = this.registry.get('stamina')
-    const alive = stamina ? stamina.deduct(2) : true
+    const alive   = stamina?.deduct(2) ?? true
+
     if (!alive) {
-      this._destroyTimers()
-      this.game.events.emit(GameEvents.MINIGAME_COMPLETE, {
-        id: 'fire_ignite',
-        success: false,
-        staminaDepleted: true,
-      })
-      this.scene.stop('FireIgniteMinigame')
+      // Stamina hit 0 — day fail.
+      this.time.delayedCall(1000, () => this._emitDayFail())
       return
     }
 
-    const fuelStock = Number(this.registry.get('fuelStock') ?? 0)
-    if (fuelStock <= 0) {
-      this._destroyTimers()
-      this.game.events.emit(GameEvents.MINIGAME_COMPLETE, {
-        id: 'fire_ignite',
-        success: false,
-      })
-      this.scene.stop('FireIgniteMinigame')
+    if (!this._retryUsed && this._fuelStock > 0) {
+      // First fail, fuel available — allow one retry.
+      this._retryUsed = true
+      this._fuelStock--
+      this.registry.set('fuelStock', this._fuelStock)
+      this.time.delayedCall(1400, () => this._startRetry())
       return
     }
 
-    this.registry.set('fuelStock', fuelStock - 1)
-    this.resetPhase()
+    // No retry possible — day fail (GDD: triggerDayFail when no fuel left).
+    this.time.delayedCall(1000, () => this._emitDayFail())
   }
 
-  onSuccess() {
-    this._destroyTimers()
-    this.game.events.emit(GameEvents.MINIGAME_COMPLETE, {
-      id: 'fire_ignite',
-      success: true,
+  _startRetry() {
+    this._sparks               = 0
+    this._totalClicks          = 0
+    this._midClickWarningShown = false
+    this._refreshUI()
+    this._showDialogue('"Try again."')
+
+    this._flintBg.setInteractive({ useHandCursor: true })
+    this._lastClickTime = this.time.now
+
+    this._startDecayTimer()
+    if (this._useRain) this._startRainTimer()
+
+    this._idleCheckTimer = this.time.addEvent({
+      delay: 500,
+      callback: this._checkIdle,
+      callbackScope: this,
+      loop: true,
     })
-    this.scene.stop('FireIgniteMinigame')
   }
 
-  _destroyTimers() {
-    if (this._decayTimer) {
-      this._decayTimer.remove(false)
-      this._decayTimer = null
-    }
-    if (this._rainTimer) {
-      this._rainTimer.destroy()
-      this._rainTimer = null
-    }
-    if (this._windTimer) {
-      this._windTimer.destroy()
-      this._windTimer = null
-    }
-    if (this._shieldEndTimer) {
-      this._shieldEndTimer.remove(false)
-      this._shieldEndTimer = null
-    }
-    if (this._monoClearTimer) {
-      this._monoClearTimer.remove(false)
-      this._monoClearTimer = null
-    }
+  _emitDayFail() {
+    this.game.events.emit(GameEvents.MINIGAME_COMPLETE, {
+      id:              'fire_ignite',
+      success:         false,
+      staminaDepleted: true,
+    })
+    this.scene.stop()
+  }
+
+  // ── UI refresh ────────────────────────────────────────────────────────────────
+
+  _refreshUI() {
+    this._counterText.setText(this._counterLabel())
+    this._clicksText.setText(`Clicks: ${this._totalClicks} / ${MAX_CLICKS}`)
+  }
+
+  _counterLabel() {
+    return `${this._sparks} / ${this._target}`
+  }
+
+  // ── Dialogue ──────────────────────────────────────────────────────────────────
+
+  _showDialogue(text) {
+    this._dialogueBg.setVisible(true)
+    this._dialogueText.setText(text).setVisible(true)
+
+    if (this._dialogueTimer) this._dialogueTimer.remove()
+    this._dialogueTimer = this.time.delayedCall(3500, () => {
+      this._dialogueBg.setVisible(false)
+      this._dialogueText.setVisible(false)
+      this._dialogueTimer = null
+    })
+  }
+
+  // ── Timer cleanup ─────────────────────────────────────────────────────────────
+
+  _stopAllTimers() {
+    if (this._decayTimer)     { this._decayTimer.remove();     this._decayTimer     = null }
+    if (this._rainTimer)      { this._rainTimer.remove();      this._rainTimer      = null }
+    if (this._idleCheckTimer) { this._idleCheckTimer.remove(); this._idleCheckTimer = null }
+    if (this._dialogueTimer)  { this._dialogueTimer.remove();  this._dialogueTimer  = null }
   }
 }
