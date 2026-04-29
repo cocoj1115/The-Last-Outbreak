@@ -68,9 +68,6 @@ export class NarrativeScene extends Phaser.Scene {
     if (storyJson) {
       this._bridge = new InkBridge(this, storyJson)
       this._bridge.tick()
-    } else {
-      // No compiled story loaded yet — show placeholder
-      this._showPlaceholderDialogue()
     }
   }
 
@@ -370,12 +367,4 @@ export class NarrativeScene extends Phaser.Scene {
     })
   }
 
-  // ── Placeholder (remove when Ink is wired up) ───────────────────────────
-
-  _showPlaceholderDialogue() {
-    this._showDialogue(
-      'Aiden',
-      'The forest edge. Light fading. I am the only one still standing.'
-    )
-  }
 }

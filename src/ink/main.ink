@@ -1,5 +1,4 @@
 // main.ink
-// Entry point — variables and includes only.
 // Compile this file with Inky: File > Export story to JSON
 // Save output to: public/assets/story/main.ink.json
 
@@ -9,11 +8,16 @@ VAR fire_score = 0
 VAR herb_count = 0
 VAR current_day = 1
 VAR forced_worst_ending = false
+VAR has_dried_berries = false
+VAR has_rope = false
+VAR has_water_pouch = false
+VAR talked_to_mara = false
+VAR talked_to_finn = false
+VAR talked_to_isla = false
 
 // ── Story files ───────────────────────────────────────────────────────────
 INCLUDE prologue.ink
-// INCLUDE day1.ink
-// INCLUDE day2.ink
+INCLUDE day1.ink
 
 // ── Start ─────────────────────────────────────────────────────────────────
 -> prologue
