@@ -37,6 +37,10 @@ export class BootScene extends Phaser.Scene {
     this.load.image('maincharacter', 'assets/maincharacter-default2.png')
     this.load.image('bg_background1', 'assets/background1.jpg')
     this.load.image('bg_background2', 'assets/background2.jpg')
+    this.load.image('bg_village_morning', 'assets/village-bright-morning.jpg')
+    this.load.image('char_sleeping', 'assets/main-character-sleeping.png')
+    this.load.image('bg_map', 'assets/map_all.jpg')
+    this.load.image('map_village', 'assets/map_village.png')
 
     // ── Placeholder assets (replace with real files later) ───────────────
     // Backgrounds

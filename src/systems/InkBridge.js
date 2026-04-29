@@ -93,6 +93,12 @@ export class InkBridge {
     return this.story.variablesState[name]
   }
 
+  /** Jump directly to a named knot and tick. */
+  jumpTo(knotName) {
+    this.story.ChoosePathString(knotName)
+    this.tick()
+  }
+
   // ── Private ─────────────────────────────────────────────────────────────
 
   _parseTags(rawTags = []) {
