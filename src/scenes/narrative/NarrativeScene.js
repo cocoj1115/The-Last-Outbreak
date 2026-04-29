@@ -58,14 +58,16 @@ export class NarrativeScene extends Phaser.Scene {
     // ── Event listeners ──────────────────────────────────────────────────
     this._bindEvents()
 
+    // ── Dev shortcut: T = jump to time_transition knot ───────────────────
+    this.input.keyboard.on('keydown-T', () => {
+      if (this._bridge) this._bridge.jumpTo('time_transition')
+    })
+
     // ── Start Ink story ──────────────────────────────────────────────────
     const storyJson = this.cache.json.get('story')
     if (storyJson) {
       this._bridge = new InkBridge(this, storyJson)
       this._bridge.tick()
-    } else {
-      // No compiled story loaded yet — show placeholder
-      this._showPlaceholderDialogue()
     }
   }
 
@@ -73,15 +75,15 @@ export class NarrativeScene extends Phaser.Scene {
 
   _buildDialogueBox(W, H) {
     const dpr  = window.devicePixelRatio || 1
-    const boxW      = W * 1.3
-    const boxH      = (H - Math.round(H * 0.699)) * 0.873
-    const boxBottom = H * 0.994                          // bottom-left Y
-    const boxY      = boxBottom - boxH                   // top edge derived from bottom
+    const boxW      = W * 0.946
+    const boxH      = (H - Math.round(H * 0.699)) * 0.739
+    const boxX      = W / 2 - boxW / 2                  // centered
+    const boxY      = H * 0.745                          // top edge
     const pad  = 120 * dpr   // horizontal inset keeps text clear of corner art
 
     // 9-slice ornamental box — corners: 80px all sides (source: 1536×1024)
     const box = this.add.nineslice(
-      W / 2, boxY + boxH / 2,
+      boxX + boxW / 2, boxY + boxH / 2,
       'dialogue_card', undefined,
       boxW, boxH,
       80, 80, 80, 80,
@@ -145,12 +147,25 @@ export class NarrativeScene extends Phaser.Scene {
     })
 
     e.on(GameEvents.CHOICES_AVAILABLE, ({ choices }) => {
+      // While the map scene is handling navigation, suppress the choice UI
+      if (this._mapActive) return
       this._showChoices(choices)
     })
 
     e.on(GameEvents.SCENE_CHANGE, ({ key }) => {
-      this._changeBackground(key)
+      if (key === 'map') {
+        // Launch map as overlay — NarrativeScene stays awake
+        this._mapActive = true
+        this.scene.launch('MapScene')
+      } else {
+        // Stop MapScene if still running
+        if (this.scene.isActive('MapScene')) this.scene.stop('MapScene')
+        this._changeBackground(key)
+      }
     })
+
+    // Reset map flag when MapScene stops
+    this.events.on('wake', () => { this._mapActive = false })
 
     e.on(GameEvents.HIDE_CHARACTER, () => {
       console.log('[NarrativeScene] HIDE_CHARACTER received, char:', !!this._mainCharacter)
@@ -252,7 +267,9 @@ export class NarrativeScene extends Phaser.Scene {
     if (this.textures.exists(textureKey)) {
       const W = this.scale.width
       const H = this.scale.height
-      this._bg.setTexture(textureKey).setDisplaySize(W, H)
+      // Scale up village_morning by 10%, others fill exactly
+      const scale = key === 'village_morning' ? 1.1 : 1.0
+      this._bg.setTexture(textureKey).setDisplaySize(W * scale, H * scale)
     }
   }
 
@@ -312,10 +329,10 @@ export class NarrativeScene extends Phaser.Scene {
 
     // — Phase 2: Spin + zoom ——————————————————————————————————————
     this.tweens.add({
-      targets: cam, rotation: Phaser.Math.DegToRad(30),
+      targets: cam, rotation: Phaser.Math.DegToRad(90),
       duration: 3300, ease: 'Expo.easeIn',
     })
-    cam.zoomTo(2.2, 3300, 'Expo.easeIn')
+    cam.zoomTo(4.0, 3300, 'Expo.easeIn')
 
     // — Phase 3: Camera fade to black (screen-space, rotation-proof) ————
     this.time.delayedCall(2400, () => {
@@ -326,15 +343,23 @@ export class NarrativeScene extends Phaser.Scene {
         cam.zoomTo(1, 1)
         cam.setRotation(0)
 
-        // Hold black 3s then fade in
-        this.time.delayedCall(3000, () => {
-          cam.fadeIn(600, 0, 0, 0)
+        // Switch bg while fully black so background2 never shows
+        this._changeBackground('village_morning')
+        if (this._bgOverlay) this._bgOverlay.setAlpha(1.0)
+
+        // Hold black 2s, then simple fade in
+        this.time.delayedCall(2000, () => {
+          cam.fadeIn(800, 0, 0, 0)
+
           cam.once('camerafadeincomplete', () => {
-            if (this._bgOverlay) this._bgOverlay.setAlpha(0.45)
+            const W = this.scale.width
+            const H = this.scale.height
+
+            // Show dialogue box immediately — map will overlay on top
             box.setVisible(true)
             this._speakerText.setVisible(true)
             this._dialogueText.setVisible(true)
-            // ► Audio placeholder: ambient forest sounds here
+            this.game.events.emit(GameEvents.PROLOGUE_END)
             onComplete()
           })
         })
@@ -342,12 +367,4 @@ export class NarrativeScene extends Phaser.Scene {
     })
   }
 
-  // ── Placeholder (remove when Ink is wired up) ───────────────────────────
-
-  _showPlaceholderDialogue() {
-    this._showDialogue(
-      'Aiden',
-      'The forest edge. Light fading. I am the only one still standing.'
-    )
-  }
 }

@@ -77,4 +77,7 @@ export const GameEvents = {
 
   /** Player triggered a full game restart. */
   GAME_RESTART: 'game:restart',
+
+  /** Prologue (pre-time-transition) finished — show HUD. */
+  PROLOGUE_END: 'game:prologue_end',
 }

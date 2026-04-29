@@ -8,7 +8,7 @@ import { GameEvents } from '../systems/GameEvents.js'
  * Persistent overlay (launched once, never stopped).
  * Displays:
  *  - Stamina flames (5 icons, extinguish as stamina drops)
- *  - Day counter (Day X / 7) with moon phase icon
+ *  - Day counter (Day X / 5) with moon phase icon
  *
  * Listens to STAMINA_CHANGE and DAY_ADVANCE to update.
  */
@@ -26,8 +26,10 @@ export class HUDScene extends Phaser.Scene {
     // ── Stamina flames (top-left) — hidden ──────────────────────────────
     // this._buildFlames()
 
-    // ── Day counter (top-right) ──────────────────────────────────────────
+    // ── Day counter (top-right) — hidden until prologue ends ────────────
     this._buildDayCounter(W)
+    this._dayText.setVisible(false)
+    this._moonIcon.setVisible(false)
 
     // ── Event listeners ──────────────────────────────────────────────────
     this.game.events.on(GameEvents.STAMINA_CHANGE, ({ current, max }) => {
@@ -36,6 +38,11 @@ export class HUDScene extends Phaser.Scene {
 
     this.game.events.on(GameEvents.DAY_ADVANCE, ({ day, maxDays }) => {
       this._updateDayCounter(day, maxDays)
+    })
+
+    this.game.events.once(GameEvents.PROLOGUE_END, () => {
+      this._dayText.setVisible(true)
+      this._moonIcon.setVisible(true)
     })
   }
 
@@ -110,9 +117,9 @@ export class HUDScene extends Phaser.Scene {
     const dpr = window.devicePixelRatio || 1
     // Moon icon (drawn in code)
     this._moonIcon = this.add.graphics()
-    this._renderMoon(1, 7)
+    this._renderMoon(1, 5)
 
-    this._dayText = this.add.text(W - 20 * dpr, 20 * dpr, 'Day 1 / 7', {
+    this._dayText = this.add.text(W - 20 * dpr, 20 * dpr, 'Day 1 / 5', {
       fontSize: `${16 * dpr}px`,
       fontFamily: 'monospace',
       color: '#888888',
