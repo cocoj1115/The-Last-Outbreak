@@ -218,6 +218,12 @@ export class FireClearMinigame extends Phaser.Scene {
       score: this._groundCleared ? 1 : 0,
     })
 
+    if (this.registry.get('devFireBuildChain')) {
+      this.scene.stop()
+      this.scene.start('FireCollectMinigame', { day: this.day })
+      return
+    }
+
     this.scene.stop()
   }
 
