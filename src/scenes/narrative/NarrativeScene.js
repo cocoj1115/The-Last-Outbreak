@@ -77,14 +77,14 @@ export class NarrativeScene extends Phaser.Scene {
       .setVisible(false)
 
     // ── Portrait (Aiden) ─────────────────────────────────────────────────
-    this._portraitAiden = this.add.image(W * 0.655, H * 0.780, 'portrait_aiden')
+    this._portraitAiden = this.add.image(W * 0.591, H * 0.788, 'portrait_aiden')
       .setOrigin(0, 1)
       .setAlpha(0)
       .setDepth(4000)
       .setVisible(false)
     {
-      const scaleW = (1280 * 0.686 * 1.92) / this._portraitAiden.width
-      const scaleH = (720 * 0.806 * 1.92) / this._portraitAiden.height
+      const scaleW = (1280 * 0.686 * dpr * 0.9) / this._portraitAiden.width
+      const scaleH = (720  * 0.806 * dpr * 0.9) / this._portraitAiden.height
       this._portraitAiden.setScale(Math.min(scaleW, scaleH))
     }
 
@@ -103,6 +103,14 @@ export class NarrativeScene extends Phaser.Scene {
     // ── Dev shortcut: T = jump to time_transition knot ───────────────────
     this.input.keyboard.on('keydown-T', () => {
       if (this._bridge) this._bridge.jumpTo('time_transition')
+    })
+
+    // ── Dev shortcut: M = directly launch FireCollectMinigame (bypass Ink) ─
+    this.input.keyboard.on('keydown-M', () => {
+      console.log('[DEV] M pressed — launching FireCollectMinigame directly')
+      if (this._mainCharacter) this._mainCharacter.setVisible(false)
+      this.scene.sleep('NarrativeScene')
+      this.scene.launch('FireCollectMinigame', { day: 2 })
     })
 
     // ── Start Ink story ──────────────────────────────────────────────────
@@ -389,7 +397,9 @@ export class NarrativeScene extends Phaser.Scene {
       const W = this.scale.width
       const H = this.scale.height
       // Scale up village backgrounds by 21%, others fill exactly
-      const scale = (key === 'village_morning' || key === 'village_day1') ? 1.21 : 1.0
+      const scale = (key === 'village_morning' || key === 'village_day1') ? 1.21
+        : key === 'forest_day2' ? 1.1
+        : 1.0
       this._bg.setTexture(textureKey).setDisplaySize(W * scale, H * scale)
     }
   }
@@ -398,8 +408,9 @@ export class NarrativeScene extends Phaser.Scene {
 
   _launchMinigame(id, day, difficulty) {
     const sceneMap = {
-      campsite: 'CampsiteMinigame',
-      fire: 'FireMinigame',
+      campsite:      'CampsiteMinigame',
+      fire_collect:  'FireCollectMinigame',
+      fire_campsite: 'FireCampsiteMinigame',
     }
     const targetScene = sceneMap[id]
     if (!targetScene) {
@@ -444,7 +455,8 @@ export class NarrativeScene extends Phaser.Scene {
       this._portraitAiden.setVisible(false)
       this._portraitAiden.setAlpha(0)
       this._portrait.setTexture('portrait_' + key)
-      const maxW = 864, maxH = 1160
+      const maxW = this.scale.width * 0.3375 * 0.9
+      const maxH = this.scale.height * 0.806 * 0.9
       const scaleW = maxW / this._portrait.width
       const scaleH = maxH / this._portrait.height
       const scale = Math.min(scaleW, scaleH)

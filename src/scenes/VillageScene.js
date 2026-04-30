@@ -40,7 +40,7 @@ export class VillageScene extends Phaser.Scene {
       { id: 'isla',  key: 'portrait_isla', x: W * 0.850,  ox: 0.5, label: 'Isla',  sub: 'Village Elder',  talkedVar: 'talked_to_isla'  },
     ]
 
-    const maxPortraitH = 420 * dprScale
+    const maxPortraitH = 420 * dprScale * 0.9
     const portraitY    = H * 0.702
 
     npcs.forEach(npc => {
