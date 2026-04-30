@@ -168,7 +168,7 @@ export class NarrativeScene extends Phaser.Scene {
   }
 
   _launchMinigame(id, day, difficulty) {
-    const map = { campsite: 'CampsiteMinigame', fire: 'FireMinigame' }
+    const map = { campsite: 'CampsiteMinigame', fire: 'FireCampsiteMinigame' }
     const target = map[id]
     if (!target) return
     this.scene.sleep('NarrativeScene')
