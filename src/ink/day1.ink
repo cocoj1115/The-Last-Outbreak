@@ -2,57 +2,78 @@
 
 === day1_arrival ===
 # scene:village_day1
+# portrait:aiden
 # speaker:Aiden
-A village. Small. Quiet. Someone here must know where the Moonleaf grows.
+A village. Small. Quiet.
+
+Someone here must know about the Shimmerleaf.
 -> village_hub
 
 === village_hub ===
+# scene:village_hub
+# portrait:none
 # speaker:
 Three people nearby.
-* [Talk to Mara — the hunter] -> mara_entry
-* [Talk to Finn — the woodcutter] -> finn_entry
-* [Talk to Isla — the village elder] -> isla_entry
-* [I have learned enough. Time to make camp.] -> day1_end
++ [Talk to Mara — the hunter] -> mara_entry
++ [Talk to Finn — the woodcutter] -> finn_entry
++ [Talk to Isla — the village elder] -> isla_entry
++ [I have learned enough. Time to head out.] -> day1_end
 
 
 // ═══════════════════════════════════════
-// MARA — ground + water
+// MARA
 // ═══════════════════════════════════════
 
 === mara_entry ===
 { talked_to_mara:
     - true:
+        # portrait:mara
         # speaker:Mara
         Still here?
         -> mara_questions
     - false:
+        # portrait:mara
         # speaker:Mara
         You are not from here. What do you want?
+        # portrait:aiden
         # speaker:Aiden
-        My name is Aiden. I am looking for the Moonleaf. 
+        My name is Aiden. I am looking for the Shimmerleaf.
+        # portrait:mara
         # speaker:Mara
-        The Moonleaf only blooms at dawn — only for those who slept safely nearby. Ask me what you need.
+        Shimmerleaf. Long way to come for a plant.
+        # portrait:aiden
+        # speaker:Aiden
+        It is important. Do you know it?
+        # portrait:mara
+        # speaker:Mara
+        You will need to camp in the forest. Ask me what you need.
         ~ talked_to_mara = true
         -> mara_questions
 }
 
 === mara_questions ===
-* [How do I choose a campsite?] -> mara_campsite
-* [Have you seen anyone else pass through?] -> mara_others
-* [That is all I needed.] -> village_hub
++ [How do I choose a campsite?] -> mara_campsite
++ [What do you know about the Shimmerleaf?] -> mara_shimmerleaf
++ [Have you seen anyone else pass through?] -> mara_others
++ [That is all I needed.] -> village_hub
 
 === mara_campsite ===
+# portrait:mara
 # speaker:Mara
-Ground first. Find somewhere high — not a hilltop, just higher than what surrounds it. Water runs downhill. Sleep in a low spot and you wake up wet.
-# speaker:Mara
-Stay back from water. Fifteen steps at least. I have seen men camp by a quiet stream and find themselves underwater by morning.
+Ground first. Always ground first.
+
+Find somewhere high — not a hilltop, just higher than what surrounds it. Water runs downhill. Sleep in a low spot and you wake up wet. Or you do not wake up at all.
+
+Stay back from water. Fifteen steps at least. The bank looks stable until it is not.
 # speaker:Mara
 Tell me — flat ground right beside a stream, or a slight rise thirty steps away. Which do you take?
-* [The flat spot — easier access to water]
++ [The flat spot — easier access to water]
+    # portrait:mara
     # speaker:Mara
     Easy access to water. Easy access to flooding. The rise. Always the rise.
     -> mara_questions
-* [The rise, further from water]
++ [The rise, further from water]
+    # portrait:mara
     # speaker:Mara
     Good. You are thinking like someone who wants to wake up dry.
     { not has_dried_berries:
@@ -62,7 +83,18 @@ Tell me — flat ground right beside a stream, or a slight rise thirty steps awa
     }
     -> mara_questions
 
+=== mara_shimmerleaf ===
+# portrait:mara
+# speaker:Mara
+Grows near water but not in it. Look for damp ground on a slope — where runoff collects but does not flood.
+
+The north-facing edges of the forest, mostly. Less sun. The plant likes the shade.
+
+It only blooms after rain. You will not find it on a dry night.
+-> mara_questions
+
 === mara_others ===
+# portrait:mara
 # speaker:Mara
 Two, last week. One camped by the river bend. Gone before sunrise — tent half-buried in mud by morning.
 # speaker:Mara
@@ -73,67 +105,78 @@ Some people learn from others. Some learn from the mud.
 
 
 // ═══════════════════════════════════════
-// FINN — overhead + wind
+// FINN
 // ═══════════════════════════════════════
 
 === finn_entry ===
 { talked_to_finn:
     - true:
+        # portrait:finn
         # speaker:Finn
         Back again?
         -> finn_questions
     - false:
+        # portrait:finn
         # speaker:Finn
         You look lost. First time out here?
+        # portrait:aiden
         # speaker:Aiden
-        I need to survive in the forest tonight. Looking for the Moonleaf.
+        I am looking for the Shimmerleaf.
+        # portrait:finn
         # speaker:Finn
-        Then you will want to know a few things. Ask away.
+        Then you will need to survive in the forest. Ask away.
         ~ talked_to_finn = true
         -> finn_questions
 }
 
 === finn_questions ===
-* [Any dangers I should watch for out there?] -> finn_overhead
-* [That is all I needed.] -> village_hub
++ [Any dangers I should watch for out there?] -> finn_overhead
++ [That is all I needed.] -> village_hub
 
 === finn_overhead ===
+# portrait:finn
 # speaker:Finn
-The trees will kill you before the cold does — trust me. Dead branches. Widowmakers, we call them. Always look up before you pitch your tent.
-# speaker:Finn
+The trees will kill you before the cold does — trust me. Dead branches. Widowmakers, we call them. Always look up before you pitch your tent. Always.
+
 And never build fire under a canopy. One spark into dry leaves overhead and it all comes down on you. Open sky above your fire. No exceptions.
 # speaker:Finn
 Two spots. One under a big oak — sheltered. One in a clearing — open sky but you would feel the wind. Which one?
-* [Under the oak — better shelter]
++ [Under the oak — better shelter]
+    # portrait:finn
     # speaker:Finn
     That oak has three dead branches I can see from here. Any one comes down in the night... Clearing. Always the clearing.
     -> finn_questions
-* [The clearing — open sky is safer]
++ [The clearing — open sky is safer]
+    # portrait:finn
     # speaker:Finn
     Exactly. Wind you can deal with. A branch through your tent you cannot.
     { not has_rope:
         ~ has_rope = true
         # item:rope
-        Here. Useful for securing things if you have to camp under cover.
+        Here. Useful for securing things.
     }
     -> finn_questions
 
 
 // ═══════════════════════════════════════
-// ISLA — water + wind
+// ISLA
 // ═══════════════════════════════════════
 
 === isla_entry ===
 { talked_to_isla:
     - true:
+        # portrait:isla
         # speaker:Isla
         You again. Sit, if you like.
         -> isla_questions
     - false:
+        # portrait:isla
         # speaker:Isla
         You have the look of someone who has come a long way.
+        # portrait:aiden
         # speaker:Aiden
-        I have. I need to camp in the forest tonight. Looking for the Moonleaf.
+        I have. I am looking for the Shimmerleaf.
+        # portrait:isla
         # speaker:Isla
         Then sit for a moment. There are things worth knowing.
         ~ talked_to_isla = true
@@ -141,21 +184,27 @@ Two spots. One under a big oak — sheltered. One in a clearing — open sky but
 }
 
 === isla_questions ===
-* [What do you know about making camp?] -> isla_camp
-* [That is all I needed.] -> village_hub
++ [What do you know about making camp?] -> isla_camp
++ [What do you know about the Shimmerleaf?] -> isla_shimmerleaf
++ [That is all I needed.] -> village_hub
 
 === isla_camp ===
+# portrait:isla
 # speaker:Isla
-Wind is the one people forget. They think about rain, they think about cold. Not wind — until it is three in the morning and their fire is ash.
-# speaker:Isla
-Face your shelter away from the wind. Find something solid at your back. A boulder, a bank, a hill. And cold air flows downhill just like water — hollows fill up with cold before anywhere else. Sleep high.
+Wind is the one people forget. They think about rain, they think about cold. Not wind — until it is three in the morning and their fire is ash and their blankets are wet.
+
+Face your shelter away from the wind. Find something solid at your back. A boulder, a bank, a hill.
+
+And cold air flows downhill just like water. Hollows fill up with cold before anywhere else. Sleep high. Sleep dry. Sleep warm.
 # speaker:Isla
 A hollow between two hills — sheltered, soft ground. Or a flat open space on the hillside — exposed, higher up. Where do you sleep?
-* [The hollow — sheltered and quiet]
++  [The hollow — sheltered and quiet]
+    # portrait:isla
     # speaker:Isla
     Cold air pools in hollows like water in a bowl. By midnight shivering. By dawn sick. The hillside. Cold flows down — remember that.
     -> isla_questions
-* [The hillside — higher and better air]
++  [The hillside — higher and better air]
+    # portrait:isla
     # speaker:Isla
     You understand. Most people do not until they have spent a night in a hollow.
     { not has_water_pouch:
@@ -165,9 +214,25 @@ A hollow between two hills — sheltered, soft ground. Or a flat open space on t
     }
     -> isla_questions
 
+=== isla_shimmerleaf ===
+# portrait:isla
+# speaker:Isla
+My grandmother collected it. Said you could never go looking while the rain was falling.
+
+The rain wakes something in the leaf. Half an hour after a storm passes, they glow — pale green. Easy to spot. But only for a short while.
+
+You need to already be there when the rain stops. Camped and waiting.
+# speaker:Isla
+That is the only way. Be in the right place before the storm. Not after.
+-> isla_questions
+
 
 // ═══════════════════════════════════════
+// DAY 1 END
+// ═══════════════════════════════════════
+
 === day1_end ===
+# portrait:aiden
 # speaker:Aiden
-Time to find a spot before dark.
--> END
+Time to head out. The storm will not wait.
+-> day2_transition

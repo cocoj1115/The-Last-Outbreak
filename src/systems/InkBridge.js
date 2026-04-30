@@ -43,35 +43,39 @@ export class InkBridge {
 
   /** Advance exactly one line of the story, then stop. */
   tick() {
-    // Skip tag-only lines (no visible text) without requiring a click
     while (this.story.canContinue) {
       const text = this.story.Continue()
       const tags = this._parseTags(this.story.currentTags)
 
+      console.log('[InkBridge] tick - text:', JSON.stringify(text.trim()), 'tags:', JSON.stringify(tags))
+
+      // Process tags ALWAYS, even if no text
       this._processTags(tags)
 
+      // Only emit DIALOGUE_LINE if there is visible text
       const clean = text.trim()
       if (clean) {
-        // Visible line — emit and stop. Next click will call tick() again.
         this.events.emit(GameEvents.DIALOGUE_LINE, {
           text: clean,
           speaker: this._pendingSpeaker,
           tags,
         })
         this._pendingSpeaker = null
+      }
 
-        // If a minigame was triggered on this line, stop and wait for result
-        if (tags.minigame) return
-
-        // Stop after one visible line — wait for player click
+      // Stop if a scene change to village_hub was triggered — always hand off via INK_WAITING
+      if (tags.scene === 'village_hub') {
+        this.events.emit(GameEvents.INK_WAITING)
         return
       }
 
-      // Tag-only line: if a minigame was triggered, stop here too
+      // Stop if minigame triggered
       if (tags.minigame) return
+
+      // Stop after a visible line — wait for player click
+      if (clean) return
     }
 
-    // canContinue is false — emit choices or end state
     if (this.story.currentChoices.length > 0) {
       this.events.emit(GameEvents.CHOICES_AVAILABLE, {
         choices: this.story.currentChoices.map((c, i) => ({
@@ -95,6 +99,12 @@ export class InkBridge {
 
   /** Jump directly to a named knot and tick. */
   jumpTo(knotName) {
+    this.story.ChoosePathString(knotName)
+    this.tick()
+  }
+
+  /** Alias for jumpTo — same behaviour, friendlier name for scene controllers. */
+  jumpToKnot(knotName) {
     this.story.ChoosePathString(knotName)
     this.tick()
   }
@@ -129,6 +139,7 @@ export class InkBridge {
   }
 
   _processTags(tags) {
+    console.log('[InkBridge] tags received:', JSON.stringify(tags))
     if (tags.scene) {
       this.events.emit(GameEvents.SCENE_CHANGE, { key: tags.scene })
     }
