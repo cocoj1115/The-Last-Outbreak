@@ -6,12 +6,13 @@
 // ═════════════════════════════════════════════════════════════════════════════
 
 === day2_transition ===
-# scene:map
+# scene:path_to_forest
+# portrait:aiden
 # speaker:Aiden
 The forest is north. Half a day's walk.
 
 Isla said to be there before the storm hits. I need to move.
-* [Head out] -> day2_forest
+-> day2_forest
 
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -73,8 +74,8 @@ The fire spot is clear. I need to get this lit and keep it alive through the nig
 
 // ═════════════════════════════════════════════════════════════════════════════
 // MINIGAME 2 — MATERIAL COLLECTION
-// Phaser writes back: mg_fire_collect_quality ("easy"/"medium"/"hard")
-// No stamina deduction
+// Phaser writes back: mg_fire_collect_success (bool), mg_fire_collect_score (string)
+// FireCollectMinigame chains internally to FireCampsiteMinigame
 // ═════════════════════════════════════════════════════════════════════════════
 
 === day2_fire_collect ===
@@ -86,104 +87,43 @@ I need to gather what I can find to start the fire.
     ~ fail_reason = "stamina"
     -> day2_buffer
 }
--> day2_fire_ignite
+-> day2_fire_campsite
 
 
 // ═════════════════════════════════════════════════════════════════════════════
-// MINIGAME 3 — IGNITION attempt 1
-// Phaser writes back: mg_fire_ignite_success (bool)
-// Stamina: -2 if false, sets stamina_depleted if zero
+// MINIGAME 3 — BUILD AND LIGHT FIRE
+// Phaser writes back: mg_fire_campsite_success (bool), mg_fire_campsite_score ("strong"/"weak")
+// Covers sort materials → stack layers → ignite → sustain — all internal
 // ═════════════════════════════════════════════════════════════════════════════
 
-=== day2_fire_ignite ===
+=== day2_fire_campsite ===
 # speaker:Aiden
-Here goes.
-# minigame:fire_ignite day:2
+Now to get this fire built and lit.
+# minigame:fire_campsite day:2
 
 { stamina_depleted:
     ~ fail_reason = "stamina"
     -> day2_buffer
 }
 
-{ mg_fire_ignite_success:
-    - true:  -> day2_fire_sustain
-    - false: -> day2_fire_ignite_fail
+{ mg_fire_campsite_success:
+    - true:
+        { mg_fire_campsite_score == "strong":
+            # speaker:Aiden
+            Strong fire. This will hold through the night.
+        - else:
+            # speaker:Aiden
+            A small flame. It will have to do.
+        }
+        -> day2_rain_stops
+    - false:
+        ~ fail_reason = "no_fire"
+        # speaker:Aiden
+        Nothing. I could not get this started.
+
+        The night is going to be brutal without fire.
+        -> day2_buffer
 }
-
-=== day2_fire_ignite_fail ===
-# speaker:Aiden
-The spark will not hold. Too wet.
-
-The cold is already getting in.
-
-{ campsite_quality == "poor":
-    The damp ground is not helping. Everything around me is wet.
-}
-
-One more try.
--> day2_fire_ignite_retry
-
-
-// ═════════════════════════════════════════════════════════════════════════════
-// MINIGAME 3 — IGNITION attempt 2
-// ═════════════════════════════════════════════════════════════════════════════
-
-=== day2_fire_ignite_retry ===
-# minigame:fire_ignite day:2
-
-{ stamina_depleted:
-    ~ fail_reason = "stamina"
-    -> day2_buffer
-}
-
-{ mg_fire_ignite_success:
-    - true:  -> day2_fire_sustain
-    - false: -> day2_fire_ignite_fail2
-}
-
-=== day2_fire_ignite_fail2 ===
-~ fail_reason = "no_fire"
-# speaker:Aiden
-Nothing. I cannot get this started.
-
-The night is going to be brutal without fire.
--> day2_buffer
-
-
-// ═════════════════════════════════════════════════════════════════════════════
-// MINIGAME 4 — SUSTAIN FIRE
-// Phaser writes back: mg_fire_sustain_success (bool)
-// Stamina: -1 if fire dies once, -2 if fuel runs out
-// ═════════════════════════════════════════════════════════════════════════════
-
-=== day2_fire_sustain ===
-# speaker:Aiden
-The fire is lit. Now I need to keep it alive until the rain stops.
-# minigame:fire_sustain day:2
-
-{ stamina_depleted:
-    ~ fail_reason = "stamina"
-    -> day2_buffer
-}
-
-{ mg_fire_sustain_success:
-    - true:  -> day2_rain_stops
-    - false: -> day2_fire_sustain_fail
-}
-
-=== day2_fire_sustain_fail ===
-~ fail_reason = "fire_out"
-# speaker:Aiden
-The fire went out.
-
-{ campsite_quality == "poor":
-    The water got in. I could not stop it.
-    - else:
-    I misjudged the wood. Let it burn down too far.
-}
-
-I spent the rest of the night shivering.
--> day2_buffer
 
 
 // ═════════════════════════════════════════════════════════════════════════════
