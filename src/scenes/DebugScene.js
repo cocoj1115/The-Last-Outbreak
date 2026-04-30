@@ -90,10 +90,6 @@ export class DebugScene extends Phaser.Scene {
       this._dataPanelText.setVisible(this._dataVisible)
     })
 
-    this.input.keyboard.on('keydown-C', () => {
-      this.scene.sleep('NarrativeScene')
-      this.scene.launch('CampsiteMinigame', { day: 2 })
-    })
 
     // ── Apply initial visibility (starts hidden) ──────────────────────────
     this._applyVisibility()

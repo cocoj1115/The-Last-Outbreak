@@ -19,7 +19,6 @@
  */
 
 /** Set `true` while tuning Day2 fire minigames; keep `false` for normal boot. */
-export const DEV_MOCK_DAY2_FIRE = true
 
 /** Phaser scene key when `fullChain` is false. Ignored when `fullChain` is true (starts at Clear). */
 export const DAY2_FIRE_MOCK_START = 'FireCollectMinigame'
