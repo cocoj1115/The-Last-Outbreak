@@ -1,10 +1,17 @@
 import Phaser from 'phaser'
 import { GameEvents } from '../systems/GameEvents.js'
+import {
+  DEV_MOCK_DAY2_FIRE,
+  DAY2_FIRE_MOCK,
+  seedDay2FireMockRegistry,
+  resolveDay2FireMockEntryScene,
+  getDay2FireMockBootPayload,
+} from '../dev/day2FireMock.js'
 import { StaminaSystem } from '../systems/StaminaSystem.js'
 import { DaySystem } from '../systems/DaySystem.js'
 
 /** Set to false for normal game (Onboarding → story). */
-const DEV_PATH_B_DAY2_FIRE = true
+const DEV_PATH_B_DAY2_FIRE = false
 
 /**
  * Minimal stub so fire minigames can read Ink variables without NarrativeScene.
@@ -13,7 +20,7 @@ const DEV_PATH_B_DAY2_FIRE = true
 function createInkBridgeStub() {
   const _vars = {
     campsite_quality: 'good', // 'poor' = rain bias in collect + ignite
-    mg_fire_collect_score: 'EASY', // EASY | MEDIUM | HARD (read by FireIgnite after collect)
+    mg_fire_collect_score: 'EASY', // EASY | MEDIUM | HARD (read by ignite step in FireCampsite)
   }
   return {
     getVariable(name) {
@@ -97,9 +104,17 @@ export class BootScene extends Phaser.Scene {
     if (DEV_PATH_B_DAY2_FIRE) {
       this.registry.set('inkBridge', createInkBridgeStub())
       this.registry.set('fuelStock', 5)
-      /** When true, FireCollectMinigame jumps to FireIgniteMinigame after pack is full. */
+      /** When true, FireCollectMinigame jumps straight to the ignite step of FireCampsiteMinigame. */
       this.registry.set('devQuickFireChain', true)
       this.scene.start('FireCollectMinigame', { day: 2 })
+      return
+    }
+
+    /** Tunable mock state for Day2 fire — see `src/dev/day2FireMock.js`. */
+    if (DEV_MOCK_DAY2_FIRE) {
+      seedDay2FireMockRegistry(this.registry)
+      this.scene.launch('HUDScene')
+      this.scene.start(resolveDay2FireMockEntryScene(), getDay2FireMockBootPayload())
       return
     }
 

@@ -85,7 +85,7 @@ export class FireSortMinigame extends Phaser.Scene {
     this._placedCount   = 0   // correctly placed so far
     this._hadError      = false  // any item needed correction?
 
-    // Per-material sprite state { id → { sprite, label, homePos } }
+    // Per-pile-piece state { pileKey → { matId, sprite, label, homePos, … } }
     this._matObjects    = {}
 
     // Zone data { zone_id → { rect, label, bounds } }
@@ -98,8 +98,16 @@ export class FireSortMinigame extends Phaser.Scene {
     const W = this.scale.width
     const H = this.scale.height
 
-    // Read collected materials from registry (written by FireCollectMinigame).
-    const collected = this.registry.get('collectedMaterials') ?? []
+    console.log('sort received:', this.registry.get('collectedMaterials'))
+
+    this._sortableIds = []
+    this._unsortableIds = []
+    this._matObjects = {}
+    this._placedCount = 0
+    this._hadError = false
+
+    const raw = this.registry.get('collectedMaterials') ?? []
+    const collected = Array.isArray(raw) ? raw : (raw?.items ?? [])
 
     // Classify into sortable vs. unsortable.
     collected.forEach(({ id }) => {
@@ -212,8 +220,9 @@ export class FireSortMinigame extends Phaser.Scene {
         fill: '#d8c898',
       }).setOrigin(0.5, 0).setDepth(6)
 
-      this._matObjects[id] = {
-        id,
+      const pileKey = `pile_${i}`
+      this._matObjects[pileKey] = {
+        matId: id,
         quality,
         sprite,
         label,
@@ -259,60 +268,61 @@ export class FireSortMinigame extends Phaser.Scene {
     this.input.on('drag', (pointer, sprite, dragX, dragY) => {
       sprite.setPosition(dragX, dragY)
       // Move the label with the sprite during drag.
-      const id  = this._spriteToId(sprite)
-      if (id) {
-        const obj = this._matObjects[id]
+      const pileKey = this._spriteToPileKey(sprite)
+      if (pileKey) {
+        const obj = this._matObjects[pileKey]
         obj.label.setPosition(dragX, dragY + PILE_ITEM_H / 2 + 4)
       }
     })
 
     this.input.on('dragend', (pointer, sprite) => {
       sprite.setDepth(5)
-      const id = this._spriteToId(sprite)
-      if (!id) return
-      this._onDragEnd(id, sprite.x, sprite.y)
+      const pileKey = this._spriteToPileKey(sprite)
+      if (!pileKey) return
+      this._onDragEnd(pileKey, sprite.x, sprite.y)
     })
   }
 
-  _spriteToId(sprite) {
-    for (const [id, obj] of Object.entries(this._matObjects)) {
-      if (obj.sprite === sprite) return id
+  _spriteToPileKey(sprite) {
+    for (const [pileKey, obj] of Object.entries(this._matObjects)) {
+      if (obj.sprite === sprite) return pileKey
     }
     return null
   }
 
-  _onDragEnd(id, dropX, dropY) {
+  _onDragEnd(pileKey, dropX, dropY) {
     // Find which zone (if any) the item was dropped into.
     for (const [zoneId, zone] of Object.entries(this._zones)) {
       if (zone.bounds.contains(dropX, dropY)) {
-        this._tryPlace(id, zoneId)
+        this._tryPlace(pileKey, zoneId)
         return
       }
     }
     // Dropped in empty space — bounce back.
-    this._bounceBack(id)
+    this._bounceBack(pileKey)
   }
 
-  _tryPlace(id, zoneId) {
-    const correctZone = CORRECT_ZONE[id]
+  _tryPlace(pileKey, zoneId) {
+    const matId = this._matObjects[pileKey].matId
+    const correctZone = CORRECT_ZONE[matId]
 
     // Unsortable material.
     if (correctZone === undefined) {
       this._showFeedback('"This is too wet for any role tonight."')
-      this._bounceBack(id)
-      this._greyOutMaterial(id)
+      this._bounceBack(pileKey)
+      this._greyOutMaterial(pileKey)
       return
     }
 
     if (zoneId === correctZone) {
-      this._correctPlacement(id, zoneId)
+      this._correctPlacement(pileKey, zoneId)
     } else {
-      this._wrongPlacement(id, zoneId)
+      this._wrongPlacement(pileKey, zoneId)
     }
   }
 
-  _correctPlacement(id, zoneId) {
-    const obj  = this._matObjects[id]
+  _correctPlacement(pileKey, zoneId) {
+    const obj  = this._matObjects[pileKey]
     const zone = this._zones[zoneId]
 
     obj.placed = true
@@ -340,18 +350,19 @@ export class FireSortMinigame extends Phaser.Scene {
     this._checkComplete()
   }
 
-  _wrongPlacement(id, zoneId) {
+  _wrongPlacement(pileKey, zoneId) {
     this._hadError = true
 
+    const matId = this._matObjects[pileKey].matId
     // Look up specific feedback, fall back to generic.
-    const specificFeedback = WRONG_FEEDBACK[id]?.[zoneId]
+    const specificFeedback = WRONG_FEEDBACK[matId]?.[zoneId]
     const text = specificFeedback
       ? `"${specificFeedback}"`
       : '"That doesn\'t belong there."'
 
     this._showFeedback(text)
     this._flashZone(zoneId, 0xdd4444)
-    this._bounceBack(id)
+    this._bounceBack(pileKey)
   }
 
   // ── Zone flash ────────────────────────────────────────────────────────────────
@@ -366,8 +377,8 @@ export class FireSortMinigame extends Phaser.Scene {
 
   // ── Bounce / grey helpers ─────────────────────────────────────────────────────
 
-  _bounceBack(id) {
-    const obj = this._matObjects[id]
+  _bounceBack(pileKey) {
+    const obj = this._matObjects[pileKey]
     const { x, y } = obj.homePos
 
     this.tweens.add({
@@ -385,8 +396,8 @@ export class FireSortMinigame extends Phaser.Scene {
     })
   }
 
-  _greyOutMaterial(id) {
-    const obj = this._matObjects[id]
+  _greyOutMaterial(pileKey) {
+    const obj = this._matObjects[pileKey]
     if (obj.greyed) return
     obj.greyed = true
 
@@ -433,6 +444,12 @@ export class FireSortMinigame extends Phaser.Scene {
       success: true,
       score:   sortingQuality,
     })
+
+    if (this.registry.get('devFireBuildChain')) {
+      this.scene.stop()
+      this.scene.start('FireIgniteMinigame', { day: this.day })
+      return
+    }
 
     this.scene.stop()
   }

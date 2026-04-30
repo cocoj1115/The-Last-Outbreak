@@ -23,8 +23,8 @@ export class HUDScene extends Phaser.Scene {
   create() {
     const W = this.scale.width
 
-    // ── Stamina flames (top-left) — hidden ──────────────────────────────
-    // this._buildFlames()
+    // ── Stamina flames (top-left) ─────────────────────────────────────────
+    this._buildFlames()
 
     // ── Day counter (top-right) — hidden until prologue ends ────────────
     this._buildDayCounter(W)
