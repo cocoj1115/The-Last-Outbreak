@@ -7,10 +7,7 @@ import { MapScene } from './scenes/MapScene.js'
 import { CampsiteMinigame } from './scenes/minigames/campsite/CampsiteMinigame.js'
 import { FireMinigame } from './scenes/minigames/fire/FireMinigame.js'
 import { FireCollectMinigame } from './scenes/minigames/fire/FireCollectMinigame.js'
-import { FireClearMinigame } from './scenes/minigames/fire/FireClearMinigame.js'
-import { FireSortMinigame } from './scenes/minigames/fire/FireSortMinigame.js'
-import { FireIgniteMinigame } from './scenes/minigames/fire/FireIgniteMinigame.js'
-import { FireSustainMinigame } from './scenes/minigames/fire/FireSustainMinigame.js'
+import { FireCampsiteMinigame } from './scenes/minigames/fire/FireCampsiteMinigame.js'
 import { HUDScene } from './scenes/HUDScene.js'
 import { DebugScene } from './scenes/DebugScene.js'
 
@@ -38,8 +35,8 @@ const config = {
     BootScene, OnboardingScene, NarrativeScene, VillageScene, MapScene,
     CampsiteMinigame,
     FireMinigame,
-    FireCollectMinigame, FireClearMinigame, FireSortMinigame,
-    FireIgniteMinigame, FireSustainMinigame,
+    FireCollectMinigame,
+    FireCampsiteMinigame,
     HUDScene, DebugScene,
   ],
 }
