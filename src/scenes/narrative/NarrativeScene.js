@@ -27,17 +27,30 @@ export class NarrativeScene extends Phaser.Scene {
   }
 
   create() {
+    const dpr = window.devicePixelRatio || 1
     const W = this.scale.width
     const H = this.scale.height
 
     // ── Background ───────────────────────────────────────────────────────
-    this._bg = this.add.image(W / 2, H / 2, 'bg_placeholder')
+    const hasBg1 = this.textures.exists('bg_background1')
+    console.log('[NarrativeScene] bg_background1 exists:', hasBg1, '| all textures:', this.textures.list ? Object.keys(this.textures.list).join(',') : 'n/a')
+    const initBg = hasBg1 ? 'bg_background1' : 'bg_placeholder'
+    this._bg = this.add.image(W / 2, H / 2, initBg)
       .setDisplaySize(W, H)
 
-    // ── Portrait ─────────────────────────────────────────────────────────
-    this._portrait = this.add.image(120, H - 160, 'portrait_placeholder')
+    // ── Dark overlay ─────────────────────────────────────────────────────
+    this._bgOverlay = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.45)
+
+    // ── Portrait ───────────────────────────────────────────────────────────
+    this._portrait = this.add.image(120 * dpr, H - 160 * dpr, 'portrait_placeholder')
       .setOrigin(0.5, 1)
       .setAlpha(0)
+
+    // ── Main character ───────────────────────────────────────────────────
+    const charSize = H * 0.558
+    this._mainCharacter = this.add.image(W * 0.682, H * 0.259, 'maincharacter')
+      .setOrigin(0, 0)
+      .setDisplaySize(charSize, charSize)
 
     // ── Dialogue box ─────────────────────────────────────────────────────
     this._buildDialogueBox(W, H)
@@ -45,48 +58,60 @@ export class NarrativeScene extends Phaser.Scene {
     // ── Event listeners ──────────────────────────────────────────────────
     this._bindEvents()
 
-    // ── Start Ink story ──────────────────────────────────────────────────
-    // TODO: Replace null with actual story JSON once .ink is compiled:
-    //   const storyJson = this.cache.json.get('story')
-    //   this._bridge = new InkBridge(this, storyJson)
-    //   this._bridge.tick()
+    // ── Dev shortcut: T = jump to time_transition knot ───────────────────
+    this.input.keyboard.on('keydown-T', () => {
+      if (this._bridge) this._bridge.jumpTo('time_transition')
+    })
 
-    // For now, show placeholder dialogue so the scene is not blank
-    this._showPlaceholderDialogue()
+    // ── Start Ink story ──────────────────────────────────────────────────
+    const storyJson = this.cache.json.get('story')
+    if (storyJson) {
+      this._bridge = new InkBridge(this, storyJson)
+      this._bridge.tick()
+    }
   }
 
   // ── UI builders ─────────────────────────────────────────────────────────
 
   _buildDialogueBox(W, H) {
-    const boxH = 180
-    const boxY = H - boxH - 20
-    const pad = 24
+    const dpr  = window.devicePixelRatio || 1
+    const boxW      = W * 0.946
+    const boxH      = (H - Math.round(H * 0.699)) * 0.739
+    const boxX      = W / 2 - boxW / 2                  // centered
+    const boxY      = H * 0.745                          // top edge
+    const pad  = 120 * dpr   // horizontal inset keeps text clear of corner art
 
-    // Semi-transparent box
-    const box = this.add.rectangle(W / 2, boxY + boxH / 2, W - 40, boxH, 0x000000, 0.75)
-      .setStrokeStyle(1, 0x555555)
+    // 9-slice ornamental box — corners: 80px all sides (source: 1536×1024)
+    const box = this.add.nineslice(
+      boxX + boxW / 2, boxY + boxH / 2,
+      'dialogue_card', undefined,
+      boxW, boxH,
+      80, 80, 80, 80,
+    )
 
     // Speaker name
-    this._speakerText = this.add.text(pad + 20, boxY + 16, '', {
-      fontSize: '16px',
-      fontFamily: 'monospace',
-      color: '#aaaaaa',
+    const textX = W * 0.099
+    const textY = H * 0.795
+    this._speakerText = this.add.text(textX, textY, '', {
+      fontSize: `${Math.round(19.5 * dpr)}px`,
+      fontFamily: '"IM Fell English", serif',
+      color: '#5c3a00',
       fontStyle: 'italic',
     })
 
     // Dialogue text
-    this._dialogueText = this.add.text(pad + 20, boxY + 44, '', {
-      fontSize: '20px',
-      fontFamily: 'serif',
-      color: '#ffffff',
-      wordWrap: { width: W - 40 - pad * 2 },
-      lineSpacing: 6,
+    this._dialogueText = this.add.text(textX, textY + 30 * dpr, '', {
+      fontSize: `${Math.round(24.7 * dpr)}px`,
+      fontFamily: '"IM Fell English", serif',
+      color: '#2a1500',
+      wordWrap: { width: W - textX - 80 * dpr },
+      lineSpacing: 6 * dpr,
     })
 
     // "Click to continue" hint
-    this._continueHint = this.add.text(W - 60, H - 30, '▶', {
-      fontSize: '14px',
-      color: '#666666',
+    this._continueHint = this.add.text(W - 80 * dpr, H - 36 * dpr, '▶', {
+      fontSize: `${14 * dpr}px`,
+      color: '#8b5e00',
     }).setAlpha(0)
 
     // Click anywhere on box to advance
@@ -103,9 +128,9 @@ export class NarrativeScene extends Phaser.Scene {
     })
 
     // Choice container
-    this._choiceContainer = this.add.container(W / 2, H - 220)
+    this._choiceContainer = this.add.container(W / 2, H - 220 * dpr)
 
-    this._dialogueElements = { box, boxY, pad }
+    this._dialogueElements = { box, boxY, boxH, pad }
   }
 
   // ── Event binding ────────────────────────────────────────────────────────
@@ -113,16 +138,42 @@ export class NarrativeScene extends Phaser.Scene {
   _bindEvents() {
     const e = this.game.events
 
-    e.on(GameEvents.DIALOGUE_LINE, ({ text, speaker }) => {
-      this._showDialogue(speaker, text)
+    e.on(GameEvents.DIALOGUE_LINE, ({ text, speaker, tags }) => {
+      if (tags && tags.time_transition) {
+        this._playTimeTransition(() => this._showDialogue(speaker, text))
+      } else {
+        this._showDialogue(speaker, text)
+      }
     })
 
     e.on(GameEvents.CHOICES_AVAILABLE, ({ choices }) => {
+      // While the map scene is handling navigation, suppress the choice UI
+      if (this._mapActive) return
       this._showChoices(choices)
     })
 
     e.on(GameEvents.SCENE_CHANGE, ({ key }) => {
-      this._changeBackground(key)
+      if (key === 'map') {
+        // Launch map as overlay — NarrativeScene stays awake
+        this._mapActive = true
+        this.scene.launch('MapScene')
+      } else {
+        // Stop MapScene if still running
+        if (this.scene.isActive('MapScene')) this.scene.stop('MapScene')
+        this._changeBackground(key)
+      }
+    })
+
+    // Reset map flag when MapScene stops
+    this.events.on('wake', () => { this._mapActive = false })
+
+    e.on(GameEvents.HIDE_CHARACTER, () => {
+      console.log('[NarrativeScene] HIDE_CHARACTER received, char:', !!this._mainCharacter)
+      if (this._mainCharacter) this._mainCharacter.setVisible(false)
+    })
+
+    e.on(GameEvents.SHOW_CHARACTER, () => {
+      if (this._mainCharacter) this._mainCharacter.setVisible(true)
     })
 
     e.on(GameEvents.MINIGAME_TRIGGER, ({ id, day, difficulty }) => {
@@ -132,6 +183,7 @@ export class NarrativeScene extends Phaser.Scene {
     e.on(GameEvents.MINIGAME_COMPLETE, () => {
       // Wake up after minigame finishes
       this.scene.wake('NarrativeScene')
+      if (this._mainCharacter) this._mainCharacter.setVisible(true)
     })
 
     e.on(GameEvents.STAMINA_DEPLETED, ({ day }) => {
@@ -181,14 +233,15 @@ export class NarrativeScene extends Phaser.Scene {
   _showChoices(choices) {
     this._clearChoices()
     this._continueHint.setAlpha(0)
+    const dpr = window.devicePixelRatio || 1
 
     choices.forEach((choice, i) => {
-      const btn = this.add.text(0, i * 48, `▷  ${choice.text}`, {
-        fontSize: '18px',
+      const btn = this.add.text(0, i * 48 * dpr, `▷  ${choice.text}`, {
+        fontSize: `${18 * dpr}px`,
         fontFamily: 'serif',
         color: '#cccccc',
         backgroundColor: '#111111',
-        padding: { x: 16, y: 8 },
+        padding: { x: 16 * dpr, y: 8 * dpr },
       })
         .setOrigin(0.5, 0)
         .setInteractive({ useHandCursor: true })
@@ -210,10 +263,14 @@ export class NarrativeScene extends Phaser.Scene {
 
   _changeBackground(key) {
     const textureKey = `bg_${key}`
+    console.log('[NarrativeScene] _changeBackground', key, 'exists:', this.textures.exists(textureKey))
     if (this.textures.exists(textureKey)) {
-      this._bg.setTexture(textureKey)
+      const W = this.scale.width
+      const H = this.scale.height
+      // Scale up village_morning by 10%, others fill exactly
+      const scale = key === 'village_morning' ? 1.1 : 1.0
+      this._bg.setTexture(textureKey).setDisplaySize(W * scale, H * scale)
     }
-    // Graceful fallback: keep current bg if texture not loaded yet
   }
 
   // ── Minigame handoff ────────────────────────────────────────────────────
@@ -228,6 +285,7 @@ export class NarrativeScene extends Phaser.Scene {
       console.warn(`[NarrativeScene] Unknown minigame id: ${id}`)
       return
     }
+    if (this._mainCharacter) this._mainCharacter.setVisible(false)
     this.scene.sleep('NarrativeScene')
     this.scene.launch(targetScene, { day, difficulty })
   }
@@ -248,12 +306,65 @@ export class NarrativeScene extends Phaser.Scene {
     }
   }
 
-  // ── Placeholder (remove when Ink is wired up) ───────────────────────────
+  // ── Time travel transition ─────────────────────────────────────────────────────
 
-  _showPlaceholderDialogue() {
-    this._showDialogue(
-      '主角',
-      '林子边缘。光线渐暗。\n\n[占位对话 — 连接 Ink 后替换]'
-    )
+  _playTimeTransition(onComplete) {
+    const cam = this.cameras.main
+
+    // — Hide all UI ——————————————————————————————————————————————
+    const { box } = this._dialogueElements
+    box.setVisible(false)
+    this._speakerText.setVisible(false)
+    this._dialogueText.setVisible(false)
+    this._continueHint.setVisible(false)
+    if (this._mainCharacter) this._mainCharacter.setVisible(false)
+    if (this._bgOverlay)     this._bgOverlay.setAlpha(0)
+
+    // — Phase 1: Blur in ——————————————————————————————————————————
+    const blurFX = cam.postFX.addBlur(0, 0.5, 0.5, 0)
+    this.tweens.addCounter({
+      from: 0, to: 6, duration: 2400, ease: 'Sine.easeIn',
+      onUpdate: t => { blurFX.strength = t.getValue() },
+    })
+
+    // — Phase 2: Spin + zoom ——————————————————————————————————————
+    this.tweens.add({
+      targets: cam, rotation: Phaser.Math.DegToRad(90),
+      duration: 3300, ease: 'Expo.easeIn',
+    })
+    cam.zoomTo(4.0, 3300, 'Expo.easeIn')
+
+    // — Phase 3: Camera fade to black (screen-space, rotation-proof) ————
+    this.time.delayedCall(2400, () => {
+      cam.fadeOut(1500, 0, 0, 0)
+      cam.once('camerafadeoutcomplete', () => {
+        // Reset camera while screen is fully black
+        cam.postFX.remove(blurFX)
+        cam.zoomTo(1, 1)
+        cam.setRotation(0)
+
+        // Switch bg while fully black so background2 never shows
+        this._changeBackground('village_morning')
+        if (this._bgOverlay) this._bgOverlay.setAlpha(1.0)
+
+        // Hold black 2s, then simple fade in
+        this.time.delayedCall(2000, () => {
+          cam.fadeIn(800, 0, 0, 0)
+
+          cam.once('camerafadeincomplete', () => {
+            const W = this.scale.width
+            const H = this.scale.height
+
+            // Show dialogue box immediately — map will overlay on top
+            box.setVisible(true)
+            this._speakerText.setVisible(true)
+            this._dialogueText.setVisible(true)
+            this.game.events.emit(GameEvents.PROLOGUE_END)
+            onComplete()
+          })
+        })
+      })
+    })
   }
+
 }

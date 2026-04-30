@@ -25,32 +25,9 @@ git -v     # 应该显示版本号
 
 ### 2. 建 GitHub Repository
 
-**由其中一人操作，另一人等待邀请：**
-
-1. 打开 [github.com](https://github.com)，点右上角 **+** → **New repository**
-2. Repository name: `wilderness-game`
-3. 选 **Private**
-4. **不要**勾 Add README（我们自己有）
-5. 点 **Create repository**
-6. 复制页面上的 SSH 或 HTTPS URL
-
 ---
 
 ### 3. 把这个骨架推上去
-
-把项目文件夹放到你的电脑上，然后：
-
-```bash
-cd wilderness-game        # 进入项目文件夹
-git init
-git add .
-git commit -m "初始骨架"
-git branch -M main
-git remote add origin <你的GitHub URL>
-git push -u origin main
-```
-
-然后在 GitHub repo 页面 → **Settings** → **Collaborators** → 添加另一个开发者。
 
 ---
 
@@ -69,8 +46,6 @@ cd wilderness-game
 npm install
 npm run dev
 ```
-
-浏览器会自动打开 `http://localhost:3000`，你会看到一个黑色背景 + 占位对话文字，右上角有火焰图标和日期计数。这就是骨架跑起来了。✅
 
 ---
 

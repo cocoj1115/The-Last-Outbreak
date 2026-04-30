@@ -3,6 +3,28 @@ import { GameEvents } from '../systems/GameEvents.js'
 import { StaminaSystem } from '../systems/StaminaSystem.js'
 import { DaySystem } from '../systems/DaySystem.js'
 
+/** Set to false for normal game (Onboarding → story). */
+const DEV_PATH_B_DAY2_FIRE = true
+
+/**
+ * Minimal stub so fire minigames can read Ink variables without NarrativeScene.
+ * Tweak `_vars` for poor site / HARD ignition, etc.
+ */
+function createInkBridgeStub() {
+  const _vars = {
+    campsite_quality: 'good', // 'poor' = rain bias in collect + ignite
+    mg_fire_collect_score: 'EASY', // EASY | MEDIUM | HARD (read by FireIgnite after collect)
+  }
+  return {
+    getVariable(name) {
+      return _vars[name]
+    },
+    setVariable(name, value) {
+      _vars[name] = value
+    },
+  }
+}
+
 /**
  * BootScene
  * Loads all assets, initialises global systems, then hands off to NarrativeScene.
@@ -14,14 +36,33 @@ export class BootScene extends Phaser.Scene {
   }
 
   preload() {
-    // ── Loading bar ──────────────────────────────────────────────────────
+    const dpr = window.devicePixelRatio || 1
+    // ── Loading bar ───────────────────────────────────────────────────────
     const { width, height } = this.scale
-    const bar = this.add.rectangle(width / 2, height / 2, 4, 4, 0x888888)
-    const track = this.add.rectangle(width / 2, height / 2, 400, 4, 0x333333)
+    const bar = this.add.rectangle(width / 2, height / 2, 4 * dpr, 4 * dpr, 0x888888)
+    const track = this.add.rectangle(width / 2, height / 2, 400 * dpr, 4 * dpr, 0x333333)
 
     this.load.on('progress', (value) => {
-      bar.setSize(400 * value, 4)
+      bar.setSize(400 * dpr * value, 4 * dpr)
     })
+
+    // ── Montserrat (used by OnboardingScene button) ──────────────────────
+    const _fontLink = document.createElement('link')
+    _fontLink.rel  = 'stylesheet'
+    _fontLink.href = 'https://fonts.googleapis.com/css2?family=Montserrat:wght@700&family=IM+Fell+English&display=swap'
+    document.head.appendChild(_fontLink)
+
+    // ── UI & narrative assets ────────────────────────────────────────────
+    this.load.image('onboarding1', 'assets/onboarding1.png')
+    this.load.image('dialog_box', 'assets/dialog_box.png')
+    this.load.image('dialogue_card', 'assets/dialogue_card.png')
+    this.load.image('maincharacter', 'assets/maincharacter-default2.png')
+    this.load.image('bg_background1', 'assets/background1.jpg')
+    this.load.image('bg_background2', 'assets/background2.jpg')
+    this.load.image('bg_village_morning', 'assets/village-bright-morning.jpg')
+    this.load.image('char_sleeping', 'assets/main-character-sleeping.png')
+    this.load.image('bg_map', 'assets/map_all.jpg')
+    this.load.image('map_village', 'assets/map_village.png')
 
     // ── Placeholder assets (replace with real files later) ───────────────
     // Backgrounds
@@ -29,7 +70,7 @@ export class BootScene extends Phaser.Scene {
     // this.load.image('bg_forest_night', 'assets/images/bg_forest_night.jpg')
 
     // Ink story JSON (compile .ink → .ink.json with Inky app or inklecate)
-    // this.load.json('story', 'assets/story/main.ink.json')
+    this.load.json('story', 'assets/story/main.ink.json')
 
     // ── Dev placeholder graphics (drawn in code, no files needed) ────────
     // These let the game run before any real art exists.
@@ -45,32 +86,40 @@ export class BootScene extends Phaser.Scene {
     this.registry.set('stamina', stamina)
     this.registry.set('days', days)
 
-    // ── Start persistent HUD on top of everything ────────────────────────
-    this.scene.launch('HUDScene')
-
-    // ── Hand off to narrative ────────────────────────────────────────────
     this.game.events.emit(GameEvents.GAME_READY)
-    this.scene.start('NarrativeScene')
+    this.scene.launch('DebugScene')
+
+    if (DEV_PATH_B_DAY2_FIRE) {
+      this.registry.set('inkBridge', createInkBridgeStub())
+      this.registry.set('fuelStock', 5)
+      /** When true, FireCollectMinigame jumps to FireIgniteMinigame after pack is full. */
+      this.registry.set('devQuickFireChain', true)
+      this.scene.start('FireCollectMinigame', { day: 2 })
+      return
+    }
+
+    this.scene.start('OnboardingScene')
   }
 
   // ── Private ─────────────────────────────────────────────────────────────
 
   _createPlaceholderTextures() {
+    const dpr = window.devicePixelRatio || 1
     const g = this.make.graphics({ x: 0, y: 0, add: false })
 
     // Background placeholder
     g.fillStyle(0x1a2a1a)
-    g.fillRect(0, 0, 1280, 720)
-    g.generateTexture('bg_placeholder', 1280, 720)
+    g.fillRect(0, 0, 1280 * dpr, 720 * dpr)
+    g.generateTexture('bg_placeholder', 1280 * dpr, 720 * dpr)
 
     // Character portrait placeholder
     g.clear()
     g.fillStyle(0x2a2a2a)
-    g.fillRect(0, 0, 200, 300)
+    g.fillRect(0, 0, 200 * dpr, 300 * dpr)
     g.fillStyle(0x888888)
-    g.fillCircle(100, 80, 50)
-    g.fillRect(50, 140, 100, 150)
-    g.generateTexture('portrait_placeholder', 200, 300)
+    g.fillCircle(100 * dpr, 80 * dpr, 50 * dpr)
+    g.fillRect(50 * dpr, 140 * dpr, 100 * dpr, 150 * dpr)
+    g.generateTexture('portrait_placeholder', 200 * dpr, 300 * dpr)
 
     g.destroy()
   }
