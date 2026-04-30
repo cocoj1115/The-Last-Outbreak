@@ -1,4 +1,5 @@
 import Phaser from 'phaser'
+import { gsap } from 'gsap'
 import { GameEvents } from '../../systems/GameEvents.js'
 import { InkBridge } from '../../systems/InkBridge.js'
 
@@ -24,6 +25,9 @@ export class NarrativeScene extends Phaser.Scene {
     this._bridge = null
     this._dialogueElements = {}
     this._choiceButtons = []
+    this._villageActive = false
+    this._waitingForVillage = false
+    this._villageTalkStates = {}
   }
 
   create() {
@@ -41,10 +45,48 @@ export class NarrativeScene extends Phaser.Scene {
     // ── Dark overlay ─────────────────────────────────────────────────────
     this._bgOverlay = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.45)
 
-    // ── Portrait ───────────────────────────────────────────────────────────
-    this._portrait = this.add.image(120 * dpr, H - 160 * dpr, 'portrait_placeholder')
-      .setOrigin(0.5, 1)
+    // ── Vignette (top + sides focus) ────────────────────────────────────
+    {
+      const vc = document.createElement('canvas')
+      vc.width = Math.ceil(W); vc.height = Math.ceil(H)
+      const vx = vc.getContext('2d')
+      // Left edge
+      const gL = vx.createLinearGradient(0, 0, W * 0.28, 0)
+      gL.addColorStop(0, 'rgba(0,0,0,0.72)')
+      gL.addColorStop(1, 'rgba(0,0,0,0)')
+      vx.fillStyle = gL; vx.fillRect(0, 0, W, H)
+      // Right edge
+      const gR = vx.createLinearGradient(W, 0, W * 0.72, 0)
+      gR.addColorStop(0, 'rgba(0,0,0,0.72)')
+      gR.addColorStop(1, 'rgba(0,0,0,0)')
+      vx.fillStyle = gR; vx.fillRect(0, 0, W, H)
+      // Top edge
+      const gT = vx.createLinearGradient(0, 0, 0, H * 0.32)
+      gT.addColorStop(0, 'rgba(0,0,0,0.72)')
+      gT.addColorStop(1, 'rgba(0,0,0,0)')
+      vx.fillStyle = gT; vx.fillRect(0, 0, W, H)
+      this.textures.addCanvas('__vignette__', vc)
+      this.add.image(W / 2, H / 2, '__vignette__').setDepth(50)
+    }
+
+    // ── Portrait (NPC) ─────────────────────────────────────────────────────
+    this._portrait = this.add.image(W * 0.089, H * 0.750, null)
+      .setOrigin(0, 1)
       .setAlpha(0)
+      .setDepth(4000)
+      .setVisible(false)
+
+    // ── Portrait (Aiden) ─────────────────────────────────────────────────
+    this._portraitAiden = this.add.image(W * 0.655, H * 0.780, 'portrait_aiden')
+      .setOrigin(0, 1)
+      .setAlpha(0)
+      .setDepth(4000)
+      .setVisible(false)
+    {
+      const scaleW = (1280 * 0.686 * 1.92) / this._portraitAiden.width
+      const scaleH = (720 * 0.806 * 1.92) / this._portraitAiden.height
+      this._portraitAiden.setScale(Math.min(scaleW, scaleH))
+    }
 
     // ── Main character ───────────────────────────────────────────────────
     const charSize = H * 0.558
@@ -87,7 +129,7 @@ export class NarrativeScene extends Phaser.Scene {
       'dialogue_card', undefined,
       boxW, boxH,
       80, 80, 80, 80,
-    )
+    ).setDepth(4500)
 
     // Speaker name
     const textX = W * 0.099
@@ -97,7 +139,7 @@ export class NarrativeScene extends Phaser.Scene {
       fontFamily: '"IM Fell English", serif',
       color: '#5c3a00',
       fontStyle: 'italic',
-    })
+    }).setDepth(4510)
 
     // Dialogue text
     this._dialogueText = this.add.text(textX, textY + 30 * dpr, '', {
@@ -106,13 +148,13 @@ export class NarrativeScene extends Phaser.Scene {
       color: '#2a1500',
       wordWrap: { width: W - textX - 80 * dpr },
       lineSpacing: 6 * dpr,
-    })
+    }).setDepth(4510)
 
     // "Click to continue" hint
     this._continueHint = this.add.text(W - 80 * dpr, H - 36 * dpr, '▶', {
       fontSize: `${14 * dpr}px`,
       color: '#8b5e00',
-    }).setAlpha(0)
+    }).setAlpha(0).setDepth(4510)
 
     // Click anywhere on box to advance
     box.setInteractive()
@@ -127,8 +169,8 @@ export class NarrativeScene extends Phaser.Scene {
       repeat: -1,
     })
 
-    // Choice container
-    this._choiceContainer = this.add.container(W / 2, H - 220 * dpr)
+    // Choice container — depth 4520 so it sits above dialogue box (4500)
+    this._choiceContainer = this.add.container(W / 2, H * 0.730).setDepth(4520)
 
     this._dialogueElements = { box, boxY, boxH, pad }
   }
@@ -139,6 +181,9 @@ export class NarrativeScene extends Phaser.Scene {
     const e = this.game.events
 
     e.on(GameEvents.DIALOGUE_LINE, ({ text, speaker, tags }) => {
+      if (tags && tags.portrait !== undefined) {
+        this._showPortrait(tags.portrait)
+      }
       if (tags && tags.time_transition) {
         this._playTimeTransition(() => this._showDialogue(speaker, text))
       } else {
@@ -147,13 +192,22 @@ export class NarrativeScene extends Phaser.Scene {
     })
 
     e.on(GameEvents.CHOICES_AVAILABLE, ({ choices }) => {
-      // While the map scene is handling navigation, suppress the choice UI
-      if (this._mapActive) return
+      // While the map or village scene is handling navigation, suppress the choice UI
+      if (this._mapActive || this._villageActive || this._waitingForVillage) return
       this._showChoices(choices)
     })
 
     e.on(GameEvents.SCENE_CHANGE, ({ key }) => {
-      if (key === 'map') {
+      if (key === 'village_hub') {
+        console.log('[DEBUG] village_hub triggered')
+        // Set flag and capture talk states — VillageScene launches on INK_WAITING
+        this._waitingForVillage = true
+        this._villageTalkStates = {
+          mara: this._bridge?.getVariable('talked_to_mara') === true,
+          finn: this._bridge?.getVariable('talked_to_finn') === true,
+          isla: this._bridge?.getVariable('talked_to_isla') === true,
+        }
+      } else if (key === 'map') {
         // Launch map as overlay — NarrativeScene stays awake
         this._mapActive = true
         this.scene.launch('MapScene')
@@ -164,8 +218,39 @@ export class NarrativeScene extends Phaser.Scene {
       }
     })
 
-    // Reset map flag when MapScene stops
-    this.events.on('wake', () => { this._mapActive = false })
+    // INK_WAITING — used to hand off to VillageScene after # scene:village_hub
+    e.on(GameEvents.INK_WAITING, () => {
+      console.log('[DEBUG] INK_WAITING, waitingForVillage:', this._waitingForVillage)
+      if (this._waitingForVillage) {
+        this._waitingForVillage = false
+        this._villageActive = true
+        this.scene.sleep('NarrativeScene')
+        this.scene.launch('VillageScene', { talkStates: this._villageTalkStates })
+      }
+    })
+
+    // Resume from VillageScene — jump to selected NPC entry
+    e.on(GameEvents.VILLAGE_NPC_CLICKED, ({ id }) => {
+      this._villageActive = false
+      if (this.scene.isSleeping('NarrativeScene')) {
+        this.scene.wake('NarrativeScene')
+      }
+      if (this.scene.isActive('VillageScene')) this.scene.stop('VillageScene')
+      if (this._bridge) this._bridge.jumpToKnot(id + '_entry')
+    })
+
+    // Resume from VillageScene — head out
+    e.on(GameEvents.VILLAGE_LEAVE, () => {
+      this._villageActive = false
+      if (this.scene.isSleeping('NarrativeScene')) {
+        this.scene.wake('NarrativeScene')
+      }
+      if (this.scene.isActive('VillageScene')) this.scene.stop('VillageScene')
+      if (this._bridge) this._bridge.jumpToKnot('day1_end')
+    })
+
+    // Reset map/village flags when those scenes stop
+    this.events.on('wake', () => { this._mapActive = false; this._villageActive = false })
 
     e.on(GameEvents.HIDE_CHARACTER, () => {
       console.log('[NarrativeScene] HIDE_CHARACTER received, char:', !!this._mainCharacter)
@@ -198,7 +283,6 @@ export class NarrativeScene extends Phaser.Scene {
   // ── Dialogue display ────────────────────────────────────────────────────
 
   _showDialogue(speaker, text) {
-    this._clearChoices()
     this._speakerText.setText(speaker ?? '')
     this._dialogueText.setText('')
     this._continueHint.setAlpha(0)
@@ -233,26 +317,63 @@ export class NarrativeScene extends Phaser.Scene {
   _showChoices(choices) {
     this._clearChoices()
     this._continueHint.setAlpha(0)
-    const dpr = window.devicePixelRatio || 1
+    const dpr    = window.devicePixelRatio || 1
+    const W      = this.scale.width
+    const H      = this.scale.height
+    const lineH  = 52 * dpr
+    const padX   = 24 * dpr
+
+    // Anchor: top-left of first row at W*0.344, H*0.298
+    this._choiceContainer.setPosition(W * 0.344, H * 0.298)
 
     choices.forEach((choice, i) => {
-      const btn = this.add.text(0, i * 48 * dpr, `▷  ${choice.text}`, {
-        fontSize: `${18 * dpr}px`,
-        fontFamily: 'serif',
-        color: '#cccccc',
-        backgroundColor: '#111111',
-        padding: { x: 16 * dpr, y: 8 * dpr },
-      })
-        .setOrigin(0.5, 0)
-        .setInteractive({ useHandCursor: true })
-        .on('pointerover', () => btn.setColor('#ffffff'))
-        .on('pointerout', () => btn.setColor('#cccccc'))
+      const rowY = i * lineH + lineH / 2
+
+      // Arrow indicator — hidden by default
+      const arrow = this.add.text(0, rowY, '➤', {
+        fontSize: `${17 * dpr}px`,
+        fontFamily: '"IM Fell English", serif',
+        color: '#FFD54F',
+        shadow: { x: 0, y: 0, color: '#FFD54F', blur: 14, fill: true },
+      }).setOrigin(0, 0.5).setAlpha(0)
+
+      // Choice label
+      const label = this.add.text(padX, rowY, choice.text, {
+        fontSize: `${23 * dpr}px`,
+        fontFamily: '"IM Fell English", serif',
+        fontStyle: 'bold',
+        color: '#EFE0C0',
+        shadow: { x: 1, y: 2, color: '#1a0c00', blur: 5, fill: true },
+      }).setOrigin(0, 0.5).setInteractive({ useHandCursor: true })
+
+      let arrowTween = null
+
+      label
+        .on('pointerover', () => {
+          label.setColor('#FFD54F')
+          label.setShadow(0, 0, '#FFD54F', 18, true, true)
+          arrow.setAlpha(1)
+          if (arrowTween) arrowTween.stop()
+          arrowTween = this.tweens.add({
+            targets: arrow,
+            alpha: { from: 0.45, to: 1.0 },
+            duration: 900, yoyo: true, repeat: -1,
+            ease: 'Sine.easeInOut',
+          })
+        })
+        .on('pointerout', () => {
+          label.setColor('#EFE0C0')
+          label.setShadow(1, 2, '#1a0c00', 5, true, false)
+          arrow.setAlpha(0)
+          if (arrowTween) { arrowTween.stop(); arrowTween = null }
+        })
         .on('pointerup', () => {
+          this._clearChoices()
           this.game.events.emit(GameEvents.CHOICE_MADE, { index: choice.index })
         })
 
-      this._choiceContainer.add(btn)
-      this._choiceButtons.push(btn)
+      this._choiceContainer.add([arrow, label])
+      this._choiceButtons.push(arrow, label)
     })
   }
 
@@ -267,8 +388,8 @@ export class NarrativeScene extends Phaser.Scene {
     if (this.textures.exists(textureKey)) {
       const W = this.scale.width
       const H = this.scale.height
-      // Scale up village_morning by 10%, others fill exactly
-      const scale = key === 'village_morning' ? 1.1 : 1.0
+      // Scale up village backgrounds by 21%, others fill exactly
+      const scale = (key === 'village_morning' || key === 'village_day1') ? 1.21 : 1.0
       this._bg.setTexture(textureKey).setDisplaySize(W * scale, H * scale)
     }
   }
@@ -295,6 +416,42 @@ export class NarrativeScene extends Phaser.Scene {
   _showRetryPrompt(day) {
     // TODO: overlay "You're exhausted. Rest costs 1 day. [Rest] [Push through]"
     console.log(`[NarrativeScene] Stamina depleted on day ${day}. Show retry prompt.`)
+  }
+
+  _showPortrait(key) {
+    console.log('[Portrait] showing:', key)
+    if (key === 'none' || key === null) {
+      gsap.killTweensOf(this._portrait)
+      gsap.killTweensOf(this._portraitAiden)
+      gsap.to(this._portrait, {
+        alpha: 0, duration: 0.3,
+        onComplete: () => this._portrait.setVisible(false),
+      })
+      gsap.to(this._portraitAiden, {
+        alpha: 0, duration: 0.3,
+        onComplete: () => this._portraitAiden.setVisible(false),
+      })
+    } else if (key === 'aiden') {
+      gsap.killTweensOf(this._portrait)
+      gsap.killTweensOf(this._portraitAiden)
+      this._portrait.setVisible(false)
+      this._portrait.setAlpha(0)
+      this._portraitAiden.setVisible(true)
+      gsap.to(this._portraitAiden, { alpha: 1, duration: 0.3 })
+    } else {
+      gsap.killTweensOf(this._portrait)
+      gsap.killTweensOf(this._portraitAiden)
+      this._portraitAiden.setVisible(false)
+      this._portraitAiden.setAlpha(0)
+      this._portrait.setTexture('portrait_' + key)
+      const maxW = 864, maxH = 1160
+      const scaleW = maxW / this._portrait.width
+      const scaleH = maxH / this._portrait.height
+      const scale = Math.min(scaleW, scaleH)
+      this._portrait.setScale(scale)
+      this._portrait.setVisible(true)
+      gsap.to(this._portrait, { alpha: 1, duration: 0.3 })
+    }
   }
 
   _triggerWorstEnding() {

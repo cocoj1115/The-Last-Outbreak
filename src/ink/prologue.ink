@@ -32,7 +32,7 @@ Five days. Two herbs. I need to move fast.
 
 # scene:map
 # speaker:
-The village with the Moonleaf seems closer. I'll start there.
+The village with the Shimmerleaf seems closer. I'll start there.
 
 * [Head to the village]
     -> day1_arrival

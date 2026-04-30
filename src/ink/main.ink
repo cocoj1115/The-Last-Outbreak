@@ -14,10 +14,22 @@ VAR has_water_pouch = false
 VAR talked_to_mara = false
 VAR talked_to_finn = false
 VAR talked_to_isla = false
+VAR campsite_quality = ""
+VAR fire_quality = ""
+VAR next_day_stamina_max = 5
+VAR buffer_days_used = 0
+VAR buffer_days_total = 2
+VAR mg_campsite_success = false
+VAR mg_fire_ignite_success = false
+VAR mg_fire_sustain_success = false
+VAR mg_search_success = false
+VAR stamina_depleted = false
+VAR fail_reason = ""
 
 // ── Story files ───────────────────────────────────────────────────────────
 INCLUDE prologue.ink
 INCLUDE day1.ink
+INCLUDE day2.ink
 
 // ── Start ─────────────────────────────────────────────────────────────────
 -> prologue
