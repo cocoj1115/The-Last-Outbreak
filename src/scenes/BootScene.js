@@ -2,7 +2,6 @@ import Phaser from 'phaser'
 import { GameEvents } from '../systems/GameEvents.js'
 import {
   DEV_MOCK_DAY2_FIRE,
-  DAY2_FIRE_MOCK,
   seedDay2FireMockRegistry,
   resolveDay2FireMockEntryScene,
   getDay2FireMockBootPayload,
@@ -10,17 +9,19 @@ import {
 import { StaminaSystem } from '../systems/StaminaSystem.js'
 import { DaySystem } from '../systems/DaySystem.js'
 
-/** Set to false for normal game (Onboarding → story). */
+/**
+ * Optional: jump straight to FireCollect (forest) with stub Ink; does not use day2FireMock.
+ * Keep false when using `DEV_MOCK_DAY2_FIRE` in `day2FireMock.js` (recommended for Day2 campsite V2).
+ */
 const DEV_PATH_B_DAY2_FIRE = false
 
 /**
  * Minimal stub so fire minigames can read Ink variables without NarrativeScene.
- * Tweak `_vars` for poor site / HARD ignition, etc.
  */
 function createInkBridgeStub() {
   const _vars = {
-    campsite_quality: 'good', // 'poor' = rain bias in collect + ignite
-    mg_fire_collect_score: 'EASY', // EASY | MEDIUM | HARD (read by ignite step in FireCampsite)
+    campsite_quality: 'good',
+    mg_fire_collect_score: 'EASY',
   }
   return {
     getVariable(name) {
@@ -35,7 +36,6 @@ function createInkBridgeStub() {
 /**
  * BootScene
  * Loads all assets, initialises global systems, then hands off to NarrativeScene.
- * Dev A and Dev B both add their asset loads here.
  */
 export class BootScene extends Phaser.Scene {
   constructor() {
@@ -44,22 +44,20 @@ export class BootScene extends Phaser.Scene {
 
   preload() {
     const dpr = window.devicePixelRatio || 1
-    // ── Loading bar ───────────────────────────────────────────────────────
     const { width, height } = this.scale
     const bar = this.add.rectangle(width / 2, height / 2, 4 * dpr, 4 * dpr, 0x888888)
-    const track = this.add.rectangle(width / 2, height / 2, 400 * dpr, 4 * dpr, 0x333333)
+    this.add.rectangle(width / 2, height / 2, 400 * dpr, 4 * dpr, 0x333333)
 
     this.load.on('progress', (value) => {
       bar.setSize(400 * dpr * value, 4 * dpr)
     })
 
-    // ── Montserrat (used by OnboardingScene button) ──────────────────────
     const _fontLink = document.createElement('link')
-    _fontLink.rel  = 'stylesheet'
-    _fontLink.href = 'https://fonts.googleapis.com/css2?family=Montserrat:wght@700&family=IM+Fell+English&display=swap'
+    _fontLink.rel = 'stylesheet'
+    _fontLink.href =
+      'https://fonts.googleapis.com/css2?family=Montserrat:wght@700&family=IM+Fell+English&display=swap'
     document.head.appendChild(_fontLink)
 
-    // ── UI & narrative assets ────────────────────────────────────────────
     this.load.image('onboarding1', 'assets/onboarding1.png')
     this.load.image('dialog_box', 'assets/dialog_box.png')
     this.load.image('dialogue_card', 'assets/dialogue_card.png')
@@ -67,7 +65,7 @@ export class BootScene extends Phaser.Scene {
     this.load.image('bg_background1', 'assets/background1.jpg')
     this.load.image('bg_background2', 'assets/background2.jpg')
     this.load.image('bg_village_morning', 'assets/village-bright-morning.jpg')
-    this.load.image('bg_village_day1',    'assets/village-bright-morning.jpg')
+    this.load.image('bg_village_day1', 'assets/village-bright-morning.jpg')
     this.load.image('char_sleeping', 'assets/main-character-sleeping.png')
     this.load.image('bg_map', 'assets/map_all.jpg')
     this.load.image('map_village', 'assets/map_village.png')
@@ -76,22 +74,12 @@ export class BootScene extends Phaser.Scene {
     this.load.image('portrait_isla', 'assets/NPC_Isla.png')
     this.load.image('portrait_aiden', 'assets/main character-thinking.png')
 
-    // ── Placeholder assets (replace with real files later) ───────────────
-    // Backgrounds
-    // this.load.image('bg_forest_day', 'assets/images/bg_forest_day.jpg')
-    // this.load.image('bg_forest_night', 'assets/images/bg_forest_night.jpg')
-
-    // Ink story JSON (compile .ink → .ink.json with Inky app or inklecate)
     this.load.json('story', 'assets/story/main.ink.json')
 
-    // ── Dev placeholder graphics (drawn in code, no files needed) ────────
-    // These let the game run before any real art exists.
     this._createPlaceholderTextures()
   }
 
   create() {
-    // ── Initialise global systems on game.registry ───────────────────────
-    // Both scenes access these via this.registry or this.game.registry
     const stamina = new StaminaSystem(this.game.events)
     const days = new DaySystem(this.game.events)
 
@@ -104,13 +92,12 @@ export class BootScene extends Phaser.Scene {
     if (DEV_PATH_B_DAY2_FIRE) {
       this.registry.set('inkBridge', createInkBridgeStub())
       this.registry.set('fuelStock', 5)
-      /** When true, FireCollectMinigame jumps straight to the ignite step of FireCampsiteMinigame. */
+      /** Collect only: after pack full, jumps per FireCollectMinigame (quick → ignite step in campsite). */
       this.registry.set('devQuickFireChain', true)
       this.scene.start('FireCollectMinigame', { day: 2 })
       return
     }
 
-    /** Tunable mock state for Day2 fire — see `src/dev/day2FireMock.js`. */
     if (DEV_MOCK_DAY2_FIRE) {
       seedDay2FireMockRegistry(this.registry)
       this.scene.launch('HUDScene')
@@ -121,18 +108,14 @@ export class BootScene extends Phaser.Scene {
     this.scene.start('OnboardingScene')
   }
 
-  // ── Private ─────────────────────────────────────────────────────────────
-
   _createPlaceholderTextures() {
     const dpr = window.devicePixelRatio || 1
     const g = this.make.graphics({ x: 0, y: 0, add: false })
 
-    // Background placeholder
     g.fillStyle(0x1a2a1a)
     g.fillRect(0, 0, 1280 * dpr, 720 * dpr)
     g.generateTexture('bg_placeholder', 1280 * dpr, 720 * dpr)
 
-    // Character portrait placeholder
     g.clear()
     g.fillStyle(0x2a2a2a)
     g.fillRect(0, 0, 200 * dpr, 300 * dpr)

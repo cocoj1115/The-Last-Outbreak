@@ -35,7 +35,8 @@ const config = {
     BootScene, OnboardingScene, NarrativeScene, VillageScene, MapScene,
     CampsiteMinigame,
     FireMinigame,
-    FireCollectMinigame, FireCampsiteMinigame,
+    FireCollectMinigame,
+    FireCampsiteMinigame,
     HUDScene, DebugScene,
   ],
 }
