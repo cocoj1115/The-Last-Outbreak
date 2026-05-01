@@ -13,7 +13,7 @@ I became a doctor and spent many years searching for a cure.
 
 Finally, I found a lead.
 
-But the last ingredients — the Moonleaf, the Silverroot — they have been extinct for two hundred years.
+But the last ingredients — the Shimmerleaf, the Glaceweed — they have been extinct for two hundred years.
 
 # scene:background2
 # hide_character
@@ -32,7 +32,7 @@ Five days. Two herbs. I need to move fast.
 
 # scene:map
 # speaker:
-The village with the Shimmerleaf seems closer. I'll start there.
+There seems to be a village nearby. Someone there might know about the Shimmerleaf.
 
 * [Head to the village]
     -> day1_arrival

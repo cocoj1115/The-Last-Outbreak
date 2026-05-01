@@ -135,6 +135,7 @@ export class CampsiteMinigame extends Phaser.Scene {
     this._chooseBtnBg      = null
     this._chooseBtnLabel   = null
     this._dialogueBg       = null
+    this._speakerText      = null
     this._dialogueText     = null
   }
 
@@ -147,7 +148,7 @@ export class CampsiteMinigame extends Phaser.Scene {
     this._bg = this.add.image(W / 2, H / 2, this._overviewBgKey)
       .setDisplaySize(W, H).setDepth(0)
 
-    this._topText = this.add.text(W / 2, 48 * dpr,
+    this._topText = this.add.text(W / 2, 72 * dpr,
       'Two spots. I need to inspect each campsite first', {
         fontFamily: '"IM Fell English", serif',
         fontSize:   `${20 * dpr}px`,
@@ -175,23 +176,39 @@ export class CampsiteMinigame extends Phaser.Scene {
   // ── Dialogue box (confirmation only) ──────────────────────────────────────
 
   _buildDialogueBox(W, H, dpr) {
-    const boxH = 110 * dpr
-    const boxY = H - boxH - 16 * dpr
-    this._dialogueBg = this.add.rectangle(
-      W / 2, boxY + boxH / 2, W * 0.94, boxH, 0x140a02, 0.94
-    ).setStrokeStyle(1.5 * dpr, 0xb8943c, 0.8).setDepth(600)
-    this._dialogueText = this.add.text(W * 0.05, boxY + 16 * dpr, '', {
-      fontFamily:  '"IM Fell English", serif',
-      fontSize:    `${22 * dpr}px`,
-      color:       '#f0e0c8',
-      wordWrap:    { width: W * 0.90 },
-      lineSpacing: 4 * dpr,
-    }).setDepth(601)
+    const boxW = W * 0.946
+    const boxH = (H - Math.round(H * 0.699)) * 0.739
+    const boxX = W / 2
+    const boxY = H * 0.745
+
+    this._dialogueBg = this.add.nineslice(
+      boxX, boxY + boxH / 2,
+      'dialogue_card', undefined,
+      boxW, boxH,
+      80, 80, 80, 80,
+    ).setDepth(600).setVisible(false)
+
+    const textX = W * 0.099
+    this._speakerText = this.add.text(textX, H * 0.795, 'Aiden', {
+      fontSize:   `${Math.round(19.5 * dpr)}px`,
+      fontFamily: '"IM Fell English", serif',
+      color:      '#5c3a00',
+      fontStyle:  'italic',
+    }).setDepth(601).setVisible(false)
+
+    this._dialogueText = this.add.text(textX, H * 0.795 + 30 * dpr, '', {
+      fontSize:   `${Math.round(24.7 * dpr)}px`,
+      fontFamily: '"IM Fell English", serif',
+      color:      '#2a1500',
+      wordWrap:   { width: W - textX - 80 * dpr },
+      lineSpacing: 6 * dpr,
+    }).setDepth(601).setVisible(false)
   }
 
   _setDialogue(text, onClick) {
     const vis = text !== null
     this._dialogueBg.setVisible(vis)
+    this._speakerText.setVisible(vis)
     this._dialogueText.setVisible(vis)
     if (vis) this._dialogueText.setText(text)
     this._dialogueBg.removeAllListeners()
@@ -270,7 +287,7 @@ export class CampsiteMinigame extends Phaser.Scene {
   // ── Inspect header (top bar) ───────────────────────────────────────────────
 
   _buildInspectHeader(siteName, W, H, dpr) {
-    const y = 28 * dpr
+    const y = 60 * dpr
 
     const backBtn = this.add.text(24 * dpr, y, '← Back to both sites', {
       fontFamily: '"IM Fell English", serif',
@@ -297,22 +314,14 @@ export class CampsiteMinigame extends Phaser.Scene {
       // Clue counter on a second row, centred
       const progText = this.add.text(W / 2, y + 26 * dpr, `Clues remaining: ${this._maxClicks}`, {
         fontFamily: '"IM Fell English", serif',
-        fontSize:   `${15 * dpr}px`,
+        fontSize:   `${19 * dpr}px`,
         color:      '#c4a060',
         stroke:     '#000000',
         strokeThickness: 2 * dpr,
       }).setOrigin(0.5, 0.5).setDepth(300)
       this._progressText = progText
 
-      const windText = this.add.text(W - 24 * dpr, y, '↑  Wind: North', {
-        fontFamily: 'Georgia, serif',
-        fontSize:   `${14 * dpr}px`,
-        color:      '#c4a060',
-        stroke:     '#000000',
-        strokeThickness: 2 * dpr,
-      }).setOrigin(1, 0.5).setDepth(300)
-
-      this._inspectGroup.push(progText, windText)
+      this._inspectGroup.push(progText)
     } else {
       const progText = this.add.text(W - 24 * dpr, y, 'Inspected  0 / 4', {
         fontFamily: '"IM Fell English", serif',
@@ -402,7 +411,7 @@ export class CampsiteMinigame extends Phaser.Scene {
     const { title, body } = this._infoPanel
     if (!clue) {
       title.setText('Look around carefully.')
-      body.setText('Each clue may affect whether this campsite is safe in rain.')
+      body.setText('Each clue may affect whether this campsite is safe')
     } else if (clue._hint) {
       title.setText('')
       body.setText('I should inspect the area more carefully before deciding.')

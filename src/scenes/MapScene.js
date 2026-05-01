@@ -39,11 +39,7 @@ export class MapScene extends Phaser.Scene {
     // Village marker: bottom-left at (W*0.463, H*0.655)
     const markerX = W * 0.463
     const markerY = H * 0.655
-    this._buildActiveMarker(markerX, markerY, 'Moonleaf', 0xc49850)
-
-    const lockedX = mapX + mapW * 0.234
-    const lockedY = mapY + mapH * 0.486
-    this._buildLockedMarker(lockedX, lockedY, 'Ashfen Marsh — not yet', 0x444444)
+    this._buildActiveMarker(markerX, markerY, 'Village Hub', 0xc49850)
   }
 
   // ── Label card ─────────────────────────────────────────────────────────────
@@ -128,28 +124,6 @@ const iconSize = 256 * dpr
       this.time.delayedCall(150, () => { glowFX.outerStrength = 14 })
       this._onMarkerClick()
     })
-  }
-
-  _buildLockedMarker(x, y, label, color) {
-    const dpr = window.devicePixelRatio || 1
-    const r   = 12 * dpr
-
-    const dot = this.add.circle(x, y, r, color, 0.5)
-
-    // Lock icon cross
-    const gfx = this.add.graphics()
-    gfx.lineStyle(2 * dpr, 0x666666, 0.8)
-    gfx.beginPath()
-    gfx.moveTo(x - r * 0.5, y - r * 0.5)
-    gfx.lineTo(x + r * 0.5, y + r * 0.5)
-    gfx.moveTo(x + r * 0.5, y - r * 0.5)
-    gfx.lineTo(x - r * 0.5, y + r * 0.5)
-    gfx.strokePath()
-
-    // Hover label only, not interactive for click
-    const zone = this.add.zone(x, y, r * 5, r * 5).setInteractive()
-    zone.on('pointerover', () => this._showLabel(x, y, label))
-    zone.on('pointerout',  () => this._hideLabel())
   }
 
   // ── Click handler ──────────────────────────────────────────────────────────

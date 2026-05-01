@@ -358,7 +358,7 @@ export class FireBuildingCollect extends Phaser.Scene {
     // Placeholder until BG-FOREST-RAIN art is ready.
     this.add.rectangle(W / 2, H / 2, W, H, 0x0d1208)
 
-    this.add.text(W / 2, 30, 'Collect materials for the fire.', {
+    this.add.text(W / 2, 60 * (window.devicePixelRatio || 1), 'Collect materials for the fire.', {
       fontSize: '20px',
       fontFamily: 'Georgia, serif',
       fill: '#f0e6c8',
