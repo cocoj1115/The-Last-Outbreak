@@ -139,12 +139,13 @@ Two spots. One under a big oak — sheltered. One in a clearing — open sky but
 + [Under the oak — better shelter]
     # portrait:finn
     # speaker:Finn
-    That oak has three dead branches I can see from here. Any one comes down in the night... Clearing. Always the clearing.
+    That oak has three dead branches I can see from here. Any one comes down in the night... Always choose the clearing, which is the open area.
     -> finn_questions
 + [The clearing — open sky is safer]
     # portrait:finn
     # speaker:Finn
     Exactly. Wind you can deal with. A branch through your tent you cannot.
+
     { not has_rope:
         ~ has_rope = true
         # item:rope
@@ -196,7 +197,8 @@ A hollow between two hills — sheltered, soft ground. Or a flat open space on t
 +  [The hollow — sheltered and quiet]
     # portrait:isla
     # speaker:Isla
-    Cold air pools in hollows like water in a bowl. By midnight shivering. By dawn sick. The hillside. Cold flows down — remember that.
+    Cold air pools in hollows like water in a bowl. By midnight shivering. By dawn sick. 
+    Cold flows downhill — remember that.
     -> isla_questions
 +  [The hillside — higher and better air]
     # portrait:isla

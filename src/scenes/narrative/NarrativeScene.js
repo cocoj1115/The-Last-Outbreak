@@ -222,6 +222,19 @@ export class NarrativeScene extends Phaser.Scene {
       }
     })
 
+    // STORY_END — story reached -> END, fade out over 3s and return to title
+    e.on(GameEvents.STORY_END, () => {
+      this.cameras.main.fadeOut(3000, 0, 0, 0)
+      this.cameras.main.once(
+        Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE,
+        () => {
+          if (this.scene.isActive('HUDScene')) this.scene.stop('HUDScene')
+          this.scene.stop('NarrativeScene')
+          this.scene.start('OnboardingScene')
+        },
+      )
+    })
+
     // INK_WAITING — used to hand off to VillageScene after # scene:village_hub
     e.on(GameEvents.INK_WAITING, () => {
       console.log('[DEBUG] INK_WAITING, waitingForVillage:', this._waitingForVillage)

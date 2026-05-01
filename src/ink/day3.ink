@@ -274,10 +274,8 @@ One more night. This time I know where to stand.
 // ═════════════════════════════════════════════════════════════════════════════
 
 === day4_transition ===
-# day_advance
-# scene:map
-# speaker:Aiden
-Three herbs found.
-
-One more to go.
--> END
+{ herb_count >= 2:
+    -> good_ending
+- else:
+    -> worst_ending
+}

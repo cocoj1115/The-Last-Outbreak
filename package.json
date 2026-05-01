@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "ink": "inkjs-compiler src/ink/main.ink -o public/assets/story/main.ink.json"
   },
   "dependencies": {
     "gsap": "^3.12.5",

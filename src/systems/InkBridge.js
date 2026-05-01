@@ -84,6 +84,9 @@ export class InkBridge {
           index: i,
         })),
       })
+    } else if (!this.story.canContinue) {
+      // Story truly ended (-> END reached)
+      this.events.emit(GameEvents.STORY_END)
     } else {
       this.events.emit(GameEvents.INK_WAITING)
     }

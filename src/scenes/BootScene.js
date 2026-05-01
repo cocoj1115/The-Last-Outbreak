@@ -84,6 +84,8 @@ export class BootScene extends Phaser.Scene {
     this.load.image('d3_bg_site_a_rain',     'assets/d3_bg_site_a_rain.webp')
     this.load.image('d3_bg_site_b_rain',     'assets/d3_bg_site_b_rain.webp')
     this.load.image('bg_path_petra',      'assets/bg_path_Petra.webp')
+    this.load.image('bg_ending_good',     'assets/bg_ending_good.png')
+    this.load.image('bg_ending_bad',      'assets/bg_ending_bad.png')
     this.load.image('char_sleeping', 'assets/main-character-sleeping.webp')
     this.load.image('bg_map', 'assets/map_all.webp')
     this.load.image('map_village', 'assets/map_village.webp')
