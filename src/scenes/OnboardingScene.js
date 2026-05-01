@@ -72,6 +72,32 @@ export class OnboardingScene extends Phaser.Scene {
       .on('pointerout',   () => this._setColor('#1B262C', 0x1B262C, false))
       .on('pointerdown',  () => this._setColor('#0d1518', 0x0d1518, false))
       .on('pointerup',    () => this._startGame())
+
+    // ── Dev jump links ─────────────────────────────────────────────────────
+    document.fonts.load(`12px "IM Fell English"`).finally(() => {
+      if (!this.scene.isActive()) return
+
+      const linkY = H * 0.96
+      const linkStyle = {
+        fontFamily: '"IM Fell English", serif',
+        fontSize:   `${13 * dpr}px`,
+        color:      '#5a7a8a',
+      }
+
+      const day2Link = this.add.text(W * 0.199, linkY, '→ Day 2', linkStyle)
+        .setOrigin(0, 1)
+        .setInteractive({ useHandCursor: true })
+        .on('pointerover',  () => day2Link.setColor('#a0c8d8'))
+        .on('pointerout',   () => day2Link.setColor('#5a7a8a'))
+        .on('pointerup',    () => this._startGame('day2_transition'))
+
+      const day3Link = this.add.text(W * 0.199 + 100 * dpr, linkY, '→ Day 3', linkStyle)
+        .setOrigin(0, 1)
+        .setInteractive({ useHandCursor: true })
+        .on('pointerover',  () => day3Link.setColor('#a0c8d8'))
+        .on('pointerout',   () => day3Link.setColor('#5a7a8a'))
+        .on('pointerup',    () => this._startGame('day3_transition'))
+    })
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
@@ -110,7 +136,7 @@ export class OnboardingScene extends Phaser.Scene {
     }
   }
 
-  _startGame() {
+  _startGame(jumpTo = null) {
     const ripple = this.add.graphics()
     const state  = { r: 0, a: 1.0 }
 
@@ -132,6 +158,7 @@ export class OnboardingScene extends Phaser.Scene {
         this.cameras.main.once(
           Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE,
           () => {
+            if (jumpTo) this.registry.set('devJumpTo', jumpTo)
             this.scene.launch('HUDScene')
             this.scene.start('NarrativeScene')
           },

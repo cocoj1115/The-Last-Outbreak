@@ -70,7 +70,7 @@ export class NarrativeScene extends Phaser.Scene {
     }
 
     // ── Portrait (NPC) ─────────────────────────────────────────────────────
-    this._portrait = this.add.image(W * 0.089, H * 0.750, null)
+    this._portrait = this.add.image(W * 0.032, H * 0.747, null)
       .setOrigin(0, 1)
       .setAlpha(0)
       .setDepth(4000)
@@ -105,6 +105,11 @@ export class NarrativeScene extends Phaser.Scene {
       if (this._bridge) this._bridge.jumpTo('time_transition')
     })
 
+    // ── Dev shortcut: D = jump to day3_transition ────────────────────────
+    this.input.keyboard.on('keydown-D', () => {
+      if (this._bridge) this._bridge.jumpTo('day3_transition')
+    })
+
     // ── Dev shortcut: M = directly launch FireCollectMinigame (bypass Ink) ─
     this.input.keyboard.on('keydown-M', () => {
       console.log('[DEV] M pressed — launching FireCollectMinigame directly')
@@ -117,7 +122,13 @@ export class NarrativeScene extends Phaser.Scene {
     const storyJson = this.cache.json.get('story')
     if (storyJson) {
       this._bridge = new InkBridge(this, storyJson)
-      this._bridge.tick()
+      const jumpTarget = this.registry.get('devJumpTo')
+      if (jumpTarget) {
+        this.registry.remove('devJumpTo')
+        this._bridge.jumpTo(jumpTarget)
+      } else {
+        this._bridge.tick()
+      }
     }
   }
 
@@ -158,24 +169,9 @@ export class NarrativeScene extends Phaser.Scene {
       lineSpacing: 6 * dpr,
     }).setDepth(4510)
 
-    // "Click to continue" hint
-    this._continueHint = this.add.text(W - 80 * dpr, H - 36 * dpr, '▶', {
-      fontSize: `${14 * dpr}px`,
-      color: '#8b5e00',
-    }).setAlpha(0).setDepth(4510)
-
     // Click anywhere on box to advance
     box.setInteractive()
     box.on('pointerup', () => this._onAdvance())
-
-    // Blinking continue hint
-    this.tweens.add({
-      targets: this._continueHint,
-      alpha: { from: 0, to: 0.8 },
-      duration: 800,
-      yoyo: true,
-      repeat: -1,
-    })
 
     // Choice container — depth 4520 so it sits above dialogue box (4500)
     this._choiceContainer = this.add.container(W / 2, H * 0.730).setDepth(4520)
@@ -293,7 +289,7 @@ export class NarrativeScene extends Phaser.Scene {
   _showDialogue(speaker, text) {
     this._speakerText.setText(speaker ?? '')
     this._dialogueText.setText('')
-    this._continueHint.setAlpha(0)
+    // hint removed
 
     // Simple typewriter effect
     let i = 0
@@ -303,7 +299,7 @@ export class NarrativeScene extends Phaser.Scene {
       callback: () => {
         this._dialogueText.setText(text.slice(0, ++i))
         if (i >= text.length) {
-          this._continueHint.setAlpha(0.8)
+          // hint removed
         }
       },
     })
@@ -315,7 +311,7 @@ export class NarrativeScene extends Phaser.Scene {
     if (this._currentTimer && this._currentTimer.getRepeatCount() > 0) {
       this._currentTimer.remove()
       this._dialogueText.setText(this._dialogueText.text) // show full text
-      this._continueHint.setAlpha(0.8)
+      // hint removed
       return
     }
     // Otherwise ask InkBridge to continue
@@ -323,8 +319,13 @@ export class NarrativeScene extends Phaser.Scene {
   }
 
   _showChoices(choices) {
+    // Auto-advance single "Continue" choices — no button needed
+    if (choices.length === 1 && choices[0].text.trim() === 'Continue') {
+      this.game.events.emit(GameEvents.CHOICE_MADE, { index: 0 })
+      return
+    }
     this._clearChoices()
-    this._continueHint.setAlpha(0)
+    // hint removed
     const dpr    = window.devicePixelRatio || 1
     const W      = this.scale.width
     const H      = this.scale.height
@@ -391,17 +392,29 @@ export class NarrativeScene extends Phaser.Scene {
   }
 
   _changeBackground(key) {
-    const textureKey = `bg_${key}`
-    console.log('[NarrativeScene] _changeBackground', key, 'exists:', this.textures.exists(textureKey))
-    if (this.textures.exists(textureKey)) {
-      const W = this.scale.width
-      const H = this.scale.height
-      // Scale up village backgrounds by 21%, others fill exactly
-      const scale = (key === 'village_morning' || key === 'village_day1') ? 1.21
-        : key === 'forest_day2' ? 1.1
-        : 1.0
-      this._bg.setTexture(textureKey).setDisplaySize(W * scale, H * scale)
+    // Keys that trigger scene switches — handled elsewhere, skip here
+    if (key === 'village_hub' || key === 'map') return
+
+    // Fallback map for keys that don't yet have a dedicated texture
+    const FALLBACK = {
+      forest_dawn_wet:  'forest_day2',
+      forest_morning:   'forest_day2',
+      village_interior: 'village_morning',
+      forest_day3:      'path_petra',
     }
+    const resolvedKey = FALLBACK[key] ?? key
+    const textureKey  = `bg_${resolvedKey}`
+
+    console.log(`[NarrativeScene] scene:${key} → texture:${textureKey}`, this.textures.exists(textureKey) ? '✓' : '✗ MISSING')
+
+    if (!this.textures.exists(textureKey)) return
+
+    const W = this.scale.width
+    const H = this.scale.height
+    const scale = (resolvedKey === 'village_morning' || resolvedKey === 'village_day1') ? 1.21
+      : resolvedKey === 'forest_day2' ? 1.1
+      : 1.0
+    this._bg.setTexture(textureKey).setDisplaySize(W * scale, H * scale)
   }
 
   // ── Minigame handoff ────────────────────────────────────────────────────
@@ -455,8 +468,11 @@ export class NarrativeScene extends Phaser.Scene {
       this._portraitAiden.setVisible(false)
       this._portraitAiden.setAlpha(0)
       this._portrait.setTexture('portrait_' + key)
-      const maxW = this.scale.width * 0.3375 * 0.9
-      const maxH = this.scale.height * 0.806 * 0.9
+      this._portrait.setX(this.scale.width  * (key === 'petra' ? 0.040 : 0.032))
+      this._portrait.setY(this.scale.height * (key === 'petra' ? 0.767 : 0.747))
+      const portraitScale = key === 'petra' ? 0.9 * 1.1 * 1.1 : 0.9
+      const maxW = this.scale.width * 0.3375 * portraitScale
+      const maxH = this.scale.height * 0.806 * portraitScale
       const scaleW = maxW / this._portrait.width
       const scaleH = maxH / this._portrait.height
       const scale = Math.min(scaleW, scaleH)
@@ -485,7 +501,7 @@ export class NarrativeScene extends Phaser.Scene {
     box.setVisible(false)
     this._speakerText.setVisible(false)
     this._dialogueText.setVisible(false)
-    this._continueHint.setVisible(false)
+    // hint removed
     if (this._mainCharacter) this._mainCharacter.setVisible(false)
     if (this._bgOverlay)     this._bgOverlay.setAlpha(0)
 

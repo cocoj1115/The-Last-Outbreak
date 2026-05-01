@@ -55,6 +55,62 @@ const CAMPSITES = {
   },
 }
 
+const DAY3_CAMPSITES = {
+  A: {
+    name: 'Site A — Ridge',
+    bgKey: 'd3_bg_site_a',
+    bgRainKey: 'd3_bg_site_a_rain',
+    hotspots: [
+      { id: 'ridge',  x: 0.720, y: 0.346, label: 'Rock Face',
+        body: 'The rock face runs north-south. Whatever comes from the north hits this first.' },
+      { id: 'view',   x: 0.601, y: 0.472, label: 'View',
+        body: 'I cannot see very far from here. The ridge blocks the view north.' },
+      { id: 'ground', x: 0.564, y: 0.811, label: 'Ground',
+        body: 'Firm. No water marks on the stones. This has not flooded recently.' },
+      { id: 'stream', x: 0.361, y: 0.822, label: 'Stream',
+        body: 'I can hear water but I cannot see it from here. It is below me somewhere.' },
+      { id: 'roots',  x: 0.087, y: 0.607, label: 'Tree Roots',
+        body: 'Old roots here. This tree has been standing a long time.' },
+      { id: 'light',  x: 0.335, y: 0.226, label: 'Light',
+        body: 'The sun will hit this spot early in the morning.' },
+    ],
+    confirmLines: [
+      'I got lucky choosing this spot. The ridge is taking everything — wind, cold, all of it. I can feel the difference already.',
+      'The view told me. I could not see north from here.',
+      'Water below, not beside. Ground has not flooded.',
+    ],
+    success: true,
+  },
+  B: {
+    name: 'Site B — Open High Ground',
+    bgKey: 'd3_bg_site_b',
+    bgRainKey: 'd3_bg_site_b_rain',
+    hotspots: [
+      { id: 'wind',     x: 0.151, y: 0.327, label: 'Wind',
+        body: 'My coat keeps shifting. The wind changes direction every few minutes.' },
+      { id: 'grass',    x: 0.465, y: 0.523, label: 'Grass',
+        body: 'The grass here is short and pressed flat. Has been for a while.' },
+      { id: 'view',     x: 0.724, y: 0.391, label: 'Surroundings',
+        body: 'I can see the whole valley from here. Nothing blocking anything.' },
+      { id: 'ground',   x: 0.519, y: 0.693, label: 'Ground',
+        body: 'High ground. Dry. The best-draining spot I have seen today.' },
+      { id: 'stones',   x: 0.360, y: 0.580, label: 'Stones',
+        body: 'Low flat stones. They would not get in the way.' },
+      { id: 'tree',     x: 0.651, y: 0.169, label: 'Tree',
+        body: 'One tree at the edge. Too far away to block anything.' },
+      { id: 'overhead', x: 0.464, y: 0.246, label: 'Overhead',
+        body: 'Nothing above me for fifty metres in every direction.' },
+    ],
+    confirmLines: [
+      'High ground. I thought that meant safe.',
+      'But the grass is flat because the wind never stops here. Nothing to slow it down — not a tree, not a rock.',
+      'The wind is brutal. I am already cold.',
+      'This is going to be a long night.',
+    ],
+    success: false,
+  },
+}
+
 // ── Scene ─────────────────────────────────────────────────────────────────────
 
 export class CampsiteMinigame extends Phaser.Scene {
@@ -63,19 +119,23 @@ export class CampsiteMinigame extends Phaser.Scene {
   }
 
   init(data) {
-    this.day             = data.day ?? 2
-    this._currentSite    = null
-    this._markers        = []
-    this._hotspotObjects = []
-    this._inspectGroup   = []   // all inspect-phase UI objects; destroyed on goBack/confirm
-    this._visitedIds     = new Set()
-    this._chooseLocked   = true
-    this._progressText   = null
-    this._infoPanel      = null
-    this._chooseBtnBg    = null
-    this._chooseBtnLabel = null
-    this._dialogueBg     = null
-    this._dialogueText   = null
+    this.day               = data.day ?? 2
+    this._campsiteData     = this.day === 3 ? DAY3_CAMPSITES : CAMPSITES
+    this._overviewBgKey    = this.day === 3 ? 'd3_bg_forest_overview' : 'bg_forest_overview'
+    this._maxClicks        = this.day === 3 ? 3 : 4
+    this._clicksUsed       = 0
+    this._currentSite      = null
+    this._markers          = []
+    this._hotspotObjects   = []
+    this._inspectGroup     = []
+    this._visitedIds       = new Set()
+    this._chooseLocked     = true
+    this._progressText     = null
+    this._infoPanel        = null
+    this._chooseBtnBg      = null
+    this._chooseBtnLabel   = null
+    this._dialogueBg       = null
+    this._dialogueText     = null
   }
 
   create() {
@@ -84,7 +144,7 @@ export class CampsiteMinigame extends Phaser.Scene {
     const dpr = window.devicePixelRatio || 1
     this._W = W; this._H = H; this._dpr = dpr
 
-    this._bg = this.add.image(W / 2, H / 2, 'bg_forest_overview')
+    this._bg = this.add.image(W / 2, H / 2, this._overviewBgKey)
       .setDisplaySize(W, H).setDepth(0)
 
     this._topText = this.add.text(W / 2, 48 * dpr,
@@ -100,8 +160,13 @@ export class CampsiteMinigame extends Phaser.Scene {
     this._buildDialogueBox(W, H, dpr)
     this._setDialogue(null, null)
 
-    this._buildMarker(W * 0.212, H * 0.754, 'A', dpr)
-    this._buildMarker(W * 0.880, H * 0.429, 'B', dpr)
+    if (this.day === 3) {
+      this._buildMarker(W * 0.25, H * 0.50, 'A', dpr)
+      this._buildMarker(W * 0.75, H * 0.40, 'B', dpr)
+    } else {
+      this._buildMarker(W * 0.212, H * 0.754, 'A', dpr)
+      this._buildMarker(W * 0.880, H * 0.429, 'B', dpr)
+    }
 
     this.cameras.main.setAlpha(0)
     gsap.to(this.cameras.main, { alpha: 1, duration: 0.5 })
@@ -143,12 +208,12 @@ export class CampsiteMinigame extends Phaser.Scene {
   // ── Overview markers ───────────────────────────────────────────────────────
 
   _buildMarker(x, y, siteId, dpr) {
-    const r = 10 * dpr
+    const r = 14 * dpr
 
     // Glow layers
-    const outerGlow = this.add.circle(x, y, r * 3.2, 0xffd060, 0.10).setDepth(198)
-    const midGlow   = this.add.circle(x, y, r * 1.9, 0xffd060, 0.45).setDepth(199)
-    const core      = this.add.circle(x, y, r,        0xffe480, 1.00).setDepth(200)
+    const outerGlow = this.add.circle(x, y, r * 3.2, 0xffffff, 0.12).setDepth(198)
+    const midGlow   = this.add.circle(x, y, r * 1.9, 0xfff8e0, 0.45).setDepth(199)
+    const core      = this.add.circle(x, y, r,        0xffffff, 1.00).setDepth(200)
 
     const tOuter = gsap.to(outerGlow, { scaleX: 1.35, scaleY: 1.35, alpha: 0.04, duration: 1.6, yoyo: true, repeat: -1, ease: 'Sine.easeInOut', delay: 0.3 })
     const tMid   = gsap.to(midGlow,   { scaleX: 1.30, scaleY: 1.30, alpha: 0.22, duration: 1.2, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' })
@@ -164,8 +229,8 @@ export class CampsiteMinigame extends Phaser.Scene {
 
     const zone = this.add.zone(x, y, r * 6, r * 6)
       .setInteractive({ useHandCursor: true }).setDepth(202)
-    zone.on('pointerover', () => { core.setFillStyle(0xfff4a0); gsap.to(midGlow, { alpha: 0.7, scaleX: 1.5, scaleY: 1.5, duration: 0.12 }) })
-    zone.on('pointerout',  () => { core.setFillStyle(0xffe480); gsap.to(midGlow, { alpha: 0.45, scaleX: 1, scaleY: 1, duration: 0.2 }) })
+    zone.on('pointerover', () => { core.setFillStyle(0xfff8e0); gsap.to(midGlow, { alpha: 0.7, scaleX: 1.5, scaleY: 1.5, duration: 0.12 }) })
+    zone.on('pointerout',  () => { core.setFillStyle(0xffffff); gsap.to(midGlow, { alpha: 0.45, scaleX: 1, scaleY: 1, duration: 0.2 }) })
     zone.on('pointerup',   () => this._enterSite(siteId))
 
     this._markers.push({ circle: core, label, zone, tween: { kill: () => { tOuter.kill(); tMid.kill(); tCore.kill() } }, _extras: [outerGlow, midGlow] })
@@ -184,11 +249,12 @@ export class CampsiteMinigame extends Phaser.Scene {
 
   _enterSite(siteId) {
     const { _W: W, _H: H, _dpr: dpr } = this
-    this._currentSite = siteId
-    this._visitedIds  = new Set()
+    this._currentSite  = siteId
+    this._visitedIds   = new Set()
+    this._clicksUsed   = 0
     this._chooseLocked = true
 
-    const camp = CAMPSITES[siteId]
+    const camp = this._campsiteData[siteId]
     this._bg.setTexture(camp.bgKey).setDisplaySize(W, H)
     this._topText.setVisible(false)
     this._destroyMarkers()
@@ -204,7 +270,7 @@ export class CampsiteMinigame extends Phaser.Scene {
   // ── Inspect header (top bar) ───────────────────────────────────────────────
 
   _buildInspectHeader(siteName, W, H, dpr) {
-    const y = 36 * dpr
+    const y = 28 * dpr
 
     const backBtn = this.add.text(24 * dpr, y, '← Back to both sites', {
       fontFamily: '"IM Fell English", serif',
@@ -225,16 +291,39 @@ export class CampsiteMinigame extends Phaser.Scene {
       strokeThickness: 3 * dpr,
     }).setOrigin(0.5, 0.5).setDepth(300)
 
-    const progText = this.add.text(W - 24 * dpr, y, 'Inspected  0 / 4', {
-      fontFamily: '"IM Fell English", serif',
-      fontSize:   `${15 * dpr}px`,
-      color:      '#c4a060',
-      stroke:     '#000000',
-      strokeThickness: 2 * dpr,
-    }).setOrigin(1, 0.5).setDepth(300)
-    this._progressText = progText
+    this._inspectGroup.push(backBtn, nameText)
 
-    this._inspectGroup.push(backBtn, nameText, progText)
+    if (this.day === 3) {
+      // Clue counter on a second row, centred
+      const progText = this.add.text(W / 2, y + 26 * dpr, `Clues remaining: ${this._maxClicks}`, {
+        fontFamily: '"IM Fell English", serif',
+        fontSize:   `${15 * dpr}px`,
+        color:      '#c4a060',
+        stroke:     '#000000',
+        strokeThickness: 2 * dpr,
+      }).setOrigin(0.5, 0.5).setDepth(300)
+      this._progressText = progText
+
+      const windText = this.add.text(W - 24 * dpr, y, '↑  Wind: North', {
+        fontFamily: 'Georgia, serif',
+        fontSize:   `${14 * dpr}px`,
+        color:      '#c4a060',
+        stroke:     '#000000',
+        strokeThickness: 2 * dpr,
+      }).setOrigin(1, 0.5).setDepth(300)
+
+      this._inspectGroup.push(progText, windText)
+    } else {
+      const progText = this.add.text(W - 24 * dpr, y, 'Inspected  0 / 4', {
+        fontFamily: '"IM Fell English", serif',
+        fontSize:   `${15 * dpr}px`,
+        color:      '#c4a060',
+        stroke:     '#000000',
+        strokeThickness: 2 * dpr,
+      }).setOrigin(1, 0.5).setDepth(300)
+      this._progressText = progText
+      this._inspectGroup.push(progText)
+    }
   }
 
   // ── Info panel + choose button ─────────────────────────────────────────────
@@ -327,9 +416,20 @@ export class CampsiteMinigame extends Phaser.Scene {
 
   _onHotspotVisited(id) {
     this._visitedIds.add(id)
-    const n = this._visitedIds.size
-    if (this._progressText) this._progressText.setText(`Inspected  ${n} / 4`)
-    if (n >= 4) this._unlockChooseButton()
+    this._clicksUsed = this._visitedIds.size
+    const n = this._clicksUsed
+
+    if (this.day === 3) {
+      const remaining = Math.max(0, this._maxClicks - n)
+      if (this._progressText) this._progressText.setText(`Clues remaining: ${remaining}`)
+      if (n === 1) this._unlockChooseButton()
+      if (n >= this._maxClicks) {
+        this._hotspotObjects.forEach(h => h.lock())
+      }
+    } else {
+      if (this._progressText) this._progressText.setText(`Inspected  ${n} / 4`)
+      if (n >= this._maxClicks) this._unlockChooseButton()
+    }
   }
 
   _unlockChooseButton() {
@@ -340,13 +440,14 @@ export class CampsiteMinigame extends Phaser.Scene {
   // ── Hotspot ────────────────────────────────────────────────────────────────
 
   _buildHotspot(x, y, data, dpr) {
-    const rCore  =  9 * dpr
-    const rMid   = 20 * dpr
-    const rOuter = 36 * dpr
+    const sz     = this.day === 2 ? 1.45 : 1.0
+    const rCore  =  9 * dpr * sz
+    const rMid   = 20 * dpr * sz
+    const rOuter = 36 * dpr * sz
 
-    const outerGlow = this.add.circle(x, y, rOuter, 0xffffff, 0.18).setDepth(198)
-    const midGlow   = this.add.circle(x, y, rMid,   0xffd060, 0.60).setDepth(199)
-    const core      = this.add.circle(x, y, rCore,  0xffe480, 1.00).setDepth(200)
+    const outerGlow = this.add.circle(x, y, rOuter, 0xffffff, 0.15).setDepth(198)
+    const midGlow   = this.add.circle(x, y, rMid,   0xfff8e0, 0.45).setDepth(199)
+    const core      = this.add.circle(x, y, rCore,  0xffffff, 1.00).setDepth(200)
 
     const tOuter = gsap.to(outerGlow, {
       scaleX: 1.35, scaleY: 1.35, alpha: 0.06,
@@ -412,6 +513,14 @@ export class CampsiteMinigame extends Phaser.Scene {
 
     return {
       setVisited,
+      lock: () => {
+        if (visited) return
+        zone.disableInteractive()
+        tOuter.kill(); tMid.kill(); tCore.kill()
+        gsap.killTweensOf(outerGlow); gsap.killTweensOf(midGlow); gsap.killTweensOf(core)
+        gsap.to([outerGlow, midGlow, core], { alpha: 0.2, duration: 0.3 })
+        gsap.to(label, { alpha: 0.2, duration: 0.3 })
+      },
       destroy: () => {
         tOuter.kill(); tMid.kill(); tCore.kill()
         gsap.killTweensOf(outerGlow); gsap.killTweensOf(midGlow); gsap.killTweensOf(core)
@@ -432,18 +541,24 @@ export class CampsiteMinigame extends Phaser.Scene {
   _goBack() {
     const { _W: W, _H: H, _dpr: dpr } = this
     this._currentSite = null
-    this._bg.setTexture('bg_forest_overview').setDisplaySize(W, H)
+    this._bg.setTexture(this._overviewBgKey).setDisplaySize(W, H)
     this._topText.setVisible(true)
     this._clearHotspots()
     this._inspectGroup.forEach(o => o.destroy())
-    this._inspectGroup  = []
-    this._progressText  = null
-    this._infoPanel     = null
-    this._chooseBtnBg   = null
+    this._inspectGroup   = []
+    this._progressText   = null
+    this._infoPanel      = null
+    this._chooseBtnBg    = null
     this._chooseBtnLabel = null
-    this._visitedIds    = new Set()
-    this._buildMarker(W * 0.212, H * 0.754, 'A', dpr)
-    this._buildMarker(W * 0.880, H * 0.429, 'B', dpr)
+    this._visitedIds     = new Set()
+    this._clicksUsed     = 0
+    if (this.day === 3) {
+      this._buildMarker(W * 0.25, H * 0.50, 'A', dpr)
+      this._buildMarker(W * 0.75, H * 0.40, 'B', dpr)
+    } else {
+      this._buildMarker(W * 0.212, H * 0.754, 'A', dpr)
+      this._buildMarker(W * 0.880, H * 0.429, 'B', dpr)
+    }
   }
 
   // ── Confirm ───────────────────────────────────────────────────────────────
@@ -457,15 +572,20 @@ export class CampsiteMinigame extends Phaser.Scene {
     this._inspectGroup = []
 
     const { _W: W, _H: H } = this
-    const camp = CAMPSITES[siteId]
+    const camp = this._campsiteData[siteId]
     this._bg.setTexture(camp.bgRainKey).setDisplaySize(W, H)
 
-    const [line1, line2] = camp.confirmLines
-    this._setDialogue(line1,
-      () => this._setDialogue(line2,
-        () => { this._setDialogue(null, null); this._finish(camp.success) }
-      )
-    )
+    const lines = camp.confirmLines
+    let index = 0
+    const showNext = () => {
+      if (index < lines.length) {
+        this._setDialogue(lines[index], () => { index++; showNext() })
+      } else {
+        this._setDialogue(null, null)
+        this._finish(camp.success)
+      }
+    }
+    showNext()
   }
 
   // ── Finish ────────────────────────────────────────────────────────────────
