@@ -8,6 +8,8 @@ import { CampsiteMinigame } from './scenes/minigames/campsite/CampsiteMinigame.j
 import { FireMinigame } from './scenes/minigames/fire/FireMinigame.js'
 import { FireCollectMinigame } from './scenes/minigames/fire/FireCollectMinigame.js'
 import { FireCampsiteMinigame } from './scenes/minigames/fire/FireCampsiteMinigame.js'
+import { FireBuildingMinigame } from './scenes/minigames/fire/New/FireBuildingMinigame.js'
+import { FireBuildingCollect } from './scenes/minigames/fire/New/FireBuildingCollect.js'
 import { HUDScene } from './scenes/HUDScene.js'
 import { DebugScene } from './scenes/DebugScene.js'
 
@@ -37,6 +39,8 @@ const config = {
     FireMinigame,
     FireCollectMinigame,
     FireCampsiteMinigame,
+    FireBuildingMinigame,
+    FireBuildingCollect,
     HUDScene, DebugScene,
   ],
 }

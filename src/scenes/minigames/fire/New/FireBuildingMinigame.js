@@ -1,5 +1,6 @@
 import Phaser from 'phaser'
-import { GameEvents } from '../../../systems/GameEvents.js'
+import { GameEvents } from '../../../../systems/GameEvents.js'
+import { DialogueBox } from './DialogueBox.js'
 
 // ─── Sort configuration ───────────────────────────────────────────────────────
 
@@ -9,6 +10,7 @@ const CORRECT_ZONE = {
   dry_twigs:    'kindling',
   pine_cone:    'fuel_wood',
   thick_branch: 'fuel_wood',
+  thin_branch:  'kindling',
 }
 
 const SORT_ZONE_DEFS = [
@@ -17,12 +19,27 @@ const SORT_ZONE_DEFS = [
   { id: 'fuel_wood', label: 'Fuel Wood', description: 'Sustains the fire. Dense and heavy.',  tint: 0x4a3810 },
 ]
 
-/** Fallback when id is not in CORRECT_ZONE — mirrors FireCollectMinigame collectCategoryForMatId → sort zone. */
+/** Fallback when id is not in CORRECT_ZONE — mirrors collect ids / dev suffix variants (e.g. dry_grass_2). */
 function sortZoneFromCollectMaterialId(id) {
-  if (id === 'dry_leaves' || id === 'dry_grass') return 'tinder'
-  if (id === 'dry_twigs') return 'kindling'
-  if (id === 'pine_cone' || id === 'thick_branch') return 'fuel_wood'
+  if (!id || typeof id !== 'string') return null
+  if (id === 'dry_twigs' || id.startsWith('dry_twigs')) return 'kindling'
+  if (id === 'dry_leaves' || id.startsWith('dry_leaves')) return 'tinder'
+  if (id === 'dry_grass' || id.startsWith('dry_grass')) return 'tinder'
+  if (id === 'pine_cone' || id.startsWith('pine_cone')) return 'fuel_wood'
+  if (id === 'thick_branch' || id.startsWith('thick_branch')) return 'fuel_wood'
+  if (id.startsWith('thin_branch')) return 'kindling'
   return null
+}
+
+/** Registry / legacy payloads may use `fuel`; stack layers always use `fuel_wood`. */
+function normalizeStackSortZoneId(z) {
+  if (z === 'fuel') return 'fuel_wood'
+  return z
+}
+
+/** Correct sort bucket for a material id (explicit map + collect-style suffix ids). */
+function correctSortZoneForMatId(id) {
+  return CORRECT_ZONE[id] ?? sortZoneFromCollectMaterialId(id)
 }
 
 /** Same buckets as FireCollectMinigame buildCollectCounts (registry shape). */
@@ -38,12 +55,143 @@ function collectRegistryCounts(items) {
   return count
 }
 
-const WRONG_SORT_FEEDBACK = {
-  dry_grass:    { fuel_wood: 'Too light to sustain anything — burns up in seconds.',                       kindling:  'Too fine for kindling — keep it at the base as tinder.' },
-  thick_branch: { tinder:   'Too dense to catch a spark — it needs smaller material underneath it first.', kindling:  'Too thick for the middle — it needs fuel wood position on top.' },
-  pine_cone:    { tinder:   'Too compact for tinder — save it for fuel once the flame is going.',          kindling:  'Too dense for the middle layer — it goes with the fuel wood.' },
-  dry_twigs:    { fuel_wood: 'Too thin to sustain the fire — it needs to go in the middle, not on top.',  tinder:    'Too coarse for tinder — put the lightest material at the base.' },
-  dry_leaves:   { kindling:  'Too fragile for kindling — put it at the base beneath the twigs.',           fuel_wood: 'Too light to sustain anything — burns up in seconds.' },
+/** Wrong drop: Ren 3 bubbles keyed `correctZone_attemptedZone` (day2_firemaking_dev_spec §4.3). */
+const SORT_WRONG_REN_LINES = {
+  kindling_tinder: [
+    'Hmm — does this feel right? Tinder should crumble in my hand.',
+    'This one... I can snap it, but it holds its shape.',
+    'Maybe this belongs somewhere else.',
+  ],
+  tinder_fuel_wood: [
+    'Wait. Fuel wood needs to burn for a long time.',
+    'This is so light it would be gone in seconds.',
+    'I do not think this is fuel.',
+  ],
+  fuel_wood_kindling: [
+    'This feels heavy. Kindling should be thin, easy to snap.',
+    'I can barely bend this.',
+    'Maybe I should rethink where this goes.',
+  ],
+  tinder_kindling: [
+    'This is pretty fine — crumbles right away.',
+    'Kindling has more structure than that.',
+    'This might be more useful somewhere else.',
+  ],
+  kindling_fuel_wood: [
+    'This is not heavy enough to be fuel.',
+    'It would burn through too fast to keep a fire going all night.',
+    'Feels more like something in between.',
+  ],
+  fuel_wood_tinder: [
+    'That is way too thick to catch a spark.',
+    'Tinder needs to be the finest, lightest material.',
+    'This one has a different purpose.',
+  ],
+}
+
+/** First correct piece into each zone — Ren 2 bubbles (spec §4.3). */
+const SORT_FIRST_CORRECT_REN = {
+  tinder: [
+    'Light, dry, falls apart in my fingers.',
+    'Tinder — that is what catches a spark.',
+  ],
+  kindling: [
+    'Thin enough to catch from tinder, strong enough to burn a little longer.',
+    'That is good kindling.',
+  ],
+  fuel_wood: [
+    'Heavy, solid.',
+    'Fuel wood like this will keep the fire going once it is established.',
+  ],
+}
+
+/** Sort complete — Ren closing lines (spec §4.3). */
+const SORT_COMPLETE_REN_LINES = [
+  'Good — tinder, kindling, fuel, all separated.',
+  'Now when we build the lay, everything is right here, grouped and ready.',
+  'No guessing, no wasting time.',
+  'That is the difference between a fire that goes up smooth and one you are still fighting with when the rain hits.',
+]
+
+/** Lay complete summary — Ren (spec §4.4). */
+const STACK_LAY_SUMMARY_REN_LINES = [
+  'Bottom to top — fine to heavy. Air between each piece.',
+  'That is a fire that will actually breathe.',
+  'Nice.',
+]
+
+/** §4.4 wrong target layer while dragging — Ren lines. */
+const STACK_BOTTOM_WRONG_REN = [
+  'Think smaller.',
+  'The spark lands here — what is the only thing fine enough to catch it?',
+]
+const STACK_MIDDLE_WRONG_REN = [
+  'This layer bridges the flame upward.',
+  'Too light and it is gone. Too heavy and it will not catch.',
+  'What fits?',
+]
+const STACK_TOP_WRONG_REN = [
+  'The top needs to burn long and slow.',
+  'What is heavy enough for that?',
+]
+
+/** §4.2 first wet BAD pickup — forced Ren (reuse for sort/stack unusable taps). */
+const WET_MATERIAL_REN_LINES = [
+  'Feel that? Heavy. Damp inside.',
+  'Wet material will smother a flame, not feed it.',
+  'Leave it.',
+]
+
+function sortWrongRenLines(correctZone, attemptedZone) {
+  return SORT_WRONG_REN_LINES[`${correctZone}_${attemptedZone}`] ?? []
+}
+
+function stackWrongLayerRenLines(needZone, attemptedZone) {
+  if (
+    needZone === 'tinder' &&
+    (attemptedZone === 'kindling' || attemptedZone === 'fuel_wood')
+  )
+    return STACK_BOTTOM_WRONG_REN
+  if (
+    needZone === 'kindling' &&
+    (attemptedZone === 'tinder' || attemptedZone === 'fuel_wood')
+  )
+    return STACK_MIDDLE_WRONG_REN
+  if (
+    needZone === 'fuel_wood' &&
+    (attemptedZone === 'tinder' || attemptedZone === 'kindling')
+  )
+    return STACK_TOP_WRONG_REN
+  return []
+}
+
+/** Wrong material category for the pit band being filled (want vs pit zone id). */
+function stackMaterialMismatchRenLines(matZone, pitZone) {
+  return stackWrongLayerRenLines(pitZone, matZone)
+}
+
+function assertSortedMaterialsShape(sorted, ctx = '') {
+  if (!import.meta.env.DEV) return
+  const ok =
+    sorted &&
+    typeof sorted === 'object' &&
+    Array.isArray(sorted.tinder) &&
+    Array.isArray(sorted.kindling) &&
+    Array.isArray(sorted.fuel_wood)
+  console.assert(ok, `[FireBuilding] sortedMaterials shape ${ctx}`, sorted)
+}
+
+function assertStackRegistryShape(registry, ctx = '') {
+  if (!import.meta.env.DEV) return
+  const sd = registry?.stackData
+  const rs = registry?.reserveMaterials
+  const sdOk =
+    sd &&
+    Array.isArray(sd.bottom) &&
+    Array.isArray(sd.middle) &&
+    Array.isArray(sd.top)
+  console.assert(sdOk, `[FireBuilding] stackData shape ${ctx}`, sd)
+  console.assert(Array.isArray(rs), `[FireBuilding] reserveMaterials array ${ctx}`, rs)
 }
 
 // ─── Stack configuration ─────────────────────────────────────────────────────
@@ -53,13 +201,6 @@ const STACK_ZONE_TO_LAYER = {
   tinder:    'bottom',
   kindling:  'middle',
   fuel_wood: 'top',
-}
-
-/** Stack-step drop zone titles for logging / UI (maps sort zone id → layer name). */
-const STACK_ZONE_DROP_DISPLAY = {
-  tinder:    'Bottom',
-  kindling:  'Middle',
-  fuel_wood: 'Top',
 }
 
 /** Physical lay order: bottom → middle → top (matches sort-zone ids). */
@@ -93,16 +234,21 @@ const STACK_BOTTOM_R = 45
 const STACK_MIDDLE_R = 80
 const STACK_TOP_R    = 115
 
+/** Ignite HUD progress bar sits just below outer pit ring (§4.5 UI). */
+const IGNITE_BAR_RING_GAP = 18
+
 // ─── Ignite configuration ────────────────────────────────────────────────────
 
+/** Difficulty preset from collect score — mapped to decay + spark variance (§4.5). */
 const DIFFICULTY_CONFIG = {
-  EASY:   { target: 10, decayMs: 800,  rainInterference: false },
-  MEDIUM: { target: 15, decayMs: 600,  rainInterference: false },
-  HARD:   { target: 20, decayMs: 500,  rainInterference: true  },
+  EASY:   { decayMs: 1000, decayPerTick: 1, sparkMin: 1, sparkMax: 3, rainInterference: false },
+  MEDIUM: { decayMs: 720, decayPerTick: 1, sparkMin: 1, sparkMax: 3, rainInterference: false },
+  HARD:   { decayMs: 520, decayPerTick: 2, sparkMin: 1, sparkMax: 2, rainInterference: true },
 }
 
-const MAX_CLICKS     = 30
-const IDLE_THRESHOLD = 2000
+const IGNITE_PROGRESS_MAX = 100
+const MAX_CLICKS            = 30
+const IDLE_THRESHOLD        = 2000
 
 // ─── Sustain configuration ───────────────────────────────────────────────────
 
@@ -138,22 +284,22 @@ const BG_FLOOD       = 0x080f18
 const MAT_COLOR     = { GOOD: 0x8a7050, MID: 0x5a4a30, BAD: 0x2a1e10 }
 const ITEM_W        = 72
 const ITEM_H        = 72
-/** Same anchor as FireCollectMinigame pack HUD — materials fly from here into the sort pile. */
+/** Legacy HUD anchor — kept for any `_sortPackUiNodes` cleanup; scatter uses screen-relative rects. */
 const SORT_PACK_HUD_X              = 52
 const SORT_PACK_HUD_Y_FROM_BOTTOM  = 48
-const SORT_UNPACK_STAGGER_MS       = 80
-const SORT_UNPACK_FLY_DURATION_MS  = 420
 
 const ZONE_W        = 210
 const ZONE_H        = 100
+/** Stack-phase piles above STRIKE / BLOW (depth ~18) so pointer picks draggable fuel, not pit chrome. */
+const STACK_SORTED_PILE_DEPTH = 24
 const SEG_COLOR_LIT = 0xe8a020
 const SEG_COLOR_DIM = 0x3a2e18
 
 // ─── Scene ───────────────────────────────────────────────────────────────────
 
-export class FireCampsiteMinigame extends Phaser.Scene {
+export class FireBuildingMinigame extends Phaser.Scene {
   constructor() {
-    super({ key: 'FireCampsiteMinigame' })
+    super({ key: 'FireBuildingMinigame' })
   }
 
   init(data) {
@@ -169,7 +315,6 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     // Clear step
     this._debrisRemaining = 6
     this._debrisObjects   = []
-    this._debrisClicked   = false
     this._clearHandoffStarted = false
     this._clearCompleteTimer = null
     this._gatherDialogueTimer = null
@@ -180,6 +325,9 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     // Sort step
     this._sortedCount  = 0
     this._sortHadError = false
+    this._sortFeedbackLocked = false
+    /** First Ren praise per zone once player sorts correctly into that pile (spec §4.3). */
+    this._sortRenZoneIntroShown = { tinder: false, kindling: false, fuel_wood: false }
 
     // Stack step — bottom boxes (same geometry as sort); counts per sort-zone id
     this._stackHadError           = false
@@ -202,23 +350,71 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     this._stackPrevLayerTxt       = null
     this._stackSparkLabel         = null
     this._stackSparkPickers       = []
-    this._igniteEarlyLayAttempt   = false
     this._stackPreserveAfterIgniteTrial = false
     this._stackReenterPreserveLayout = false
     this._stackGoFindBg           = null
     this._stackGoFindTxt          = null
     this._stackStrikeGateHint     = null
     this._stackFinishLayPulseTween = null
+    this._stackRenFeedbackLocked = false
+    /** §693–703 summary Ren once per lay after FINISH when mins met. */
+    this._stackLaySummaryRenShown = false
+
+    /** After stack Ren proposal choices: pit tap opens lay UI (`_beginStack`). */
+    this._stackAwaitingPitForLay     = false
+    /** Dev/mock: skip Ren pit gate when jumping straight to stack (`startStep === 'stack'`). */
+    this._stackDevJumpSkipPitPrompt = false
+    this._stackPreserveLayoutPending = false
+    this._stackPitPromptHit          = null
+    this._stackPitPromptHintTxt      = null
+    this._stackPitPromptTween        = null
 
     // Ignite state
     this._igniteSparks      = 0
     this._igniteTotalClicks = 0
     this._igniteRetryUsed   = false
-    this._igniteMidWarning  = false
     this._igniteLastClick   = 0
     this._igniteTarget      = 0
     this._igniteUseRain     = false
     this._igniteDifficulty  = null
+    /** `spark` | `blow` — §4.5 two-phase ignite */
+    this._igniteMechanicsPhase = null
+    /** 0 … IGNITE_PROGRESS_MAX */
+    this._igniteProgress          = 0
+    this._igniteSmokeThresholdPct = 40
+    this._igniteDecayPerTick      = 1
+    this._igniteBlowGain          = 12
+    /** Spark layer selected before mechanics — pit-ring pick (§4.5). */
+    this._igniteSparkTargetZone = 'tinder'
+    /** Ignite Ren proposal branch: pathA = three rings; pathB = tinder-only highlight (§4.5). */
+    this._igniteProposalPath = 'pathA'
+    /** Hit circle + ring highlights during pit layer pick */
+    this._ignitePitPickHit = null
+    this._ignitePitPickGraphics = null
+    /** After proposal: awaiting pit-ring tap for spark layer */
+    this._igniteAwaitingLayerStrike = false
+    this._igniteSparkPickPhaseObjs = []
+    this._igniteSparkPickLabel = null
+
+    /** Lay locked: Blow sits beside STRIKE (dim until ignite smoke phase — same control as ignite HUD later). */
+    this._stackLockedBlowBg = null
+    this._stackLockedBlowTxt = null
+    this._igniteBarBg               = null
+    this._igniteBarFill             = null
+    this._igniteBarInnerW           = 260
+    this._igniteBarSmokeMarker      = null
+    this._igniteBarFireMarker       = null
+    this._igniteBlowBg              = null
+    this._igniteBlowTxt             = null
+    /** Blow phase smoke pulse: `bright` = good blow window (§4.5). */
+    this._igniteSmokePulsePhase = 'bright'
+    this._igniteSmokePulseTimer = null
+    this._igniteSmokeRenShown       = false
+    /** First wrong blow (dark window) Ren line shown */
+    this._igniteBlowHardRenShown    = false
+    /** First correct blow Ren line shown */
+    this._igniteRenBlowCorrectShown = false
+    this._igniteLastBlowTime        = 0
     this._decayTimer        = null
     this._rainTimer         = null
     this._idleTimer         = null
@@ -254,7 +450,6 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     this._barMaxW        = 0
 
     this._sortPackUiNodes = []
-    this._sortUnpackRunning = false
   }
 
   create() {
@@ -286,20 +481,26 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     this._setupDragListeners()
 
     this._enterHandlers = {
-      clear:   () => this._enterClear(),
-      sort:    () => this._enterSort(),
-      stack:   () => this._enterStack(),
-      ignite:  () => this._enterIgnite(),
-      sustain: () => this._enterSustain(),
+      ren_intro: () => this._enterRenIntro(),
+      clear:     () => this._enterClear(),
+      sort:      () => this._enterSort(),
+      stack:     () => this._enterStack(),
+      ignite:    () => this._enterIgnite(),
+      sustain:   () => this._enterSustain(),
     }
 
     this._exitHandlers = {
+      ren_intro: () => {},
       clear:   () => this._exitClear(),
       sort:    () => this._exitSort(),
       stack:   () => this._exitStack(),
       ignite:  () => this._exitIgnite(),
       sustain: () => this._exitSustain(),
     }
+
+    // Tracks whether the Ren proposal for each step has already been shown
+    // (prevents re-showing on re-entries, e.g. stack after ignite trial).
+    this._stepProposalShown = {}
 
     let stackResumeHandled = false
     if (this._resumeStackAfterCollect) {
@@ -313,10 +514,20 @@ export class FireCampsiteMinigame extends Phaser.Scene {
       this._resumeStackAfterCollect = false
     }
 
-    const entry = this._startStep ?? 'clear'
+    const entry = this._startStep ?? 'ren_intro'
 
-    if (entry !== 'clear' && !stackResumeHandled) {
+    if (entry === 'stack') {
+      this._stepProposalShown.stack = true
+      this._stackDevJumpSkipPitPrompt = true
+    }
+
+    if (entry !== 'ren_intro' && entry !== 'clear' && !stackResumeHandled) {
       this._seedMatPhasesForDevStart(entry)
+      this._hydrateSortedMaterialsFromRegistryIfNeeded(entry)
+      this._hydratePlacedStackFromRegistryIfNeeded()
+      if (entry === 'stack') {
+        this._ensureSortedMaterialsZoneLayout()
+      }
     }
 
     this._enterStep(entry)
@@ -398,7 +609,7 @@ export class FireCampsiteMinigame extends Phaser.Scene {
       if (!st) continue
 
       st.phase = s.phase
-      st.sortZoneId = s.sortZoneId
+      st.sortZoneId = normalizeStackSortZoneId(s.sortZoneId)
       st.layerId = s.layerId
       st.greyed = s.greyed
       st.zonePos = s.zonePos ? { ...s.zonePos } : null
@@ -427,7 +638,7 @@ export class FireCampsiteMinigame extends Phaser.Scene {
       const st = this._matStates[pileKey]
       if (!st) continue
 
-      const z = CORRECT_ZONE[st.id] ?? sortZoneFromCollectMaterialId(st.id)
+      const z = normalizeStackSortZoneId(correctSortZoneForMatId(st.id))
       if (st.isSortable && z) {
         st.phase = 'sorted'
         st.sortZoneId = z
@@ -451,8 +662,7 @@ export class FireCampsiteMinigame extends Phaser.Scene {
         st.sprite.off('pointerup')
         st.sprite.on('pointerup', () => {
           if (this.step === 'stack') {
-            this._showDialogue('"This is too wet for any role tonight."')
-            this._greyOut(st)
+            this._showRenLines(WET_MATERIAL_REN_LINES, () => this._greyOut(st))
           }
         })
       }
@@ -478,7 +688,7 @@ export class FireCampsiteMinigame extends Phaser.Scene {
       if (state.isSortable) {
         state.phase = phase
         if (startStep === 'stack' && !state.sortZoneId) {
-          const z = CORRECT_ZONE[state.id]
+          const z = normalizeStackSortZoneId(correctSortZoneForMatId(state.id))
           if (z) state.sortZoneId = z
         }
       }
@@ -486,6 +696,60 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     if (startStep === 'stack' || startStep === 'ignite' || startStep === 'sustain') {
       this._sortedCount = this._sortableIds.length
     }
+  }
+
+  /**
+   * Dev jump `startStep === 'stack'`: apply registry `sortedMaterials` so each pile's `sortZoneId`
+   * matches the mock buckets (runs after `_seedMatPhasesForDevStart`).
+   */
+  _hydrateSortedMaterialsFromRegistryIfNeeded(startStep) {
+    if (startStep !== 'stack') return
+    const sm = this.registry.get('sortedMaterials')
+    if (!sm || typeof sm !== 'object') return
+
+    const piles = Object.keys(this._matStates)
+      .filter((k) => k.startsWith('pile_'))
+      .map((k) => this._matStates[k])
+      .filter(Boolean)
+      .sort((a, b) => {
+        const na = parseInt(String(a.pileKey).replace(/\D/g, ''), 10) || 0
+        const nb = parseInt(String(b.pileKey).replace(/\D/g, ''), 10) || 0
+        return na - nb
+      })
+
+    for (const st of piles) {
+      delete st._sortedHydratedFromRegistry
+    }
+
+    const consume = (bucketKey, arr) => {
+      if (!Array.isArray(arr)) return
+      const z = normalizeStackSortZoneId(bucketKey)
+      if (!z) return
+      for (const entry of arr) {
+        const cand =
+          piles.find(
+            (p) =>
+              !p._sortedHydratedFromRegistry &&
+              p.isSortable &&
+              p.id === entry.id &&
+              (!entry.quality || p.quality === entry.quality),
+          ) ??
+          piles.find(
+            (p) =>
+              !p._sortedHydratedFromRegistry &&
+              p.isSortable &&
+              p.id === entry.id,
+          )
+        if (!cand) continue
+        cand._sortedHydratedFromRegistry = true
+        cand.sortZoneId = z
+        cand.phase = 'sorted'
+      }
+    }
+
+    consume('tinder', sm.tinder)
+    consume('kindling', sm.kindling)
+    consume('fuel_wood', sm.fuel_wood ?? sm.fuel)
   }
 
   // ── Step machine ─────────────────────────────────────────────────────────────
@@ -706,7 +970,7 @@ export class FireCampsiteMinigame extends Phaser.Scene {
         fill: '#d8c898',
       }).setOrigin(0.5, 0).setDepth(6).setAlpha(0)
 
-      const isSortable = CORRECT_ZONE[id] !== undefined
+      const isSortable = correctSortZoneForMatId(id) != null
       if (isSortable) this._sortableIds.push(id)
 
       const pileKey = `pile_${idx}`
@@ -718,7 +982,7 @@ export class FireCampsiteMinigame extends Phaser.Scene {
         label,
         isSortable,
         phase: 'pile',
-        homePos:    { x, y }, // sort pile grid target (after unpack fly-in)
+        homePos:    { x, y }, // staging grid; overridden when sort begins (random scatter left)
         zonePos:    null,
         holdPos:    null,
         pitPos:     null,
@@ -796,15 +1060,15 @@ export class FireCampsiteMinigame extends Phaser.Scene {
       .rectangle(btnX, btnY, 110, 110, 0x3a2a18)
       .setStrokeStyle(3, 0xa08040)
       .setInteractive({ useHandCursor: true })
-      .setDepth(7)
+      .setDepth(18)
       .setAlpha(0.4)
 
     this._flintIcon = this.add.text(btnX, btnY - 10, '🪨', { fontSize: '42px' })
-      .setOrigin(0.5).setDepth(8).setAlpha(0.4)
+      .setOrigin(0.5).setDepth(19).setAlpha(0.4)
 
     this._flintLabel = this.add.text(btnX, btnY + 36, 'STRIKE', {
       fontSize: '12px', fontFamily: 'monospace', fill: '#a08040',
-    }).setOrigin(0.5).setDepth(8).setAlpha(0.4)
+    }).setOrigin(0.5).setDepth(19).setAlpha(0.4)
 
     this._flintBg.on('pointerover', () => {
       if (this.step === 'ignite' || this.step === 'stack')
@@ -970,42 +1234,36 @@ export class FireCampsiteMinigame extends Phaser.Scene {
 
   // ── Dialogue box ──────────────────────────────────────────────────────────────
 
-  _buildDialogueBox(W, H) {
-    const boxY = H * 0.90
-
-    this._dialogueBg = this.add
-      .rectangle(W / 2, boxY, W * 0.78, 52, 0x0d0a04, 0.88)
-      .setStrokeStyle(1, 0x6b5020)
-      .setDepth(20)
-      .setVisible(false)
-
-    this._dialogueText = this.add.text(W / 2, boxY, '', {
-      fontSize: '15px',
-      fontFamily: 'Georgia, serif',
-      fontStyle: 'italic',
-      fill: '#f5e8c0',
-      wordWrap: { width: W * 0.74 },
-      align: 'center',
-    }).setOrigin(0.5).setDepth(21).setVisible(false)
+  _buildDialogueBox(_W, _H) {
+    this._dialogue = new DialogueBox(this)
   }
 
-  _showDialogue(text) {
-    this._dialogueBg.setVisible(true)
-    this._dialogueText.setText(text).setVisible(true)
-
-    if (this._dialogueTimer) this._dialogueTimer.remove()
-    this._dialogueTimer = this.time.delayedCall(3500, () => {
-      this._dialogueBg.setVisible(false)
-      this._dialogueText.setVisible(false)
-      this._dialogueTimer = null
-    })
+  /** Spec-only Ren sequence (day2_firemaking_dev_spec §4.x). Replaces legacy Aiden auto-hide lines. */
+  _showRenLines(lines, onComplete = null) {
+    if (!lines?.length) {
+      onComplete?.()
+      return
+    }
+    this._dialogue.showSequence(
+      lines.map((text) => ({ speaker: 'Ren', text })),
+      () => {
+        this._dialogue.hide()
+        onComplete?.()
+      },
+    )
   }
 
   // ── Drag system ───────────────────────────────────────────────────────────────
 
   _setupDragListeners() {
     this.input.on('dragstart', (_, sprite) => {
-      sprite.setDepth(sprite._sustainBackupZoneId ? 22 : 20)
+      const st = this._spriteToMatState(sprite)
+      let topD = 20
+      if (sprite._sustainBackupZoneId) topD = 22
+      else if (st?.phase === 'sorted' && this.step === 'stack')
+        topD = STACK_SORTED_PILE_DEPTH + 6
+      sprite.setDepth(topD)
+      st?.label?.setDepth(topD + 1)
     })
 
     this.input.on('drag', (_, sprite, dragX, dragY) => {
@@ -1015,13 +1273,19 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     })
 
     this.input.on('dragend', (pointer, sprite) => {
-      const baseDepth = sprite._sustainBackupZoneId ? 12 : 5
+      const state = this._spriteToMatState(sprite)
+      let baseDepth = 5
+      if (sprite._sustainBackupZoneId) baseDepth = 12
+      else if (state?.phase === 'sorted' && this.step === 'stack')
+        baseDepth = STACK_SORTED_PILE_DEPTH
+
       sprite.setDepth(baseDepth)
+      state?.label?.setDepth(baseDepth + 1)
+
       if (sprite._sustainBackupZoneId) {
         this._onSustainBackupChipDragEnd(sprite, pointer.worldX, pointer.worldY)
         return
       }
-      const state = this._spriteToMatState(sprite)
       if (!state) return
 
       const wx = pointer.worldX
@@ -1042,31 +1306,64 @@ export class FireCampsiteMinigame extends Phaser.Scene {
   // CLEAR STEP
   // ════════════════════════════════════════════════════════════════════════════
 
+  _enterRenIntro() {
+    this._titleText.setText(`Day ${this.day} — The forest`)
+    this._dialogue.showSequence([
+      { speaker: 'Ren',   text: 'Huh. Do not see many people out this deep.' },
+      { speaker: 'Ren',   text: 'Especially not before a storm.' },
+      { speaker: 'Aiden', text: 'I could say the same about you.' },
+      { speaker: 'Ren',   text: 'Fair enough.' },
+      { speaker: 'Ren',   text: 'I am Ren — I hunt out here most seasons.' },
+      { speaker: 'Ren',   text: 'You setting up camp for the night?' },
+      { speaker: 'Aiden', text: 'I need to be here when the rain stops. There is an herb that only shows itself after a storm.' },
+      { speaker: 'Ren',   text: 'Shimmerleaf? You are going to need a fire for that — you will never spot it in the dark.' },
+      { speaker: 'Ren',   text: 'Tell you what — I will camp here tonight too. Two people keeping a fire alive beats one.' },
+      { speaker: 'Aiden', text: 'I would not say no to that.' },
+      { speaker: 'Ren',   text: 'Then let us get moving. Rain is not going to wait.' },
+    ], () => {
+      this._dialogue.hide()
+      this._enterStep('clear')
+    })
+  }
+
   _enterClear() {
     this._titleText.setText(`Day ${this.day} — Clear the camp`)
 
-    // Show debris, enable interaction
+    // Visual setup — not interactive yet
     this._debrisObjects.forEach(({ circle, icon }) => {
-      circle.setAlpha(1).setInteractive({ useHandCursor: true })
+      circle.setAlpha(1)
       icon.setAlpha(1)
     })
-
-    // Sort zones: muted
     Object.values(this._sortZones).forEach(z => z.rect.setAlpha(0.3))
-
-    // Stack rings: muted
     this._stackGraphics.setAlpha(0.3)
     this._stackLabelTexts.forEach(t => t.setAlpha(0.3))
-
-    // Flint: greyed
     this._setFlintActive(false)
-
-    // Show counter
     this._clearCounterText.setText(this._clearCounterLabel()).setAlpha(1)
     this._setMoveOnVisible(true)
-
     if (this._forestHotspot) {
       this._forestHotspot.setVisible(true).setAlpha(0.55)
+    }
+
+    if (this._stepProposalShown.clear) {
+      this._beginClearInteraction()
+      return
+    }
+    this._stepProposalShown.clear = true
+
+    this._dialogue.showSequence([
+      { speaker: 'Ren', text: 'First things first — help me clear this ground. Dead leaves, dry debris, anything loose.' },
+      { speaker: 'Ren', text: 'One stray ember lands on that and suddenly the fire is everywhere except where you want it.' },
+    ], () => {
+      this._dialogue.hide()
+      this._beginClearInteraction()
+    })
+  }
+
+  _beginClearInteraction() {
+    this._debrisObjects.forEach(({ circle }) => {
+      circle.setInteractive({ useHandCursor: true })
+    })
+    if (this._forestHotspot) {
       this._forestHotspot.setInteractive({ useHandCursor: true })
       if (this._forestPulseTween) {
         this._forestPulseTween.restart()
@@ -1098,14 +1395,12 @@ export class FireCampsiteMinigame extends Phaser.Scene {
   _onForestHotspotClick() {
     if (this.step !== 'clear') return
 
-    if (this._debrisRemaining > 0) {
-      this._showDialogue('Aiden: "I should tidy up here first."')
-      return
-    }
+    if (this._debrisRemaining > 0) return
 
     if (this._gatherDialogueDone) {
-      this.scene.stop('FireCampsiteMinigame')
-      this.scene.start('FireCollectMinigame', { day: this.day })
+      this.registry.set('devFireBuildChain', true)
+      this.scene.stop('FireBuildingMinigame')
+      this.scene.start('FireBuildingCollect', { day: this.day })
       return
     }
 
@@ -1120,44 +1415,60 @@ export class FireCampsiteMinigame extends Phaser.Scene {
   }
 
   /**
-   * Aiden lines after clear (devFireBuildChain). Player must click the forest hotspot to enter FireCollect.
+   * After clear (devFireBuildChain): Ren §4.2 camp proposal; then player clicks forest → FireCollect.
    */
   _runGatherMaterialsDialogue() {
-    const LINE_MS = 2800
+    if (this._dialogueTimer) {
+      this._dialogueTimer.remove()
+      this._dialogueTimer = null
+    }
 
-    if (this._dialogueTimer) this._dialogueTimer.remove()
-    this._dialogueTimer = null
+    const _activateForest = () => {
+      this._dialogue.hide()
+      this._gatherDialogueDone = true
+      this.registry.set('fireCollectCampProposalDone', true)
+      if (this._forestPulseTween) {
+        this._forestPulseTween.restart()
+        this._forestPulseTween.resume()
+      }
+    }
 
-    this._dialogueBg.setVisible(true)
-    this._dialogueText
-      .setText('Aiden: "Good. Now I need to gather materials."')
-      .setVisible(true)
-
-    this._gatherDialogueTimer = this.time.delayedCall(LINE_MS, () => {
-      this._gatherDialogueTimer = null
-      this._dialogueText.setText('Aiden: "There should be something useful in the trees nearby."')
-
-      this._gatherDialogueTimer = this.time.delayedCall(LINE_MS, () => {
-        this._gatherDialogueTimer = null
-        this._dialogueBg.setVisible(false)
-        this._dialogueText.setVisible(false)
-        this._gatherDialogueDone = true
-        if (this._forestPulseTween) {
-          this._forestPulseTween.restart()
-          this._forestPulseTween.resume()
-        }
-      })
+    this._dialogue.showSequence([
+      { speaker: 'Ren', text: 'Right. We need wood.' },
+      { speaker: 'Ren', text: 'Rain is picking up so whatever is dry out there will not stay dry for long.' },
+      { speaker: 'Ren', text: 'You go ahead — you know what to grab, yeah?' },
+    ], () => {
+      this._dialogue.showChoices([
+        {
+          text: 'Of course. Three types — tinder, kindling, fuel wood.',
+          onSelect: () => {
+            this._dialogue.show({
+              speaker: 'Ren',
+              text: 'Alright, let us go then.',
+              onComplete: _activateForest,
+            })
+          },
+        },
+        {
+          text: 'Roughly, but remind me.',
+          onSelect: () => {
+            this._dialogue.showSequence([
+              { speaker: 'Ren', text: 'Three types: tinder, kindling, and fuel wood.' },
+              { speaker: 'Ren', text: 'Tinder is the lightest, driest stuff — leaves, dry grass, anything that crumbles. That catches the spark.' },
+              { speaker: 'Ren', text: 'Kindling is thin sticks, things you can snap. They catch from the tinder and give the flame time to grow.' },
+              { speaker: 'Ren', text: 'Fuel wood is the thick pieces. Once the fire is going, that keeps it alive.' },
+              { speaker: 'Ren', text: 'Aim for three handfuls of tinder, three of kindling, and two good pieces of fuel.' },
+              { speaker: 'Ren', text: 'Do not grab anything heavy or damp — wet wood kills a fire before it starts.' },
+            ], _activateForest)
+          },
+        },
+      ])
     })
   }
 
   _onDebrisClick(index, circle, icon) {
     const obj = this._debrisObjects[index]
     if (obj.removed) return
-
-    if (!this._debrisClicked) {
-      this._debrisClicked = true
-      this._showDialogue('"Clear the area before lighting anything. Dry debris near a fire spreads fast."')
-    }
 
     obj.removed = true
     circle.disableInteractive().setVisible(false)
@@ -1172,13 +1483,18 @@ export class FireCampsiteMinigame extends Phaser.Scene {
   _onAllDebrisCleared() {
     this._groundCleared = true
     this._rockRing.setVisible(true)
-
     this._clearCounterText?.setVisible(false)
     this._clearCheckmark?.setVisible(true)
 
-    this._clearCompleteTimer = this.time.delayedCall(1200, () => {
+    this._clearCompleteTimer = this.time.delayedCall(500, () => {
       this._clearCompleteTimer = null
-      this._onMoveOn()
+      this._dialogue.showSequence([
+        { speaker: 'Ren', text: 'Good. Bare soil.' },
+        { speaker: 'Ren', text: 'Now if a spark jumps, it has nowhere to go. That is how you keep a fire under control.' },
+      ], () => {
+        this._dialogue.hide()
+        this._onMoveOn()
+      })
     })
   }
 
@@ -1204,12 +1520,7 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     this._clearCounterText?.setVisible(false)
     this._clearCheckmark?.setVisible(false)
 
-    if (this.registry.get('devFireBuildChain')) {
-      this._runGatherMaterialsDialogue()
-      return
-    }
-
-    this._enterStep('sort')
+    this._runGatherMaterialsDialogue()
   }
 
   _clearCounterLabel() {
@@ -1221,12 +1532,52 @@ export class FireCampsiteMinigame extends Phaser.Scene {
   // ════════════════════════════════════════════════════════════════════════════
 
   _enterSort() {
-    const H = this.scale.height
-    const packX = SORT_PACK_HUD_X
-    const packY = H - SORT_PACK_HUD_Y_FROM_BOTTOM
-
     this._titleText.setText(`Day ${this.day} — Sort your materials`)
-    this._sortUnpackRunning = false
+
+    if (this._stepProposalShown.sort) {
+      this._beginSort()
+      return
+    }
+    this._stepProposalShown.sort = true
+
+    this._dialogue.showSequence([
+      { speaker: 'Ren', text: 'Alright — before we build anything, let us sort through this.' },
+      { speaker: 'Ren', text: 'Group them by type so when you build the lay you can grab what you need without thinking.' },
+      { speaker: 'Ren', text: 'Trust me — fumbling for the right piece when your fire is dying is not fun.' },
+      { speaker: 'Ren', text: 'Go ahead and separate them out. You remember which is which, right?' },
+    ], () => {
+      this._dialogue.showChoices([
+        {
+          text: 'Tinder, kindling, fuel wood. I got it.',
+          onSelect: () => {
+            this._dialogue.show({
+              speaker: 'Ren',
+              text: 'Go for it then.',
+              onComplete: () => { this._dialogue.hide(); this._beginSort() },
+            })
+          },
+        },
+        {
+          text: 'Walk me through it again.',
+          onSelect: () => {
+            this._dialogue.showSequence([
+              { speaker: 'Ren', text: 'Sure. Three piles.' },
+              { speaker: 'Ren', text: 'Tinder is fine and light — leaves, dry grass, anything that crumbles. That catches the spark.' },
+              { speaker: 'Ren', text: 'Kindling is thin sticks you can snap. They catch from the tinder and keep the flame growing.' },
+              { speaker: 'Ren', text: 'Fuel wood is the heavy stuff — thick branches. They burn slow and long through the night.' },
+              { speaker: 'Ren', text: 'Pick each piece up. Ask yourself — crumbly light, thin snappy, or heavy solid?' },
+            ], () => { this._dialogue.hide(); this._beginSort() })
+          },
+        },
+      ])
+    })
+  }
+
+  _beginSort() {
+    const H = this.scale.height
+    const W = this.scale.width
+    const stashX = W * 0.12
+    const stashY = H * 0.34
 
     Object.values(this._sortZones).forEach(z => {
       this.tweens.add({ targets: z.rect, alpha: 0.85, duration: 300 })
@@ -1237,12 +1588,10 @@ export class FireCampsiteMinigame extends Phaser.Scene {
 
     for (const state of Object.values(this._matStates)) {
       if (!state.sprite || !state.label) continue
-      state.sprite.setPosition(packX, packY)
-      state.label.setPosition(packX, packY + ITEM_H / 2 + 4)
+      state.sprite.setPosition(stashX, stashY)
+      state.label.setPosition(stashX, stashY + ITEM_H / 2 + 4)
       state.sprite.setAlpha(0)
       state.label.setAlpha(0)
-      // Pile sprites are not interactive until after unpack; setDraggable(false)
-      // on a game object with no input hits Phaser's InputPlugin (null input).
       if (state.sprite.input) {
         this.input.setDraggable(state.sprite, false)
         state.sprite.disableInteractive()
@@ -1254,7 +1603,7 @@ export class FireCampsiteMinigame extends Phaser.Scene {
       return
     }
 
-    this._buildSortPackHud(packX, packY)
+    this._scatterSortMaterialsIntoLeft()
   }
 
   _destroySortPackHud() {
@@ -1264,156 +1613,58 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     this._sortPackUiNodes.length = 0
   }
 
-  _buildSortPackHud(packX, packY) {
-    this._destroySortPackHud()
-    const depth = 30
-
-    const stroke = this.add
-      .rectangle(packX, packY, 58, 52, 0x1a1208, 0.92)
-      .setStrokeStyle(2, 0x7a9050)
-      .setDepth(depth)
-      .setInteractive({ useHandCursor: true })
-
-    const icon = this.add
-      .text(packX - 2, packY - 2, '🎒', { fontSize: '28px' })
-      .setOrigin(0.5)
-      .setDepth(depth + 1)
-
-    const badge = this.add
-      .text(packX + 22, packY - 20, String(this._collected.length), {
-        fontSize: '14px',
-        fontFamily: 'Georgia, serif',
-        fill: '#f5e8c0',
-        stroke: '#1a0f00',
-        strokeThickness: 3,
-      })
-      .setOrigin(0.5)
-      .setDepth(depth + 2)
-
-    let expanded = false
-    let expandBg = null
-    let takeBtn = null
-    let takeLabel = null
-
-    const collapseExpand = () => {
-      expanded = false
-      for (const n of [expandBg, takeBtn, takeLabel]) {
-        if (!n) continue
-        const idx = this._sortPackUiNodes.indexOf(n)
-        if (idx !== -1) this._sortPackUiNodes.splice(idx, 1)
-        n.destroy()
-      }
-      expandBg = takeBtn = takeLabel = null
-    }
-
-    const showExpand = () => {
-      if (expanded || this._sortUnpackRunning) return
-      expanded = true
-      expandBg = this.add
-        .rectangle(packX + 86, packY - 72, 132, 76, 0x120d08, 0.94)
-        .setStrokeStyle(2, 0x6b5020)
-        .setDepth(depth + 3)
-      takeBtn = this.add
-        .rectangle(packX + 86, packY - 58, 96, 32, 0x2a3018)
-        .setStrokeStyle(2, 0x7a9050)
-        .setDepth(depth + 4)
-        .setInteractive({ useHandCursor: true })
-      takeLabel = this.add
-        .text(packX + 86, packY - 58, 'Take Out', {
-          fontSize: '15px',
-          fontFamily: 'Georgia, serif',
-          fill: '#c8e0a0',
-        })
-        .setOrigin(0.5)
-        .setDepth(depth + 5)
-
-      takeBtn.on('pointerover', () => takeBtn.setFillStyle(0x3a4028))
-      takeBtn.on('pointerout', () => takeBtn.setFillStyle(0x2a3018))
-      takeBtn.on('pointerup', (pointer) => {
-        pointer.event?.stopPropagation?.()
-        if (this.step !== 'sort' || this._sortUnpackRunning) return
-        collapseExpand()
-        this._runSortUnpackFromBackpack(packX, packY)
-      })
-
-      this._sortPackUiNodes.push(expandBg, takeBtn, takeLabel)
-    }
-
-    stroke.on('pointerup', () => {
-      if (this._sortUnpackRunning) return
-      if (expanded) {
-        collapseExpand()
-      } else {
-        showExpand()
-      }
-    })
-
-    this._sortPackUiNodes.push(stroke, icon, badge)
-  }
-
-  _runSortUnpackFromBackpack(packX, packY) {
-    if (this._sortUnpackRunning) return
-    this._sortUnpackRunning = true
+  /**
+   * After forest collect: spread pile sprites randomly on the left playfield (no backpack / Take Out).
+   */
+  _scatterSortMaterialsIntoLeft() {
     this._destroySortPackHud()
 
-    const ordered = this._collected
+    const W = this.scale.width
+    const H = this.scale.height
+    const pad = 44
+    const left = pad
+    const right = Math.round(W * 0.38)
+    const top = Math.round(H * 0.14)
+    const bottom = Math.round(H * 0.58)
+
+    let ordered = this._collected
       .map((_, idx) => this._matStates[`pile_${idx}`])
       .filter(Boolean)
+    ordered = Phaser.Utils.Array.Shuffle([...ordered])
 
-    const n = ordered.length
-    if (n === 0) {
-      this._sortUnpackRunning = false
-      this._enableSortInteractionAfterUnpack()
-      return
+    const placed = []
+    const minD = 56
+
+    const fits = (x, y) => {
+      for (const p of placed) {
+        const dx = x - p.x
+        const dy = y - p.y
+        if (dx * dx + dy * dy < minD * minD) return false
+      }
+      return true
     }
 
-    let finished = 0
-    const doneOne = () => {
-      finished++
-      if (finished >= n) {
-        this._sortUnpackRunning = false
-        this._enableSortInteractionAfterUnpack()
+    ordered.forEach((state) => {
+      let x = left
+      let y = top
+      let ok = false
+      for (let t = 0; t < 48 && !ok; t++) {
+        x = Phaser.Math.Between(left, right)
+        y = Phaser.Math.Between(top, bottom)
+        ok = fits(x, y)
       }
-    }
+      placed.push({ x, y })
 
-    ordered.forEach((state, i) => {
-      const { x: hx, y: hy } = state.homePos
-      const delay = i * SORT_UNPACK_STAGGER_MS
-      const ly = hy + ITEM_H / 2 + 4
-
-      state.sprite.setPosition(packX, packY).setAlpha(0)
-      state.label.setPosition(packX, packY + ITEM_H / 2 + 4).setAlpha(0)
-
-      let parts = 0
-      const partDone = () => {
-        parts++
-        if (parts === 2) doneOne()
-      }
-
-      this.tweens.add({
-        targets: state.sprite,
-        x: hx,
-        y: hy,
-        alpha: 1,
-        delay,
-        duration: SORT_UNPACK_FLY_DURATION_MS,
-        ease: 'Quad.Out',
-        onComplete: partDone,
-      })
-      this.tweens.add({
-        targets: state.label,
-        x: hx,
-        y: ly,
-        alpha: 1,
-        delay,
-        duration: SORT_UNPACK_FLY_DURATION_MS,
-        ease: 'Quad.Out',
-        onComplete: partDone,
-      })
+      state.homePos = { x, y }
+      state.sprite.setPosition(x, y).setAlpha(1)
+      state.label.setPosition(x, y + ITEM_H / 2 + 4).setAlpha(1)
     })
+
+    this._enableSortInteractionAfterUnpack()
   }
 
   _enableSortInteractionAfterUnpack() {
+    if (this._sortFeedbackLocked) return
     for (const state of Object.values(this._matStates)) {
       if (state.phase !== 'pile') continue
 
@@ -1423,17 +1674,33 @@ export class FireCampsiteMinigame extends Phaser.Scene {
       } else {
         state.sprite.setInteractive({ useHandCursor: true })
         state.sprite.off('pointerup')
-        state.sprite.on('pointerup', () => {
+        state.        sprite.on('pointerup', () => {
           if (this.step === 'sort') {
-            this._showDialogue('"This is too wet for any role tonight."')
-            this._greyOut(state)
+            this._showRenLines(WET_MATERIAL_REN_LINES, () => this._greyOut(state))
           }
         })
       }
     }
   }
 
+  _disableSortPileDragForRenFeedback() {
+    this._sortFeedbackLocked = true
+    for (const state of Object.values(this._matStates)) {
+      if (state.phase !== 'pile') continue
+      if (!state.sprite.input) continue
+      this.input.setDraggable(state.sprite, false)
+      state.sprite.disableInteractive()
+    }
+  }
+
+  _restoreSortPileDragAfterRenFeedback() {
+    this._sortFeedbackLocked = false
+    if (this.step !== 'sort') return
+    this._enableSortInteractionAfterUnpack()
+  }
+
   _exitSort() {
+    this._sortFeedbackLocked = false
     this._destroySortPackHud()
 
     for (const state of Object.values(this._matStates)) {
@@ -1442,9 +1709,11 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     }
 
     Object.values(this._sortZones).forEach(z => {
+      this.tweens.killTweensOf(z.rect)
       this.tweens.add({ targets: z.rect, alpha: 0.3, duration: 300 })
     })
     this._sortZoneParts.forEach(({ labelTxt, descTxt }) => {
+      this.tweens.killTweensOf([labelTxt, descTxt])
       this.tweens.add({ targets: [labelTxt, descTxt], alpha: 0.3, duration: 300 })
     })
   }
@@ -1460,12 +1729,11 @@ export class FireCampsiteMinigame extends Phaser.Scene {
   }
 
   _trySortPlace(state, zoneId) {
-    const correctZone = CORRECT_ZONE[state.id]
+    const correctZone = correctSortZoneForMatId(state.id)
 
-    if (correctZone === undefined) {
-      this._showDialogue('"This is too wet for any role tonight."')
+    if (correctZone == null) {
       this._bounceBack(state)
-      this._greyOut(state)
+      this._showRenLines(WET_MATERIAL_REN_LINES, () => this._greyOut(state))
       return
     }
 
@@ -1478,7 +1746,7 @@ export class FireCampsiteMinigame extends Phaser.Scene {
 
   _sortCorrect(state, zoneId) {
     state.phase      = 'sorted'
-    state.sortZoneId = zoneId
+    state.sortZoneId = normalizeStackSortZoneId(zoneId)
     state.sprite.disableInteractive()
     this.input.setDraggable(state.sprite, false)
 
@@ -1488,32 +1756,90 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     const snapY  = zone.y - 10
     state.zonePos = { x: snapX, y: snapY }
 
+    const showRenIntro = !this._sortRenZoneIntroShown[zoneId]
+    if (showRenIntro) this._sortRenZoneIntroShown[zoneId] = true
+
+    this._sortedCount++
+
+    const runAfterTween = () => {
+      state.label.setPosition(snapX, snapY + ITEM_H / 2 + 4)
+      if (showRenIntro) {
+        this._flashZone(zoneId, 0x44dd44)
+        this._disableSortPileDragForRenFeedback()
+        const lines = SORT_FIRST_CORRECT_REN[zoneId] ?? SORT_FIRST_CORRECT_REN.tinder
+        this._dialogue.showSequence(
+          lines.map((text) => ({ speaker: 'Ren', text })),
+          () => {
+            this._dialogue.hide()
+            this._restoreSortPileDragAfterRenFeedback()
+            this._checkSortComplete()
+          },
+        )
+      } else {
+        this._flashZone(zoneId, 0x44dd44, 520)
+        this._checkSortComplete()
+      }
+    }
+
     this.tweens.add({
       targets: [state.sprite, state.label],
       x: snapX, y: snapY,
       duration: 200, ease: 'Back.Out',
+      onComplete: runAfterTween,
     })
-    state.label.setPosition(snapX, snapY + ITEM_H / 2 + 4)
-
-    this._flashZone(zoneId, 0x44dd44)
-    this._showDialogue('"Good."')
-    this._sortedCount++
-    this._checkSortComplete()
   }
 
   _sortWrong(state, zoneId) {
     this._sortHadError = true
-    const specific = WRONG_SORT_FEEDBACK[state.id]?.[zoneId]
-    const text = specific ? `"${specific}"` : '"That doesn\'t belong there."'
-    this._showDialogue(text)
+    const correctZone = correctSortZoneForMatId(state.id)
+    const renLines = sortWrongRenLines(correctZone, zoneId)
+
     this._flashZone(zoneId, 0xdd4444)
     this._bounceBack(state)
+
+    if (!renLines.length) {
+      this._restoreSortPileDragAfterRenFeedback()
+      return
+    }
+
+    this._disableSortPileDragForRenFeedback()
+    this._dialogue.showSequence(
+      renLines.map((text) => ({ speaker: 'Ren', text })),
+      () => {
+        this._dialogue.hide()
+        this._restoreSortPileDragAfterRenFeedback()
+      },
+    )
   }
 
   _checkSortComplete() {
     if (this._sortedCount < this._sortableIds.length) return
-    if (this._sortHadError) this._showDialogue('"Had to rethink that."')
-    this.time.delayedCall(1000, () => this._enterStep('stack'))
+
+    const sortedPayload = this._buildSortedMaterialsRegistryPayload()
+    this.registry.set('sortedMaterials', sortedPayload)
+    assertSortedMaterialsShape(sortedPayload, 'sortComplete')
+
+    this._disableSortPileDragForRenFeedback()
+    this._dialogue.showSequence(
+      SORT_COMPLETE_REN_LINES.map((text) => ({ speaker: 'Ren', text })),
+      () => {
+        this._dialogue.hide()
+        this._restoreSortPileDragAfterRenFeedback()
+        this._enterStep('stack')
+      },
+    )
+  }
+
+  /** §559–563 registry shape — one entry per sorted pile slot from `_matStates`. */
+  _buildSortedMaterialsRegistryPayload() {
+    const out = { tinder: [], kindling: [], fuel_wood: [] }
+    for (const st of Object.values(this._matStates)) {
+      if (st.phase !== 'sorted' || !st.isSortable || !st.sortZoneId) continue
+      const z = normalizeStackSortZoneId(st.sortZoneId)
+      if (!out[z]) continue
+      out[z].push({ id: st.id, quality: st.quality })
+    }
+    return out
   }
 
   _bounceBack(state) {
@@ -1522,10 +1848,10 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     this.tweens.add({ targets: state.label,  x, y: y + ITEM_H / 2 + 4, duration: 280, ease: 'Back.Out' })
   }
 
-  _flashZone(zoneId, color) {
+  _flashZone(zoneId, color, restoreMs = 400) {
     const zone = this._sortZones[zoneId]
     zone.rect.setStrokeStyle(3, color)
-    this.time.delayedCall(400, () => zone.rect.setStrokeStyle(2, 0xaaaaaa))
+    this.time.delayedCall(restoreMs, () => zone.rect.setStrokeStyle(2, 0xaaaaaa))
   }
 
   _greyOut(state) {
@@ -1562,7 +1888,8 @@ export class FireCampsiteMinigame extends Phaser.Scene {
   }
 
   _stackSortedCategory(state) {
-    return state.sortZoneId ?? CORRECT_ZONE[state.id]
+    const z = state.sortZoneId ?? correctSortZoneForMatId(state.id)
+    return normalizeStackSortZoneId(z)
   }
 
   _stackRemainingInPile(zoneCat) {
@@ -1688,11 +2015,6 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     if (this.step !== 'stack') return
 
     if (this._stackLayLockedComplete) {
-      if (this.day === 2) {
-        this._showDialogue(
-          '"Lay is locked in — adjust pieces from the pit cross-section, or pick spark target and strike."',
-        )
-      }
       this._bounceToStackOrHome(state)
       return
     }
@@ -1720,17 +2042,75 @@ export class FireCampsiteMinigame extends Phaser.Scene {
 
     const need = STACK_LAYER_ORDER[this._stackActiveLayerIndex] ?? 'tinder'
     if (targetZone !== need) {
-      this._showDialogue(
-        `"${STACK_ZONE_DROP_DISPLAY[need]} layer next — that drop goes in the wrong band."`,
-      )
+      this._stackHadError = true
+      this._disableStackSortedDragForRen()
+      const renLines = stackWrongLayerRenLines(need, targetZone)
       this._bounceToStackOrHome(state)
+      if (!renLines.length) {
+        this._restoreStackSortedDragAfterRen()
+        return
+      }
+      this._dialogue.showSequence(
+        renLines.map((text) => ({ speaker: 'Ren', text })),
+        () => {
+          this._dialogue.hide()
+          this._restoreStackSortedDragAfterRen()
+        },
+      )
       return
     }
 
     this._tryStackPlace(state, targetZone)
   }
 
+  /** Places sorted sprites over sort zones (visible). Needed when skipping sort via dev/mock jump. */
+  _ensureSortedMaterialsZoneLayout() {
+    for (const state of Object.values(this._matStates)) {
+      if (state.phase !== 'sorted' || !state.isSortable || !state.sortZoneId) continue
+      const zone = this._sortZones[state.sortZoneId]
+      if (!zone) continue
+      if (!state.zonePos) {
+        const h = (state.pileKey ?? '').length
+        const offset = (h % 2 === 0) ? -16 : 16
+        state.zonePos = { x: zone.x + offset, y: zone.y - 10 }
+      }
+      const dim = state.greyed || state.quality === 'BAD'
+      state.sprite.setVisible(true)
+      state.label?.setVisible(true)
+      state.sprite.setPosition(state.zonePos.x, state.zonePos.y)
+      state.label?.setPosition(state.zonePos.x, state.zonePos.y + ITEM_H / 2 + 4)
+      state.sprite.setAlpha(dim ? 0.3 : 1)
+      state.label?.setAlpha(dim ? 0.3 : 1)
+    }
+  }
+
   _syncStackSortedDraggability() {
+    if (this.step === 'stack' && this._stackRenFeedbackLocked) {
+      for (const state of Object.values(this._matStates)) {
+        if (!state.sprite) continue
+        if (state.phase !== 'sorted' || !state.isSortable) continue
+        this.input.setDraggable(state.sprite, false)
+        state.sprite.disableInteractive()
+      }
+      return
+    }
+
+    // Lay UI not built yet (Ren proposal / pit tap) — piles stay visible but non-draggable.
+    if (this.step === 'stack' && !this._stackCrossSectionCont) {
+      for (const state of Object.values(this._matStates)) {
+        if (!state.sprite) continue
+        if (state._stackTapHandler) {
+          state.sprite.off('pointerup', state._stackTapHandler)
+          state._stackTapHandler = null
+        }
+        if (state.phase === 'sorted' && state.isSortable) {
+          this.input.setDraggable(state.sprite, false)
+          state.sprite.disableInteractive()
+        }
+      }
+      return
+    }
+
     for (const state of Object.values(this._matStates)) {
       if (!state.sprite) continue
       if (state._stackTapHandler) {
@@ -1744,14 +2124,29 @@ export class FireCampsiteMinigame extends Phaser.Scene {
       if (state.quality === 'BAD') {
         this.input.setDraggable(state.sprite, false)
         state.sprite.disableInteractive()
+        state.sprite.setDepth(5)
+        state.label?.setDepth(6)
         continue
       }
       const z = this._stackSortedCategory(state)
+      if (z == null) {
+        this.input.setDraggable(state.sprite, false)
+        state.sprite.disableInteractive()
+        state.sprite.setDepth(5)
+        state.label?.setDepth(6)
+        continue
+      }
       const rem = this._stackRemainingInPile(z)
       if (rem <= 0) {
         this.input.setDraggable(state.sprite, false)
         state.sprite.disableInteractive()
+        state.sprite.setDepth(5)
+        state.label?.setDepth(6)
       } else {
+        const pileDepth = this.step === 'stack' ? STACK_SORTED_PILE_DEPTH : 5
+        const labelDepth = this.step === 'stack' ? STACK_SORTED_PILE_DEPTH + 1 : 6
+        state.sprite.setDepth(pileDepth)
+        state.label?.setDepth(labelDepth)
         state.sprite.setInteractive({ useHandCursor: true })
         if (this.step === 'stack') {
           this.input.setDraggable(state.sprite, true)
@@ -1835,6 +2230,10 @@ export class FireCampsiteMinigame extends Phaser.Scene {
   _destroyStackLayerNavUi() {
     this._stackFinishLayPulseTween?.stop()
     this._stackFinishLayPulseTween = null
+    this._stackLockedBlowBg?.destroy()
+    this._stackLockedBlowTxt?.destroy()
+    this._stackLockedBlowBg = null
+    this._stackLockedBlowTxt = null
     this._stackNextLayerBg?.destroy()
     this._stackNextLayerTxt?.destroy()
     this._stackPrevLayerBg?.destroy()
@@ -1956,8 +2355,28 @@ export class FireCampsiteMinigame extends Phaser.Scene {
       sx += 64
     }
 
+    const blowCX = this._pitX + 185 + 55 + 12 + 44
+    const blowCy = this._pitY
+    this._stackLockedBlowBg = this.add
+      .rectangle(blowCX, blowCy, 88, 110, 0x241810)
+      .setStrokeStyle(2, 0x3a3028)
+      .setDepth(18)
+      .setAlpha(0.38)
+      .setVisible(false)
+    this._stackLockedBlowTxt = this.add
+      .text(blowCX, blowCy + 28, 'BLOW', {
+        fontSize: '13px',
+        fontFamily: 'Georgia, serif',
+        fill: '#5a5048',
+      })
+      .setOrigin(0.5)
+      .setDepth(19)
+      .setAlpha(0.42)
+      .setVisible(false)
+
     this._updateStackNextLayerButtonLabel()
     this._updateStackPrevLayerButton()
+    this._refreshStackNextLayerMinimumGate()
   }
 
   _destroyStackStrikeHint() {
@@ -1966,12 +2385,13 @@ export class FireCampsiteMinigame extends Phaser.Scene {
   }
 
   /**
-   * Strike stays disabled until Finish lay — avoids accidental early ignite + brutal spark target.
+   * Lay incomplete: STRIKE + BLOW shown but disabled until FINISH LAY.
+   * Lay locked: STRIKE enters ignite teaching + mechanics (same scene — internal step only).
    */
   _updateStackStrikeGateUi() {
     if (this.step !== 'stack' || !this._flintBg) return
     if (!this._stackStrikeGateHint) {
-      const hintX = this._pitX + 185
+      const hintX = this._pitX + 242
       const hintY = this._pitY + 58
       this._stackStrikeGateHint = this.add
         .text(hintX, hintY, '', {
@@ -1979,21 +2399,40 @@ export class FireCampsiteMinigame extends Phaser.Scene {
           fontFamily: 'Georgia, serif',
           fill: '#cfa878',
           align: 'center',
-          wordWrap: { width: 148 },
+          wordWrap: { width: 216 },
         })
         .setOrigin(0.5, 0)
         .setDepth(14)
     }
+    if (this._stackLockedBlowBg && this._stackLockedBlowTxt) {
+      this._stackLockedBlowBg.setVisible(true)
+      this._stackLockedBlowTxt.setVisible(true)
+    }
     if (this._stackLayLockedComplete) {
       this._setFlintActive(true)
+      if (this._stackLockedBlowBg && this._stackLockedBlowTxt) {
+        this._stackLockedBlowBg.setAlpha(0.42)
+        this._stackLockedBlowTxt.setAlpha(0.48)
+      }
       this._stackStrikeGateHint.setVisible(false)
       return
     }
     this._setFlintActive(false)
-    this._stackStrikeGateHint.setText(
-      'Strike is locked.\nTap the FINISH LAY button above the pit first (amber outline, pulsing).',
-    )
+    if (this._stackLockedBlowBg && this._stackLockedBlowTxt) {
+      this._stackLockedBlowBg.setAlpha(0.28)
+      this._stackLockedBlowTxt.setAlpha(0.32)
+    }
+    const pitHint =
+      this._stackActiveLayerIndex >= 2
+        ? 'STRIKE / BLOW unlock after FINISH LAY.\nTap FINISH LAY above the pit (amber outline, pulsing).'
+        : 'STRIKE / BLOW unlock after FINISH LAY.\nFill each band, Next layer, then FINISH LAY on the top band.'
+    this._stackStrikeGateHint.setText(pitHint)
     this._stackStrikeGateHint.setVisible(true)
+  }
+
+  _beginIgniteFromStack() {
+    if (this.step !== 'stack' || !this._stackLayLockedComplete) return
+    this._enterStep('ignite')
   }
 
   _refreshStackNextLayerButtonEmphasis() {
@@ -2079,6 +2518,7 @@ export class FireCampsiteMinigame extends Phaser.Scene {
 
     if (this._stackLayLockedComplete) {
       this._stackLayLockedComplete = false
+      this._stackLaySummaryRenShown = false
       this._hideStackSparkControls()
       this._stackActiveLayerIndex = 2
       this._stackNextLayerBg?.setVisible(true)
@@ -2088,9 +2528,7 @@ export class FireCampsiteMinigame extends Phaser.Scene {
       this._updateStackPrevLayerButton()
       this._updateStackLayerHighlight()
       this._syncStackSortedDraggability()
-      this._showDialogue(
-        '"Back to editing — use Previous layer to move down, add or remove pieces, then Finish lay again."',
-      )
+      this._refreshStackNextLayerMinimumGate()
       this._updateStackStrikeGateUi()
       return
     }
@@ -2101,6 +2539,7 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     this._updateStackPrevLayerButton()
     this._updateStackLayerHighlight()
     this._syncStackSortedDraggability()
+    this._refreshStackNextLayerMinimumGate()
     this._updateStackStrikeGateUi()
   }
 
@@ -2111,6 +2550,7 @@ export class FireCampsiteMinigame extends Phaser.Scene {
       lastBand ? 'FINISH LAY' : 'Next layer',
     )
     this._refreshStackNextLayerButtonEmphasis()
+    this._refreshStackNextLayerMinimumGate()
   }
 
   _refreshStackSparkPickerStyles() {
@@ -2120,44 +2560,49 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     }
   }
 
-  _revealStackSparkControls() {
-    this._stackSparkLabel?.setVisible(true)
-    for (const p of this._stackSparkPickers) {
-      p.bg.setVisible(true).setInteractive({ useHandCursor: true })
-      p.txt.setVisible(true)
-    }
-    this._refreshStackSparkPickerStyles()
-  }
-
   _onStackNextLayerClick() {
     if (this.step !== 'stack' || this._stackLayLockedComplete) return
+
+    if (!this._stackMinimumMetForLayerIndex(this._stackActiveLayerIndex)) {
+      return
+    }
 
     if (this._stackActiveLayerIndex < 2) {
       this._stackActiveLayerIndex++
       this._updateStackNextLayerButtonLabel()
       this._updateStackLayerHighlight()
       this._updateStackPrevLayerButton()
-      this._showDialogue(
-        this._stackActiveLayerIndex === 1
-          ? '"Middle layer — build it how you like."'
-          : '"Top layer — last chance to shape the lay."',
-      )
       this._updateStackStrikeGateUi()
       return
+    }
+
+    const afterSummaryOrUnlock = () => {
+      this._restoreStackSortedDragAfterRen()
     }
 
     this._stackLayLockedComplete = true
     this._stackNextLayerBg?.setVisible(false)
     this._stackNextLayerTxt?.setVisible(false)
     this._stackNextLayerBg?.disableInteractive()
-    this._revealStackSparkControls()
+    this._hideStackSparkControls()
     this._updateStackLayerHighlight()
     this._syncStackSortedDraggability()
-    this._showDialogue(
-        '"Pick where the spark lands — base, middle, or top — then strike. A bad spot may never catch."',
-    )
     this._updateStackPrevLayerButton()
     this._updateStackStrikeGateUi()
+
+    if (this._stackBuildFireMinimumMet() && !this._stackLaySummaryRenShown) {
+      this._stackLaySummaryRenShown = true
+      this._disableStackSortedDragForRen()
+      this._dialogue.showSequence(
+        STACK_LAY_SUMMARY_REN_LINES.map((text) => ({ speaker: 'Ren', text })),
+        () => {
+          this._dialogue.hide()
+          afterSummaryOrUnlock()
+        },
+      )
+    } else {
+      afterSummaryOrUnlock()
+    }
   }
 
   _relayoutStackLayerMarkers(zoneId) {
@@ -2179,7 +2624,7 @@ export class FireCampsiteMinigame extends Phaser.Scene {
   _addStackCrossSectionMarker(zoneId, state) {
     if (!this._stackCrossSectionCont || !this._stackCrossSectionGeom) return
 
-    const matCat = CORRECT_ZONE[state.id]
+    const matCat = correctSortZoneForMatId(state.id)
     const col = STACK_MAT_VISUAL[matCat] ?? 0x888888
 
     const sq = this.add
@@ -2227,24 +2672,30 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     this._refreshStackCategoryCards()
     this._syncStackSortedDraggability()
     this._updateStackLayerHighlight()
+    this._refreshStackNextLayerMinimumGate()
   }
 
   _maybeStackFreePlacementHints(state, zoneId) {
-    const want = CORRECT_ZONE[state.id]
+    const want = correctSortZoneForMatId(state.id)
     if (!want || !this._stackFreeHintFlags) return
     if (want === zoneId) return
     if (this._stackFreeHintFlags.firstWrongPlacement) return
     this._stackFreeHintFlags.firstWrongPlacement = true
-    const line = WRONG_SORT_FEEDBACK[state.id]?.[zoneId]
-    const text = line
-      ? `"${line}"`
-      : '"That layer isn\'t ideal for this piece — lightest at the base, midsize in the middle, heaviest on top. I can still place it if I want."'
-    this._showDialogue(text)
+    const hintLines = stackMaterialMismatchRenLines(want, zoneId)
+    if (!hintLines.length) return
+    this._disableStackSortedDragForRen()
+    this._dialogue.showSequence(
+      hintLines.map((text) => ({ speaker: 'Ren', text })),
+      () => {
+        this._dialogue.hide()
+        this._restoreStackSortedDragAfterRen()
+      },
+    )
   }
 
   _stackOnPlacedTutorial(zoneId, state) {
-    const matCat = CORRECT_ZONE[state.id]
-    let primary = null
+    const matCat = correctSortZoneForMatId(state.id)
+    let lines = null
 
     if (
       zoneId === 'tinder' &&
@@ -2252,40 +2703,43 @@ export class FireCampsiteMinigame extends Phaser.Scene {
       !this._stackTutorialFlags.firstTinderBottom
     ) {
       this._stackTutorialFlags.firstTinderBottom = true
-      primary =
-        'Aiden: "Tinder at the base. This is what catches the spark first."'
+      lines = [
+        'Tinder at the base.',
+        'That is where the spark catches.',
+        'Good.',
+      ]
     } else if (
       zoneId === 'kindling' &&
       matCat === 'kindling' &&
       !this._stackTutorialFlags.firstKindlingMiddle
     ) {
       this._stackTutorialFlags.firstKindlingMiddle = true
-      primary =
-        'Aiden: "Kindling in the middle. It needs air to grow — don\'t pack it too tight."'
+      lines = [
+        'Kindling in the middle.',
+        'It catches from the tinder and carries the flame up.',
+      ]
     } else if (
       zoneId === 'fuel_wood' &&
       matCat === 'fuel_wood' &&
       !this._stackTutorialFlags.firstFuelTop
     ) {
       this._stackTutorialFlags.firstFuelTop = true
-      primary =
-        'Aiden: "Fuel on top. This is what keeps it going through the night."'
+      lines = [
+        'Fuel on top.',
+        'Once everything below is burning, this keeps it going all night.',
+      ]
     }
 
-    const meets = this._stackBuildFireMinimumMet()
-    let secondary = null
-    if (meets && !this._stackTutorialFlags.minRequirementsMet) {
-      this._stackTutorialFlags.minRequirementsMet = true
-      secondary = 'Aiden: "That should be enough to get it started."'
-    }
+    if (!lines?.length) return
 
-    if (primary) this._showDialogue(primary)
-    if (secondary) {
-      const delay = primary ? 3800 : 0
-      this.time.delayedCall(delay, () => {
-        if (this.step === 'stack') this._showDialogue(secondary)
-      })
-    }
+    this._disableStackSortedDragForRen()
+    this._dialogue.showSequence(
+      lines.map((text) => ({ speaker: 'Ren', text })),
+      () => {
+        this._dialogue.hide()
+        this._restoreStackSortedDragAfterRen()
+      },
+    )
   }
 
   _restoreDefaultStackRings() {
@@ -2602,74 +3056,66 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     this._scheduleNextDrainTick()
   }
 
-  /** After early lay strike (success or fail): burn tinder, lose half of kindling on stack. */
-  _consumeEarlyStrikeMaterials() {
-    const bottomKeys = []
-    const middleKeys = []
-    for (const st of Object.values(this._matStates)) {
-      if (st.phase !== 'placed' || !st.layerId) continue
-      if (st.layerId === 'bottom') bottomKeys.push(st.pileKey)
-      else if (st.layerId === 'middle') middleKeys.push(st.pileKey)
-    }
-    bottomKeys.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
-    middleKeys.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
-
-    const toRecall = [...bottomKeys]
-    const kindlingConsume = Math.ceil(middleKeys.length / 2)
-    for (let i = 0; i < kindlingConsume; i++) {
-      toRecall.push(middleKeys[i])
-    }
-
-    const recallSet = new Set(toRecall)
-
-    for (const zoneId of ['tinder', 'kindling']) {
-      const arr = this._stackLayerPlacements?.[zoneId]
-      if (!arr?.length) continue
-      for (let i = arr.length - 1; i >= 0; i--) {
-        if (recallSet.has(arr[i].pileKey)) {
-          arr[i].marker.destroy()
-          arr.splice(i, 1)
-        }
-      }
-    }
-
-    for (const pileKey of toRecall) {
-      const st = this._matStates[pileKey]
-      if (!st || st.phase !== 'placed') continue
-      const zoneId = LAYER_ID_TO_STACK_ZONE[st.layerId]
-      if (zoneId) {
-        this._stackDropCount[zoneId] = Math.max(0, this._stackDropCount[zoneId] - 1)
-      }
-      st.phase = 'consumed'
-      st.layerId = null
-      st.pitPos = null
-      st.sprite?.setAlpha(0)
-      st.label?.setAlpha(0)
-    }
-
-    this._stackUnitIndexInZone.tinder = this._stackDropCount.tinder
-    this._stackUnitIndexInZone.kindling = this._stackDropCount.kindling
-
-    if (this._stackCrossSectionCont && this._stackCrossSectionGeom) {
-      this._relayoutStackLayerMarkers('tinder')
-      this._relayoutStackLayerMarkers('kindling')
-    }
-
-    if (this._stackCategoryCards.length) {
-      this._refreshStackCategoryCards()
-    }
-    if (this.step === 'stack') {
-      this._syncStackSortedDraggability()
-      this._updateStackLayerHighlight()
-    }
-  }
-
   _stackBuildFireMinimumMet() {
     return (
       this._stackDropCount.tinder >= STACK_MIN_BOTTOM &&
       this._stackDropCount.kindling >= STACK_MIN_MIDDLE &&
       this._stackDropCount.fuel_wood >= STACK_MIN_TOP
     )
+  }
+
+  /** §637–641 — minimum drops on the active band before Next / FINISH LAY. */
+  _stackMinimumMetForLayerIndex(layerIndex) {
+    const zoneId = STACK_LAYER_ORDER[layerIndex]
+    if (!zoneId) return false
+    const mins = {
+      tinder: STACK_MIN_BOTTOM,
+      kindling: STACK_MIN_MIDDLE,
+      fuel_wood: STACK_MIN_TOP,
+    }
+    const min = mins[zoneId] ?? 0
+    return this._stackDropCount[zoneId] >= min
+  }
+
+  /** §705–716 — written before ignite uses layout-driven counts. */
+  _syncStackLayRegistry() {
+    const stackData = { bottom: [], middle: [], top: [] }
+    const reserveMaterials = []
+    for (const st of Object.values(this._matStates)) {
+      if (st.phase === 'placed' && st.layerId && stackData[st.layerId]) {
+        stackData[st.layerId].push({ id: st.id, quality: st.quality })
+      }
+      if (st.phase === 'sorted' && st.isSortable && st.quality !== 'BAD') {
+        reserveMaterials.push({ id: st.id, quality: st.quality })
+      }
+    }
+    this.registry.set('stackData', stackData)
+    this.registry.set('reserveMaterials', reserveMaterials)
+    assertStackRegistryShape(this.registry, '_syncStackLayRegistry')
+  }
+
+  _disableStackSortedDragForRen() {
+    this._stackRenFeedbackLocked = true
+    for (const state of Object.values(this._matStates)) {
+      if (state.phase !== 'sorted' || !state.isSortable || !state.sprite) continue
+      this.input.setDraggable(state.sprite, false)
+      state.sprite.disableInteractive()
+      state.sprite.setDepth(5)
+      state.label?.setDepth(6)
+    }
+  }
+
+  _restoreStackSortedDragAfterRen() {
+    this._stackRenFeedbackLocked = false
+    if (this.step === 'stack') this._syncStackSortedDraggability()
+  }
+
+  _refreshStackNextLayerMinimumGate() {
+    if (!this._stackNextLayerBg || !this._stackNextLayerTxt) return
+    if (this._stackLayLockedComplete || !this._stackNextLayerBg.visible) return
+    const met = this._stackMinimumMetForLayerIndex(this._stackActiveLayerIndex)
+    this._stackNextLayerBg.setAlpha(met ? 1 : 0.62)
+    this._stackNextLayerTxt.setAlpha(met ? 1 : 0.72)
   }
 
   // ════════════════════════════════════════════════════════════════════════════
@@ -2682,6 +3128,7 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     const W = this.scale.width
     const H = this.scale.height
 
+    // Read and clear preserve flags immediately (timing-sensitive).
     const preserveIgniteTrial = this._stackPreserveAfterIgniteTrial
     const preserveLayout = preserveIgniteTrial || this._stackReenterPreserveLayout
     this._stackPreserveAfterIgniteTrial = false
@@ -2699,11 +3146,11 @@ export class FireCampsiteMinigame extends Phaser.Scene {
       this._stackDropCount       = { tinder: 0, kindling: 0, fuel_wood: 0 }
       this._stackUnitIndexInZone = { tinder: 0, kindling: 0, fuel_wood: 0 }
       this._stackHadError        = false
+      this._stackLaySummaryRenShown = false
       this._stackTutorialFlags = {
         firstTinderBottom:   false,
         firstKindlingMiddle: false,
         firstFuelTop:        false,
-        minRequirementsMet:  false,
       }
       this._stackFreeHintFlags = {
         firstWrongPlacement: false,
@@ -2716,7 +3163,11 @@ export class FireCampsiteMinigame extends Phaser.Scene {
 
     this._applyStackStepZoneLabels()
 
+    Object.values(this._sortZones).forEach(z => {
+      this.tweens.killTweensOf(z.rect)
+    })
     this._sortZoneParts.forEach(({ labelTxt, descTxt }) => {
+      this.tweens.killTweensOf([labelTxt, descTxt])
       labelTxt.setAlpha(0)
       descTxt.setAlpha(0)
     })
@@ -2739,6 +3190,181 @@ export class FireCampsiteMinigame extends Phaser.Scene {
       return
     }
 
+    this._ensureSortedMaterialsZoneLayout()
+    this._setFlintActive(false)
+    this._syncStackSortedDraggability()
+
+    // Ignite trial: restore stack UI immediately (no dialogue / pit gate).
+    if (preserveIgniteTrial) {
+      this._stackAwaitingPitForLay = false
+      this._destroyStackPitTapPrompt()
+      this._beginStack(W, H, preserveLayout)
+      return
+    }
+
+    // Resume mid-stack (e.g. forest → campsite): Ren + pit already done — restore UI only.
+    if (this._stepProposalShown.stack && preserveLayout) {
+      this._stackAwaitingPitForLay = false
+      this._destroyStackPitTapPrompt()
+      this._beginStack(W, H, preserveLayout)
+      return
+    }
+
+    // First stack entry after sort: Ren proposal + choices first — pit prompt only after dialogue.
+    if (!this._stepProposalShown.stack) {
+      this._stepProposalShown.stack = true
+      this._stackPreserveLayoutPending = preserveLayout
+      this._runStackLayProposalDialogue()
+      return
+    }
+
+    // Fallback: proposal already shown — if lay UI never built, wait for pit tap.
+    this._stackPreserveLayoutPending = preserveLayout
+    if (!this._stackCrossSectionCont && hasStackables) {
+      if (this._stackDevJumpSkipPitPrompt) {
+        this._stackDevJumpSkipPitPrompt = false
+        this._stackAwaitingPitForLay = false
+        this._destroyStackPitTapPrompt()
+        this._beginStack(W, H, preserveLayout)
+        return
+      }
+      this._stackAwaitingPitForLay = true
+      this._destroyStackPitTapPrompt()
+      this._showStackPitTapPrompt(W, H)
+      return
+    }
+
+    this._stackAwaitingPitForLay = false
+    this._destroyStackPitTapPrompt()
+    this._beginStack(W, H, preserveLayout)
+  }
+
+  /** Semi-transparent pit hit zone + stroked pulse — tap opens `_beginStack`. */
+  _showStackPitTapPrompt(W, H) {
+    this._destroyStackPitTapPrompt()
+
+    const px = this._pitX
+    const py = this._pitY
+    const hitR = Math.round(Math.min(W, H) * 0.11)
+
+    this._stackPitPromptHit = this.add
+      .circle(px, py, hitR, 0x3a2810, 0.42)
+      .setStrokeStyle(4, 0xd4a84b, 0.95)
+      .setDepth(120)
+      .setInteractive({ useHandCursor: true })
+
+    this._stackPitPromptHit.on('pointerup', () => this._onStackPitTapPrompt())
+
+    this._stackPitPromptTween = this.tweens.addCounter({
+      from: 0,
+      to: Math.PI * 2,
+      duration: 1300,
+      repeat: -1,
+      ease: 'Linear',
+      onUpdate: (tw) => {
+        const t = tw.getValue()
+        const strokeW = Math.round(3 + Math.sin(t) * 2)
+        const strokeA = 0.65 + Math.sin(t + 0.5) * 0.28
+        const scale = 1 + Math.sin(t * 1.05) * 0.065
+        const fillA = 0.34 + Math.sin(t * 0.85) * 0.12
+        const hit = this._stackPitPromptHit
+        if (!hit?.active) return
+        hit.setStrokeStyle(strokeW, 0xd4a84b, Phaser.Math.Clamp(strokeA, 0.35, 1))
+        hit.setFillStyle(0x3a2810, Phaser.Math.Clamp(fillA, 0.18, 0.52))
+        hit.setScale(scale, scale)
+      },
+    })
+
+    this._stackPitPromptHintTxt = this.add
+      .text(px, py + hitR + 36, 'Tap the fire pit to start placing the lay.', {
+        fontSize: '15px',
+        fontFamily: 'Georgia, serif',
+        fill: '#e8dcc8',
+        align: 'center',
+      })
+      .setOrigin(0.5)
+      .setDepth(121)
+  }
+
+  _destroyStackPitTapPrompt() {
+    if (this._stackPitPromptTween) {
+      this._stackPitPromptTween.stop()
+      this._stackPitPromptTween = null
+    }
+    this._stackPitPromptHit?.destroy()
+    this._stackPitPromptHit = null
+    this._stackPitPromptHintTxt?.destroy()
+    this._stackPitPromptHintTxt = null
+  }
+
+  _onStackPitTapPrompt() {
+    if (this.step !== 'stack' || !this._stackAwaitingPitForLay) return
+
+    this._stackAwaitingPitForLay = false
+    this._destroyStackPitTapPrompt()
+
+    const W = this.scale.width
+    const H = this.scale.height
+    const preserveLayout = this._stackPreserveLayoutPending ?? false
+    this._beginStack(W, H, preserveLayout)
+  }
+
+  _runStackLayProposalDialogue() {
+    const finishProposalAndShowPitPrompt = () => {
+      if (this.step !== 'stack') return
+      this._dialogue.hide()
+      const W = this.scale.width
+      const H = this.scale.height
+      const preserveLayout = this._stackPreserveLayoutPending ?? false
+      this._stackPreserveLayoutPending = preserveLayout
+      this._stackAwaitingPitForLay = true
+      this._showStackPitTapPrompt(W, H)
+    }
+
+    this._dialogue.showSequence(
+      [
+        { speaker: 'Ren', text: 'Now we build. The order matters — and leave space between pieces.' },
+        { speaker: 'Ren', text: 'Fire needs air.' },
+        { speaker: 'Ren', text: 'Ready to lay it out?' },
+      ],
+      () => {
+        this._dialogue.showChoices([
+          {
+            text: 'Bottom to top. I know.',
+            onSelect: () => {
+              this._dialogue.show({
+                speaker: 'Ren',
+                text: 'Alright, let us get it set up.',
+                onComplete: finishProposalAndShowPitPrompt,
+              })
+            },
+          },
+          {
+            text: 'What goes where?',
+            onSelect: () => {
+              this._dialogue.showSequence(
+                [
+                  { speaker: 'Ren', text: 'Tinder at the bottom — that is where the spark lands.' },
+                  { speaker: 'Ren', text: 'Kindling on top of that — it catches from the tinder and grows the flame.' },
+                  { speaker: 'Ren', text: 'Fuel wood on top — it burns slow and keeps you going.' },
+                  { speaker: 'Ren', text: 'Leave gaps.' },
+                  { speaker: 'Ren', text: 'Pack it too tight and you choke it.' },
+                ],
+                finishProposalAndShowPitPrompt,
+              )
+            },
+          },
+        ])
+      },
+    )
+  }
+
+  _beginStack(W, H, preserveLayout) {
+    this._destroyStackPitTapPrompt()
+    this._stackAwaitingPitForLay = false
+    this._sortFeedbackLocked = false
+    this._stackRenFeedbackLocked = false
+
     this._createStackCrossSection()
     if (preserveLayout) this._rebuildPlacedStackMarkers()
 
@@ -2749,7 +3375,7 @@ export class FireCampsiteMinigame extends Phaser.Scene {
       this._stackNextLayerBg?.setVisible(false)
       this._stackNextLayerTxt?.setVisible(false)
       this._stackNextLayerBg?.disableInteractive()
-      this._revealStackSparkControls()
+      this._hideStackSparkControls()
       this._updateStackPrevLayerButton()
       this._updateStackStrikeGateUi()
     }
@@ -2773,28 +3399,22 @@ export class FireCampsiteMinigame extends Phaser.Scene {
         state.sprite.setPosition(state.zonePos.x, state.zonePos.y)
         state.label.setPosition(state.zonePos.x, state.zonePos.y + ITEM_H / 2 + 4)
       }
-      if (state.sprite.input) {
-        this.input.setDraggable(state.sprite, false)
-        state.sprite.disableInteractive()
-      }
+      this.input.setDraggable(state.sprite, false)
+      state.sprite.disableInteractive()
     }
 
     this._buildStackGoFindMaterials(W, H)
-
     this._updateStackStrikeGateUi()
-
     this._holdSlots.forEach(s => s.setAlpha(0))
 
-    this.time.delayedCall(350, () => {
+    if (this.step === 'stack') {
+      this._syncStackSortedDraggability()
+    }
+    this.time.delayedCall(50, () => {
       if (this.step !== 'stack') return
       this._syncStackSortedDraggability()
+      this._refreshStackNextLayerMinimumGate()
     })
-
-    if (!preserveLayout) {
-      this._showDialogue(
-        '"Drag pieces onto the pit cross-section or the rings. Use Next layer until the big button reads FINISH LAY — tap that before Strike. Strike stays dim until then."',
-      )
-    }
   }
 
   _rebuildPlacedStackMarkers() {
@@ -2810,6 +3430,8 @@ export class FireCampsiteMinigame extends Phaser.Scene {
   }
 
   _exitStack() {
+    this._stackAwaitingPitForLay = false
+    this._destroyStackPitTapPrompt()
     this._destroyStackGoFindMaterials()
     this._destroyStackStrikeHint()
     this._destroyStackLayerNavUi()
@@ -2822,9 +3444,13 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     this._setFlintActive(false)
 
     for (const state of Object.values(this._matStates)) {
+      if (state.sprite) {
+        state.sprite.setDepth(5)
+        state.label?.setDepth(6)
+      }
       if (state.sprite?.input) {
-      this.input.setDraggable(state.sprite, false)
-      state.sprite.disableInteractive()
+        this.input.setDraggable(state.sprite, false)
+        state.sprite.disableInteractive()
       }
     }
 
@@ -2873,8 +3499,6 @@ export class FireCampsiteMinigame extends Phaser.Scene {
   _onStackGoFindMaterials() {
     if (this.step !== 'stack') return
 
-    this._showDialogue('Aiden: "Not enough to work with. I need to find more."')
-
     const stamina = this.registry.get('stamina')
     const alive = stamina?.deduct(1) ?? true
     if (!alive) {
@@ -2883,23 +3507,21 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     }
 
     this.registry.set('fireCampsiteStackResume', this._buildStackResumePayload())
-    this.scene.stop('FireCampsiteMinigame')
-    this.scene.start('FireCollectMinigame', { day: this.day })
+    this.scene.stop('FireBuildingMinigame')
+    this.scene.start('FireBuildingCollect', { day: this.day })
   }
 
   _tryStackPlace(state, zoneId) {
     if (state.quality === 'BAD') {
-      this._showDialogue('"This is too wet for any role tonight."')
       this._bounceToStackOrHome(state)
-      this._greyOut(state)
+      this._showRenLines(WET_MATERIAL_REN_LINES, () => this._greyOut(state))
       return
     }
 
-    const correctZone = CORRECT_ZONE[state.id]
-    if (correctZone === undefined) {
-      this._showDialogue('"This is too wet for any role tonight."')
+    const correctZone = correctSortZoneForMatId(state.id)
+    if (correctZone == null) {
       this._bounceToStackOrHome(state)
-      this._greyOut(state)
+      this._showRenLines(WET_MATERIAL_REN_LINES, () => this._greyOut(state))
       return
     }
 
@@ -2910,8 +3532,6 @@ export class FireCampsiteMinigame extends Phaser.Scene {
   _stackFreePlace(state, zoneId) {
     const idx = this._stackUnitIndexInZone[zoneId]++
     this._stackDropCount[zoneId]++
-    const zoneName = STACK_ZONE_DROP_DISPLAY[zoneId]
-    console.log('dropped', state.id, 'into', zoneName, 'count now:', this._stackDropCount[zoneId])
 
     const pit = this._stackSlotInSortZone(zoneId, idx)
 
@@ -2950,6 +3570,7 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     this._refreshStackCategoryCards()
     this._syncStackSortedDraggability()
     this._updateStackLayerHighlight()
+    this._refreshStackNextLayerMinimumGate()
   }
 
   _bounceToStackOrHome(state) {
@@ -2965,7 +3586,453 @@ export class FireCampsiteMinigame extends Phaser.Scene {
       })
       return
     }
-      this._bounceBack(state)
+    this._bounceBack(state)
+  }
+
+  /** Dev/jump `startStep` ignite|sustain — apply registry `stackData` to placed materials + drop counts. */
+  _hydratePlacedStackFromRegistryIfNeeded() {
+    const entry = this._startStep
+    if (!entry || (entry !== 'ignite' && entry !== 'sustain')) return
+
+    const sd = this.registry.get('stackData')
+    if (!sd || !Array.isArray(sd.bottom)) return
+
+    const piles = Object.keys(this._matStates)
+      .filter((k) => k.startsWith('pile_'))
+      .map((k) => this._matStates[k])
+      .filter(Boolean)
+      .sort((a, b) => {
+        const na = parseInt(String(a.pileKey).replace(/\D/g, ''), 10) || 0
+        const nb = parseInt(String(b.pileKey).replace(/\D/g, ''), 10) || 0
+        return na - nb
+      })
+
+    const assign = (entries, layerId) => {
+      if (!entries?.length) return
+      for (const want of entries) {
+        const cand =
+          piles.find(
+            (p) =>
+              !p._registryHydrated &&
+              p.isSortable &&
+              p.id === want.id &&
+              (!want.quality || p.quality === want.quality),
+          ) ?? piles.find((p) => !p._registryHydrated && p.isSortable && p.id === want.id)
+        if (!cand) continue
+        cand._registryHydrated = true
+        cand.phase = 'placed'
+        cand.layerId = layerId
+        cand.sprite?.setAlpha(0)
+        cand.label?.setAlpha(0)
+      }
+    }
+
+    assign(sd.bottom, 'bottom')
+    assign(sd.middle, 'middle')
+    assign(sd.top, 'top')
+
+    this._stackDropCount.tinder = sd.bottom?.length ?? 0
+    this._stackDropCount.kindling = sd.middle?.length ?? 0
+    this._stackDropCount.fuel_wood = sd.top?.length ?? 0
+  }
+
+  _configureIgniteDifficultyParams() {
+    const inkBridge = this.registry.get('inkBridge')
+    const rawDiff = inkBridge?.getVariable('mg_fire_collect_score') ?? 'EASY'
+    const qualityRaw = inkBridge?.getVariable('campsite_quality') ?? 'good'
+    const quality = String(qualityRaw).toLowerCase() === 'poor' ? 'poor' : 'good'
+
+    this._igniteDifficulty = DIFFICULTY_CONFIG[rawDiff] ?? DIFFICULTY_CONFIG.EASY
+    this._igniteUseRain = this._igniteDifficulty.rainInterference && quality === 'poor'
+
+    let effectiveDecayMs = this._igniteDifficulty.decayMs
+    const mDecay = Math.max(
+      this._stackDropCount.kindling,
+      this._stackPlacedCountInLayer('middle'),
+    )
+    if (mDecay === 0) effectiveDecayMs = Math.floor(effectiveDecayMs * 0.52)
+    else if (mDecay === 1) effectiveDecayMs = Math.floor(effectiveDecayMs * 0.82)
+
+    const badN = this._collected.filter((m) => m.quality === 'BAD').length
+    effectiveDecayMs = Math.max(220, Math.floor(effectiveDecayMs - badN * 85))
+    if (quality === 'poor') effectiveDecayMs = Math.floor(effectiveDecayMs * 0.88)
+
+    const mult = this._computeStackIgniteTargetMultiplier()
+    effectiveDecayMs = Math.floor(
+      effectiveDecayMs * Phaser.Math.Clamp(2 - mult / 3.5, 0.55, 1.15),
+    )
+
+    this._effectiveDecayMs = effectiveDecayMs
+    this._igniteDecayPerTick = this._igniteDifficulty.decayPerTick
+
+    const tinderN = Math.max(
+      this._stackPlacedCountInLayer('bottom'),
+      this._stackDropCount.tinder || 0,
+    )
+    this._igniteSmokeThresholdPct = tinderN >= 3 ? 40 : tinderN === 2 ? 55 : 70
+
+    const kindN = Math.max(
+      this._stackPlacedCountInLayer('middle'),
+      this._stackDropCount.kindling || 0,
+    )
+    this._igniteBlowGain = kindN >= 3 ? 15 : kindN === 2 ? 11 : 7
+    /** Blow mistake penalty — fewer kindling → larger dip (§4.5). */
+    this._igniteBlowPenalty = kindN >= 3 ? 9 : kindN === 2 ? 13 : 17
+
+    this._igniteTarget = IGNITE_PROGRESS_MAX
+  }
+
+  /** Vertical center for UI-IGNITE-BAR — below outer pit ring (§4.5). */
+  _igniteBarCenterY() {
+    return this._pitY + STACK_TOP_R + IGNITE_BAR_RING_GAP
+  }
+
+  _layoutIgniteBarHudPositions(cx, outerW) {
+    const barY = this._igniteBarCenterY()
+    this._igniteBarBg?.setPosition(cx, barY)
+    this._igniteBarFill?.setPosition(cx - outerW / 2 + 4, barY)
+    this._layoutIgniteThresholdMarkers(cx, barY, outerW)
+  }
+
+  _ensureIgniteMechanicsHud(W, H) {
+    if (this._igniteBarBg) return
+
+    const cx = W / 2
+    const barY = this._igniteBarCenterY()
+    const outerW = 300
+    const h = 18
+    this._igniteBarInnerW = outerW - 8
+
+    this._igniteBarBg = this.add
+      .rectangle(cx, barY, outerW, h, 0x1a1410)
+      .setStrokeStyle(2, 0x5a4838)
+      .setDepth(25)
+      .setVisible(false)
+
+    this._igniteBarFill = this.add
+      .rectangle(cx - outerW / 2 + 4, barY, 0, h - 6, 0xc87830)
+      .setOrigin(0, 0.5)
+      .setDepth(26)
+      .setVisible(false)
+
+    this._igniteBarSmokeMarker = this.add
+      .rectangle(cx, barY, 2, h + 10, 0xa09070)
+      .setDepth(27)
+      .setAlpha(0.85)
+      .setVisible(false)
+
+    this._igniteBarFireMarker = this.add
+      .rectangle(cx, barY, 2, h + 10, 0xffcc66)
+      .setDepth(27)
+      .setAlpha(0.95)
+      .setVisible(false)
+
+    const bx = this._pitX + 210
+    const by = this._pitY + 95
+    this._igniteBlowBg = this.add
+      .rectangle(bx, by, 96, 72, 0x2a2218)
+      .setStrokeStyle(2, 0x4a4038)
+      .setDepth(130)
+      .setVisible(false)
+
+    this._igniteBlowTxt = this.add
+      .text(bx, by, 'Blow 💨', {
+        fontSize: '14px',
+        fontFamily: 'Georgia, serif',
+        fill: '#7a7060',
+      })
+      .setOrigin(0.5)
+      .setDepth(131)
+      .setVisible(false)
+
+    this._igniteBlowBg.on('pointerup', () => this._onIgniteBlowClick())
+  }
+
+  _destroyIgniteSparkPickPhaseUi() {
+    for (const o of this._igniteSparkPickPhaseObjs) {
+      o.bg?.destroy()
+      o.txt?.destroy()
+    }
+    this._igniteSparkPickPhaseObjs = []
+    this._igniteSparkPickLabel?.destroy()
+    this._igniteSparkPickLabel = null
+    this._ignitePitPickHit?.destroy()
+    this._ignitePitPickHit = null
+    this._ignitePitPickGraphics?.destroy()
+    this._ignitePitPickGraphics = null
+  }
+
+  _destroyIgniteLayerPickUi() {
+    this._destroyIgniteSparkPickPhaseUi()
+  }
+
+  /** Remove stack-phase pit overlay / recall chips that would sit above the igniter hit target. */
+  _igniteDisableConflictingStackHitTargets() {
+    this._destroyStackPitTapPrompt()
+    this._stackAwaitingPitForLay = false
+    for (const zoneId of Object.keys(this._stackLayerPlacements ?? {})) {
+      const arr = this._stackLayerPlacements[zoneId]
+      if (!Array.isArray(arr)) continue
+      for (const e of arr) {
+        e.marker?.disableInteractive?.()
+      }
+    }
+  }
+
+  _flashIgniteTapPitReminder() {
+    const hint = this._igniteSparkPickLabel
+    if (hint && hint.scene) {
+      this.tweens.add({
+        targets: hint,
+        scale: { from: 1, to: 1.12 },
+        duration: 100,
+        yoyo: true,
+        repeat: 2,
+        ease: 'Sine.easeInOut',
+      })
+    }
+    this._titleText.setText(
+      'Ignite — Tap the pit rings first (inner = tinder). STRIKE comes after.',
+    )
+  }
+
+  _startIgniteLayerStrikePhase() {
+    if (this.step !== 'ignite') return
+    this._igniteAwaitingLayerStrike = true
+    this._stopIgniteTimers()
+    this._igniteMechanicsPhase = null
+    this._igniteProgress = 0
+    this._igniteSparks = 0
+    this._igniteTotalClicks = 0
+    this._setIgniteMechanicsHudVisible(false)
+    this._setIgniteBlowInteractive(false)
+
+    this._destroyIgniteSparkPickPhaseUi()
+
+    this._tinderSprite.setAlpha(0.72)
+    this._tinderSprite.clearTint()
+    this._setFlintActive(true)
+
+    this._titleText.setText(
+      'Ignite — Tap the inner ring (tinder) or pick another layer (path A).',
+    )
+
+    this._igniteSparkTargetZone = this._stackSparkTargetZone ?? 'tinder'
+    this._mountIgnitePitLayerPickUi()
+  }
+
+  /** §4.5 — tap concentric pit rings to choose spark layer (path A = all rings; path B = tinder only). */
+  _mountIgnitePitLayerPickUi() {
+    if (this.step !== 'ignite') return
+
+    this._destroyIgniteSparkPickPhaseUi()
+    this._igniteDisableConflictingStackHitTargets()
+
+    const px = this._pitX
+    const py = this._pitY
+    const pathB = this._igniteProposalPath === 'pathB'
+    const ringDepth = 380
+    const hitDepth = 400
+
+    const g = this.add.graphics().setDepth(ringDepth)
+    this._ignitePitPickGraphics = g
+    if (pathB) {
+      g.lineStyle(4, 0xeec866, 0.95)
+      g.strokeCircle(px, py, STACK_BOTTOM_R)
+      g.lineStyle(2, 0x4a4038, 0.28)
+      g.strokeCircle(px, py, STACK_MIDDLE_R)
+      g.strokeCircle(px, py, STACK_TOP_R)
+    } else {
+      g.lineStyle(2, 0x8a7860, 0.55)
+      g.strokeCircle(px, py, STACK_BOTTOM_R)
+      g.strokeCircle(px, py, STACK_MIDDLE_R)
+      g.strokeCircle(px, py, STACK_TOP_R)
+    }
+
+    const hitR = pathB ? STACK_BOTTOM_R + 10 : STACK_TOP_R + 14
+    const pick = (pointer) => {
+      if (this.step !== 'ignite' || !this._igniteAwaitingLayerStrike) return
+      this._onIgnitePitLayerSelected(pointer.worldX, pointer.worldY, pathB)
+    }
+
+    const hit = this.add
+      .circle(px, py, hitR, 0x4a3820, 0.14)
+      .setStrokeStyle(2, 0xc4a060, 0.55)
+      .setDepth(hitDepth)
+      .setInteractive({ useHandCursor: true })
+
+    hit.on('pointerup', pick)
+    this._ignitePitPickHit = hit
+
+    const hint = pathB
+      ? 'Tap the tinder (inner) ring.'
+      : 'Tap a fire-pit layer — only tinder catches a spark.'
+    this._igniteSparkPickLabel = this.add
+      .text(px, py - STACK_TOP_R - 36, hint, {
+        fontSize: '12px',
+        fontFamily: 'Georgia, serif',
+        fill: '#c8b8a0',
+      })
+      .setOrigin(0.5)
+      .setDepth(hitDepth + 1)
+  }
+
+  _onIgnitePitLayerSelected(worldX, worldY, pathB) {
+    const dx = worldX - this._pitX
+    const dy = worldY - this._pitY
+    const d = Math.hypot(dx, dy)
+
+    if (pathB) {
+      if (d > STACK_BOTTOM_R + 10) return
+      this._igniteSparkTargetZone = 'tinder'
+      this._finishIgniteLayerPickSuccess()
+      return
+    }
+
+    let zoneId
+    if (d <= STACK_BOTTOM_R) zoneId = 'tinder'
+    else if (d <= STACK_MIDDLE_R) zoneId = 'kindling'
+    else if (d <= STACK_TOP_R + 14) zoneId = 'fuel_wood'
+    else return
+
+    if (zoneId !== 'tinder') {
+      this._dialogue.showSequence(
+        [
+          {
+            speaker: 'Ren',
+            text: 'Think about it — can a small spark catch on something that thick?',
+          },
+          { speaker: 'Ren', text: 'You want the finest, driest layer.' },
+        ],
+        () => this._dialogue.hide(),
+      )
+      return
+    }
+
+    this._igniteSparkTargetZone = 'tinder'
+    this._finishIgniteLayerPickSuccess()
+  }
+
+  _finishIgniteLayerPickSuccess() {
+    const lines = [
+      { speaker: 'Ren', text: 'Tinder. Right.' },
+      {
+        speaker: 'Ren',
+        text: 'That is the only layer fine enough to catch a spark.',
+      },
+    ]
+
+    this._dialogue.showSequence(lines, () => {
+      this._dialogue.hide()
+      this._igniteAwaitingLayerStrike = false
+      this._destroyIgniteSparkPickPhaseUi()
+      this._beginIgniteMechanics()
+    })
+  }
+
+  _igniteSmokePulseBrightMs() {
+    return this.day >= 3 ? 800 : 1500
+  }
+
+  _igniteSmokePulseDarkMs() {
+    return this.day >= 3 ? 1200 : 1000
+  }
+
+  _stopIgniteSmokePulse() {
+    if (this._igniteSmokePulseTimer) {
+      this._igniteSmokePulseTimer.remove(false)
+      this._igniteSmokePulseTimer = null
+    }
+    if (this._tinderSprite) this._tinderSprite.clearTint()
+  }
+
+  _scheduleIgniteSmokePulseTick() {
+    if (this._igniteMechanicsPhase !== 'blow') return
+    const dur =
+      this._igniteSmokePulsePhase === 'bright'
+        ? this._igniteSmokePulseBrightMs()
+        : this._igniteSmokePulseDarkMs()
+    if (this._igniteSmokePulseTimer) {
+      this._igniteSmokePulseTimer.remove(false)
+      this._igniteSmokePulseTimer = null
+    }
+    this._igniteSmokePulseTimer = this.time.delayedCall(dur, () => {
+      if (this._igniteMechanicsPhase !== 'blow') return
+      this._igniteSmokePulsePhase =
+        this._igniteSmokePulsePhase === 'bright' ? 'dark' : 'bright'
+      this._refreshIgniteSmokePulseVisual()
+      this._scheduleIgniteSmokePulseTick()
+    })
+  }
+
+  _startIgniteSmokePulse() {
+    this._stopIgniteSmokePulse()
+    this._igniteSmokePulsePhase = 'bright'
+    this._refreshIgniteSmokePulseVisual()
+    this._scheduleIgniteSmokePulseTick()
+  }
+
+  _refreshIgniteSmokePulseVisual() {
+    if (this._igniteMechanicsPhase !== 'blow') {
+      this._tinderSprite.clearTint()
+      return
+    }
+    if (this._igniteSmokePulsePhase === 'bright') {
+      this._tinderSprite.setTint(0xffaa88)
+    } else {
+      this._tinderSprite.setTint(0x8899aa)
+    }
+  }
+
+  _layoutIgniteThresholdMarkers(cx, barY, outerW) {
+    const inner = this._igniteBarInnerW
+    const left = cx - outerW / 2 + 4
+    const smx = left + (inner * this._igniteSmokeThresholdPct) / IGNITE_PROGRESS_MAX
+    const fmx = left + inner
+    this._igniteBarSmokeMarker.setPosition(smx, barY)
+    this._igniteBarFireMarker.setPosition(fmx, barY)
+  }
+
+  _setIgniteMechanicsHudVisible(v) {
+    const vis = v === true
+    this._igniteBarBg?.setVisible(vis)
+    this._igniteBarFill?.setVisible(vis)
+    this._igniteBarSmokeMarker?.setVisible(vis)
+    this._igniteBarFireMarker?.setVisible(vis)
+    this._igniteBlowBg?.setVisible(vis)
+    this._igniteBlowTxt?.setVisible(vis)
+  }
+
+  _refreshIgniteProgressUi() {
+    if (!this._igniteBarFill) return
+    const inner = this._igniteBarInnerW
+    const w = inner * Phaser.Math.Clamp(this._igniteProgress / IGNITE_PROGRESS_MAX, 0, 1)
+    this._igniteBarFill.width = Math.max(0, w)
+
+    const smoky = this._igniteMechanicsPhase === 'blow'
+    this._tinderSprite.setAlpha(smoky ? 0.94 : 0.72 + Math.min(0.2, this._igniteProgress / 220))
+
+    const blowReady = smoky
+    const blowLit = blowReady && this._igniteBlowBg?.input?.enabled
+    this._igniteBlowTxt?.setStyle({
+      fontSize: '14px',
+      fontFamily: 'Georgia, serif',
+      fill: blowLit ? '#d8ecc8' : '#5a5048',
+    })
+    this._igniteBlowBg?.setStrokeStyle(2, blowLit ? 0x8acb80 : 0x4a4038)
+    this._refreshIgniteSmokePulseVisual()
+  }
+
+  _setIgniteBlowInteractive(active) {
+    if (!this._igniteBlowBg) return
+    if (active) {
+      this._igniteBlowBg.setInteractive({ useHandCursor: true })
+      this._igniteBlowBg.setFillStyle(0x3a3428)
+    } else {
+      this._igniteBlowBg.disableInteractive()
+      this._igniteBlowBg.setFillStyle(0x2a2218)
+    }
+    this._refreshIgniteProgressUi()
   }
 
   // ════════════════════════════════════════════════════════════════════════════
@@ -2973,50 +4040,118 @@ export class FireCampsiteMinigame extends Phaser.Scene {
   // ════════════════════════════════════════════════════════════════════════════
 
   _enterIgnite() {
-    this._titleText.setText('Strike the flint — reach the spark target.')
+    this._titleText.setText('Catch the spark — heat, smoke, then breathe.')
 
-    // Re-read inkBridge for difficulty (written by InkBridge after fire_collect score)
-    const inkBridge = this.registry.get('inkBridge')
-    const rawDiff   = inkBridge?.getVariable('mg_fire_collect_score') ?? 'EASY'
-    const quality   = inkBridge?.getVariable('campsite_quality') ?? 'good'
+    this._igniteRetryUsed = false
 
-    this._igniteDifficulty  = DIFFICULTY_CONFIG[rawDiff] ?? DIFFICULTY_CONFIG.EASY
-    const baseTarget = this._igniteDifficulty.target
-    const mult = this._computeStackIgniteTargetMultiplier()
-    let target = Math.ceil(baseTarget * mult)
-    if (this._igniteEarlyLayAttempt) {
-      target = Math.max(target + 22, Math.ceil(baseTarget * mult * 3.2))
-    }
-    this._igniteTarget = Phaser.Math.Clamp(target, 8, 60)
-    this._igniteUseRain     = this._igniteDifficulty.rainInterference && quality === 'poor'
+    this._syncStackLayRegistry()
+    this._configureIgniteDifficultyParams()
 
-    const mDecay = this._stackDropCount.kindling
-    let effectiveDecayMs = this._igniteDifficulty.decayMs
-    if (mDecay === 0) effectiveDecayMs = Math.floor(effectiveDecayMs * 0.5)
-    else if (mDecay === 1) effectiveDecayMs = Math.floor(effectiveDecayMs * 0.8)
-    // mDecay >= 2: base decayMs (sparks hold normally)
-    this._effectiveDecayMs = effectiveDecayMs
+    const W = this.scale.width
+    const H = this.scale.height
+    this._ensureIgniteMechanicsHud(W, H)
 
-    // Reset ignite state
-    this._igniteSparks      = 0
+    this._igniteMechanicsPhase = null
+    this._igniteProgress = 0
+    this._igniteSparks = 0
     this._igniteTotalClicks = 0
-    this._igniteMidWarning  = false
-    this._igniteLastClick   = this.time.now
+    this._igniteLastClick = this.time.now
+    this._igniteSmokeRenShown = false
+    this._igniteBlowHardRenShown = false
+    this._igniteRenBlowCorrectShown = false
+    this._igniteLastBlowTime = 0
 
-    // Show fire lay in pit / tinder indicator
-    this._tinderSprite.setAlpha(0.7)
+    this._igniteAwaitingLayerStrike = false
+    this._destroyIgniteLayerPickUi()
 
-    // Activate flint
-    this._setFlintActive(true)
+    this._setSparkCounterVisible(false)
+    this._setIgniteMechanicsHudVisible(false)
+    this._setIgniteBlowInteractive(false)
+    this._refreshBackground()
 
-    // Show spark counter
+    if (this._stepProposalShown.ignite) {
+      this._destroyIgniteLayerPickUi()
+      this._beginIgniteMechanics()
+      return
+    }
+
+    this._stepProposalShown.ignite = true
+
+    this._dialogue.showSequence(
+      [
+        { speaker: 'Ren', text: 'Alright, fire is built. Let us get a spark going.' },
+      ],
+      () => {
+        this._dialogue.showChoices([
+          {
+            text: 'Let us do this.',
+            onSelect: () => {
+              this._igniteProposalPath = 'pathA'
+              this._dialogue.show({
+                speaker: 'Ren',
+                text: 'Go for it.',
+                onComplete: () => {
+                  this._dialogue.hide()
+                  this._startIgniteLayerStrikePhase()
+                },
+              })
+            },
+          },
+          {
+            text: 'Where should the spark go?',
+            onSelect: () => {
+              this._igniteProposalPath = 'pathB'
+              this._dialogue.showSequence(
+                [
+                  {
+                    speaker: 'Ren',
+                    text: 'Bottom. The tinder. It is the only thing fine enough to catch a spark — everything else is too thick.',
+                  },
+                ],
+                () => {
+                  this._dialogue.hide()
+                  this._startIgniteLayerStrikePhase()
+                },
+              )
+            },
+          },
+        ])
+      },
+    )
+  }
+
+  _beginIgniteMechanics() {
+    this._igniteAwaitingLayerStrike = false
+    this._destroyIgniteSparkPickPhaseUi()
+    this._stopIgniteTimers()
+
+    this._igniteMechanicsPhase = 'spark'
+    this._igniteProgress = Math.min(this._igniteProgress, IGNITE_PROGRESS_MAX)
+    this._igniteLastClick = this.time.now
+    this._igniteLastBlowTime = 0
+
+    const W = this.scale.width
+    const cx = W / 2
+    const outerW = 300
+    this._layoutIgniteBarHudPositions(cx, outerW)
+
+    this._setIgniteMechanicsHudVisible(true)
+    this._refreshIgniteProgressUi()
+
     this._setSparkCounterVisible(true)
     this._refreshSparkCounter()
 
-    // Start timers
+    this._titleText.setText(
+      'Ignite — Phase 1: STRIKE flint to build heat (watch the bar).',
+    )
+
+    this._tinderSprite.setAlpha(0.72)
+    this._setFlintActive(true)
+    this._setIgniteBlowInteractive(false)
+
     this._decayTimer = this.time.addEvent({
       delay: this._effectiveDecayMs,
-      callback: this._decaySpark,
+      callback: this._igniteDecayTick,
       callbackScope: this,
       loop: true,
     })
@@ -3036,62 +4171,91 @@ export class FireCampsiteMinigame extends Phaser.Scene {
       callbackScope: this,
       loop: true,
     })
+  }
 
-    // Background: still night until ignite succeeds
-    this._refreshBackground()
+  _maybePromoteIgniteToBlowPhase() {
+    if (this._igniteMechanicsPhase !== 'spark') return
+    if (this._igniteProgress < this._igniteSmokeThresholdPct) return
+
+    this._igniteMechanicsPhase = 'blow'
+    this._setIgniteBlowInteractive(true)
+    this._startIgniteSmokePulse()
+
+    this._titleText.setText(
+      'Ignite — Phase 2: Blow when smoke glows bright (warm tint), not when dim (grey).',
+    )
+
+    if (this.day >= 2 && !this._igniteSmokeRenShown) {
+      this._igniteSmokeRenShown = true
+      this._dialogue.showSequence(
+        [
+          {
+            speaker: 'Ren',
+            text: 'Smoke. See how it glows and fades? When it is bright, give it a little air.',
+          },
+        ],
+        () => this._dialogue.hide(),
+      )
+    }
+    this._refreshIgniteProgressUi()
+  }
+
+  _maybeDemoteIgniteFromBlowPhase() {
+    if (this._igniteMechanicsPhase !== 'blow') return
+    if (this._igniteProgress >= this._igniteSmokeThresholdPct) return
+
+    this._igniteMechanicsPhase = 'spark'
+    this._stopIgniteSmokePulse()
+    this._setIgniteBlowInteractive(false)
+    this._tinderSprite.setAlpha(0.72)
+    this._titleText.setText(
+      'Ignite — Phase 1: STRIKE flint again (smoke faded — rebuild heat).',
+    )
+    this._refreshIgniteProgressUi()
   }
 
   _exitIgnite() {
     this._stopIgniteTimers()
+    this._igniteAwaitingLayerStrike = false
+    this._destroyIgniteLayerPickUi()
     this._setFlintActive(false)
     this._setSparkCounterVisible(false)
+    this._setIgniteMechanicsHudVisible(false)
+    this._setIgniteBlowInteractive(false)
     this._tinderSprite.setAlpha(0)
+    this._igniteMechanicsPhase = null
   }
 
   _onFlintClick() {
     if (this.step === 'stack') {
-      const early = !this._stackLayLockedComplete
-      this._igniteEarlyLayAttempt = early
-      if (early) {
-        this._stackSparkTargetZone =
-          STACK_LAYER_ORDER[this._stackActiveLayerIndex] ?? 'tinder'
-      }
-      this._flintBg.disableInteractive()
-
-      if (!early) {
-        if (this._stackHadError) this._showDialogue('"That took a few tries."')
-      }
-
-      let delay = 200
-      if (!early && this._stackHadError) delay = 900
-      this.time.delayedCall(delay, () => {
-        if (this.step === 'stack') this._enterStep('ignite')
-      })
+      if (this._stackLayLockedComplete) this._beginIgniteFromStack()
       return
     }
 
-    if (this.step !== 'ignite') {
-      this._showDialogue('"I can\'t use the flint right now."')
+    if (this.step !== 'ignite') return
+
+    if (this._igniteAwaitingLayerStrike) {
+      this._flashIgniteTapPitReminder()
       return
     }
+
+    if (!this._igniteMechanicsPhase || this._igniteMechanicsPhase !== 'spark') return
 
     this._igniteLastClick = this.time.now
     this._igniteTotalClicks++
 
-    const gained = Phaser.Math.Between(1, 3)
-    this._igniteSparks += gained
-    this._refreshSparkCounter()
+    const d = this._igniteDifficulty
+    const gained = Phaser.Math.Between(d.sparkMin, d.sparkMax)
+    this._igniteProgress = Math.min(
+      IGNITE_PROGRESS_MAX,
+      this._igniteProgress + gained,
+    )
+    this._igniteSparks = Math.floor(this._igniteProgress)
+    this._refreshIgniteProgressUi()
 
-    if (
-      this._igniteTotalClicks >= 15 &&
-      this._igniteSparks < this._igniteTarget * 0.5 &&
-      !this._igniteMidWarning
-    ) {
-      this._igniteMidWarning = true
-      this._showDialogue('"The material is slowing this down. Wet tinder needs more sparks to catch."')
-    }
+    this._maybePromoteIgniteToBlowPhase()
 
-    if (this._igniteSparks >= this._igniteTarget) {
+    if (this._igniteProgress >= IGNITE_PROGRESS_MAX) {
       this._igniteSuccess()
       return
     }
@@ -3101,16 +4265,88 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     }
   }
 
-  _decaySpark() {
-    if (this._igniteSparks > 0) {
-      this._igniteSparks = Math.max(0, this._igniteSparks - 1)
-      this._refreshSparkCounter()
+  _onIgniteBlowClick() {
+    if (this.step !== 'ignite') return
+    if (this._igniteMechanicsPhase !== 'blow') return
+
+    const now = this.time.now
+    this._igniteTotalClicks++
+    this._igniteLastClick = now
+
+    const bright = this._igniteSmokePulsePhase === 'bright'
+
+    if (bright) {
+      this._igniteProgress = Math.min(
+        IGNITE_PROGRESS_MAX,
+        this._igniteProgress + this._igniteBlowGain,
+      )
+      if (this.day >= 2 && !this._igniteRenBlowCorrectShown) {
+        this._igniteRenBlowCorrectShown = true
+        this._dialogue.showSequence(
+          [{ speaker: 'Ren', text: 'That is it. Right when it glows.' }],
+          () => this._dialogue.hide(),
+        )
+      }
+      this.tweens.add({
+        targets: this._tinderSprite,
+        alpha: 1,
+        duration: 140,
+        yoyo: true,
+        ease: 'Sine.easeOut',
+      })
+    } else {
+      const pen = this._igniteBlowPenalty ?? 14
+      this._igniteProgress = Math.max(0, this._igniteProgress - pen)
+      if (this.day >= 2 && !this._igniteBlowHardRenShown) {
+        this._igniteBlowHardRenShown = true
+        this._dialogue.showSequence(
+          [
+            {
+              speaker: 'Ren',
+              text: 'Wait for the glow. When the ember is bright, that is when it wants air.',
+            },
+          ],
+          () => this._dialogue.hide(),
+        )
+      }
+      this.cameras.main.shake(180, 0.004)
+    }
+
+    this._igniteSparks = Math.floor(this._igniteProgress)
+    this._maybeDemoteIgniteFromBlowPhase()
+    this._refreshIgniteProgressUi()
+
+    if (this._igniteMechanicsPhase === 'blow' && this._igniteProgress >= IGNITE_PROGRESS_MAX) {
+      this._igniteSuccess()
+      return
+    }
+
+    if (this._igniteTotalClicks >= MAX_CLICKS) {
+      this._igniteFail()
     }
   }
 
+  _igniteDecayTick() {
+    if (!this._igniteMechanicsPhase) return
+
+    let amt = this._igniteDecayPerTick
+    if (this._igniteMechanicsPhase === 'blow') {
+      amt = Math.max(1, Math.ceil(amt * 0.62))
+    }
+
+    this._igniteProgress = Math.max(0, this._igniteProgress - amt)
+    this._igniteSparks = Math.floor(this._igniteProgress)
+    this._maybeDemoteIgniteFromBlowPhase()
+    this._refreshIgniteProgressUi()
+  }
+
   _applyRainInterference() {
-    this._igniteSparks = Math.max(0, this._igniteSparks - 3)
-    this._refreshSparkCounter()
+    if (this.step !== 'ignite' || !this._igniteMechanicsPhase) return
+
+    this._igniteProgress = Math.max(0, this._igniteProgress - 9)
+    this._igniteSparks = Math.floor(this._igniteProgress)
+    this._maybeDemoteIgniteFromBlowPhase()
+    this._refreshIgniteProgressUi()
 
     this.tweens.add({
       targets: this._tinderSprite,
@@ -3122,39 +4358,24 @@ export class FireCampsiteMinigame extends Phaser.Scene {
   }
 
   _checkIdle() {
+    if (this.step !== 'ignite' || !this._igniteMechanicsPhase) return
     if (this.time.now - this._igniteLastClick >= IDLE_THRESHOLD) {
-      this._showDialogue('"Keep going — sparks die fast in this rain."')
       this._igniteLastClick = this.time.now
     }
   }
 
   _igniteSuccess() {
-    if (this._igniteEarlyLayAttempt) {
-      this._igniteEarlyLayAttempt = false
-      this._stopIgniteTimers()
-      this._flintBg.disableInteractive()
-      this._setSparkCounterVisible(false)
-      this._tinderSprite.setAlpha(0)
-      this._showDialogue(
-        '"Only a faint flash — the lay isn\'t finished, so nothing can hold the spark. Finish each layer, touch Finish lay, then strike for real."',
-      )
-      this._consumeEarlyStrikeMaterials()
-      const staminaEarly = this.registry.get('stamina')
-      const aliveEarly = staminaEarly?.deduct(1) ?? true
-      if (!aliveEarly) {
-        this.time.delayedCall(1000, () => this._emitDayFail('fire_campsite'))
-        return
-      }
-      this._stackPreserveAfterIgniteTrial = true
-      this.time.delayedCall(1000, () => {
-        if (this.step === 'ignite') this._enterStep('stack')
-      })
-      return
-    }
+    this.registry.set('ignitionSuccess', true)
+    this.registry.set(
+      'fireQuality',
+      MAX_CLICKS - this._igniteTotalClicks >= 12 ? 'strong' : 'weak',
+    )
 
     this._stopIgniteTimers()
     this._flintBg.disableInteractive()
-    this._showDialogue('"There it is."')
+    this._setIgniteMechanicsHudVisible(false)
+    this._setIgniteBlowInteractive(false)
+    this._setSparkCounterVisible(false)
 
     this.time.delayedCall(800, () => {
       this._enterStep('sustain')
@@ -3162,88 +4383,74 @@ export class FireCampsiteMinigame extends Phaser.Scene {
   }
 
   _igniteFail() {
-    if (this._igniteEarlyLayAttempt) {
-      this._igniteEarlyLayAttempt = false
-      this._stopIgniteTimers()
-      this._flintBg.disableInteractive()
-      this._setSparkCounterVisible(false)
-      this._tinderSprite.setAlpha(0)
-      this._showDialogue(
-        '"The lay isn\'t finished — the spark had nothing solid to catch. Keep building (Next layer), tap Finish lay when you\'re done, then strike again."',
-      )
-      this._consumeEarlyStrikeMaterials()
-      const staminaEarly = this.registry.get('stamina')
-      const aliveEarly = staminaEarly?.deduct(1) ?? true
-      if (!aliveEarly) {
-        this.time.delayedCall(1000, () => this._emitDayFail('fire_campsite'))
-        return
-      }
-      this._stackPreserveAfterIgniteTrial = true
-      this.time.delayedCall(1000, () => {
-        if (this.step === 'ignite') this._enterStep('stack')
-      })
-      return
-    }
-
     this._stopIgniteTimers()
     this._flintBg.disableInteractive()
-    this._showDialogue('"The spark won\'t hold."')
+    this._setIgniteMechanicsHudVisible(false)
+    this._setIgniteBlowInteractive(false)
+    this._setSparkCounterVisible(false)
 
     const stamina = this.registry.get('stamina')
-    const alive   = stamina?.deduct(1) ?? true
-
-    if (!alive) {
-      this.time.delayedCall(1000, () => this._emitDayFail('fire_campsite'))
-      return
-    }
 
     if (!this._igniteRetryUsed) {
       this._igniteRetryUsed = true
-      this.time.delayedCall(1400, () => this._igniteRetry())
+      this._dialogue.showSequence(
+        [
+          { speaker: 'Ren', text: 'Spark will not hold.' },
+          {
+            speaker: 'Ren',
+            text: 'That is alright — we have got enough tinder to try again.',
+          },
+        ],
+        () => {
+          this._dialogue.hide()
+          const alive = stamina?.deduct(1) ?? true
+          if (!alive) {
+            this.time.delayedCall(800, () => this._emitDayFail('fire_campsite'))
+            return
+          }
+          this.time.delayedCall(400, () => this._igniteRetry())
+        },
+      )
       return
     }
 
-    this.time.delayedCall(1000, () => this._emitDayFail('fire_campsite'))
+    const aliveSecond = stamina?.deduct(2) ?? true
+    if (!aliveSecond) {
+      this.time.delayedCall(800, () => this._emitDayFail('fire_campsite'))
+      return
+    }
+    this.time.delayedCall(600, () => this._emitDayFail('fire_campsite'))
   }
 
   _igniteRetry() {
-    this._igniteSparks      = 0
+    this._igniteProgress = 0
+    this._igniteSparks = 0
     this._igniteTotalClicks = 0
-    this._igniteMidWarning  = false
-    this._igniteLastClick   = this.time.now
-    this._refreshSparkCounter()
-    this._showDialogue('"Try again."')
+    this._igniteSmokeRenShown = false
+    this._igniteBlowHardRenShown = false
+    this._igniteRenBlowCorrectShown = false
+    this._igniteLastClick = this.time.now
+    this._igniteLastBlowTime = 0
+    this._refreshIgniteProgressUi()
 
-    this._setFlintActive(true)
-
-    this._decayTimer = this.time.addEvent({
-      delay: this._effectiveDecayMs,
-      callback: this._decaySpark,
-      callbackScope: this,
-      loop: true,
-    })
-
-    if (this._igniteUseRain) {
-      this._rainTimer = this.time.addEvent({
-        delay: 4000,
-        callback: this._applyRainInterference,
-        callbackScope: this,
-        loop: true,
-      })
-    }
-
-    this._idleTimer = this.time.addEvent({
-      delay: 500,
-      callback: this._checkIdle,
-      callbackScope: this,
-      loop: true,
-    })
+    this._dialogue.hide()
+    this._beginIgniteMechanics()
   }
 
   _stopIgniteTimers() {
-    if (this._decayTimer) { this._decayTimer.remove(); this._decayTimer = null }
-    if (this._rainTimer)  { this._rainTimer.remove();  this._rainTimer  = null }
-    if (this._idleTimer)  { this._idleTimer.remove();  this._idleTimer  = null }
+    if (this._decayTimer) {
+      this._decayTimer.remove()
+      this._decayTimer = null
+    }
+    if (this._rainTimer) {
+      this._rainTimer.remove()
+      this._rainTimer = null
+    }
+    if (this._idleTimer) {
+      this._idleTimer.remove()
+      this._idleTimer = null
+    }
+    this._stopIgniteSmokePulse()
   }
 
   // ════════════════════════════════════════════════════════════════════════════
@@ -3288,9 +4495,46 @@ export class FireCampsiteMinigame extends Phaser.Scene {
     this._refreshNightBar()
 
     this._setFlintActive(false)
-
     this._refreshBackground()
 
+    if (this._stepProposalShown.sustain) {
+      this._beginSustain()
+      return
+    }
+    this._stepProposalShown.sustain = true
+
+    this._dialogue.showSequence([
+      { speaker: 'Ren', text: 'Fire is up. Now we keep it alive through the night.' },
+      { speaker: 'Ren', text: 'When it gets low, add fuel.' },
+      { speaker: 'Ren', text: 'But not too early — we do not have wood to waste.' },
+    ], () => {
+      this._dialogue.showChoices([
+        {
+          text: 'I will watch it. How hard can it be?',
+          onSelect: () => {
+            this._dialogue.show({
+              speaker: 'Ren',
+              text: 'Alright, I will rest first then.',
+              onComplete: () => { this._dialogue.hide(); this._beginSustain() },
+            })
+          },
+        },
+        {
+          text: 'How do I know when to add more?',
+          onSelect: () => {
+            this._dialogue.showSequence([
+              { speaker: 'Ren', text: 'Watch the flame.' },
+              { speaker: 'Ren', text: 'When it drops to about halfway, that is when you add.' },
+              { speaker: 'Ren', text: 'Too early, wasted wood.' },
+              { speaker: 'Ren', text: 'Too late, you are relighting in the rain.' },
+            ], () => { this._dialogue.hide(); this._beginSustain() })
+          },
+        },
+      ])
+    })
+  }
+
+  _beginSustain() {
     this._startDrainTimer()
     this._startNightTimer()
     if (this._campsiteQuality === 'poor') this._startFloodTimer()
@@ -3368,17 +4612,15 @@ export class FireCampsiteMinigame extends Phaser.Scene {
 
   _onFireOut() {
     this._stopSustainTimers()
-    this._showDialogue('"It went out."')
 
     const stamina = this.registry.get('stamina')
 
-    if (this._sustainBackupRemainingCount() > 0) {
+    const goRelightFromBackup = () => {
       const alive = stamina?.deduct(1) ?? true
       if (!alive) {
         this.time.delayedCall(1000, () => this._emitDayFail('fire_campsite'))
         return
       }
-
       this.time.delayedCall(1200, () => {
         this._setStrengthBarVisible(false)
         this._setNightBarVisible(false)
@@ -3386,11 +4628,27 @@ export class FireCampsiteMinigame extends Phaser.Scene {
         this.step = 'sustain'
         this._enterStep('ignite')
       })
+    }
+
+    if (this._sustainBackupRemainingCount() > 0) {
+      this._dialogue.showSequence(
+        [{ speaker: 'Ren', text: 'It is out. Should have added sooner.' }],
+        () => {
+          this._dialogue.hide()
+          goRelightFromBackup()
+        },
+      )
       return
     }
 
-    stamina?.deduct(2)
-    this.time.delayedCall(1000, () => this._emitDayFail('fire_campsite'))
+    this._dialogue.showSequence(
+      [{ speaker: 'Ren', text: 'No fuel, no fire. That is it.' }],
+      () => {
+        this._dialogue.hide()
+        stamina?.deduct(2)
+        this.time.delayedCall(1000, () => this._emitDayFail('fire_campsite'))
+      },
+    )
   }
 
   _onNightComplete() {

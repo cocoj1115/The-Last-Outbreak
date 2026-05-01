@@ -1,5 +1,6 @@
 import Phaser from 'phaser'
-import { GameEvents } from '../../../systems/GameEvents.js'
+import { GameEvents } from '../../../../systems/GameEvents.js'
+import { DialogueBox } from './DialogueBox.js'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -13,10 +14,6 @@ const QUALITY_COLOR = {
 }
 
 const QUALITY_ALPHA = { GOOD: 1, MID: 1, BAD: 0.85 }
-
-// Bottom-left pack HUD (matches FireCampsite sort unpack anchor).
-const PACK_HUD_X         = 52
-const PACK_HUD_Y_FROM_BT = 48
 
 // ─── Material definitions ─────────────────────────────────────────────────────
 
@@ -140,6 +137,13 @@ function buildCollectCounts(items) {
   return count
 }
 
+/** Day 2 forest targets (day2_firemaking_dev_spec §4.2). */
+const COLLECT_TARGETS = { tinder: 3, kindling: 3, fuel: 2 }
+
+/** §4.2 HUD toast duration / imbalance intervention (once per session). */
+const COLLECT_TOAST_MS = 1400
+const COLLECT_IMBALANCE_MIN_PICKUPS = 6
+
 /** Label on ground / in pack when weathering dry fuels (sync with quality in _degradeQuality). */
 function displayLabelForQuality(matDef, currentQuality) {
   const dampable =
@@ -169,9 +173,9 @@ function lerpColor(from, to, t) {
 
 // ─── Scene ────────────────────────────────────────────────────────────────────
 
-export class FireCollectMinigame extends Phaser.Scene {
+export class FireBuildingCollect extends Phaser.Scene {
   constructor() {
-    super({ key: 'FireCollectMinigame' })
+    super({ key: 'FireBuildingCollect' })
   }
 
   init(data) {
@@ -191,32 +195,42 @@ export class FireCollectMinigame extends Phaser.Scene {
     this._packedOrder  = []
     this._categoryCounts = { tinder: 0, kindling: 0, fuel: 0, unusable: 0 }
     this._spawnInstanceSeq = 0
-    // Every successful collect (into pack); not decremented on eject. Drives 8-warning + stamina tiers.
+    // Every successful collect (into pack); not decremented on eject. Drives stamina tiers (Day 3 pattern).
     this._lifetimeCollectCount = 0
-    this._warnedEight = false
     this._staminaPenaltyTiersApplied = 0
 
-    // Pack list row texts (rebuilt on add/eject)
-    this._packListRows = []
-
-    // Tracks which materials have had their first-click monologue played.
-    this._inspected = new Set()
-
-    // Tracks which BAD materials have already shown the bad-collect feedback.
-    this._badFeedbackShown = new Set()
+    // First BAD / wet material added to pack → Ren tutorial (spec §4.2).
+    this._renBadPickupTutorialShown = false
 
     this._tutorialTinderShown   = false
     this._tutorialKindlingShown = false
     this._tutorialFuelShown = false
+
+    /** Blocks ground collects while Ren dialogue sequence is active (click-through). */
+    this._collectInputLocked = false
+
+    /** Ref-count pauses spawn + wet tick (+ wet tweens) while dialogue runs. */
+    this._forestSimPauseDepth = 0
+
+    /** Ren lines after hitting 3/3/2 + trade-off (spec §4.2). */
+    this._targetsMetDialogueShown = false
+
+    /** §259–265 head-back praise suppressed when quota dialogue already ran. */
+    this._headBackGoodFeedbackShown = false
+
+    /** §247–257 mid-collect imbalance Ren (once). */
+    this._collectImbalanceRenShown = false
+
+    this._toastText = null
+    this._toastTween = null
 
     this._dialogueTimer = null
     this._tickTimer     = null
     this._spawnTimer    = null
     this._ringGraphics  = null
 
-    this._packHudIcon   = null
-    this._packHudBadge  = null
-    this._packHudStroke = null
+    // Pack list row texts (rebuilt on add/eject)
+    this._packListRows = []
   }
 
   preload() {
@@ -239,29 +253,103 @@ export class FireCollectMinigame extends Phaser.Scene {
 
     this._buildBackground(W, H)
     this._buildBackpackPanel(W, H)
-    this._buildPackCornerHud(W, H)
     this._buildDialogueBox(W, H)
     this._buildHeadBackButton(W, H)
 
     // Shared Graphics layer for all wet-timer rings (drawn above materials).
     this._ringGraphics = this.add.graphics().setDepth(10)
 
-    // Spawn first material immediately, then every 1.5s.
-    this._trySpawn()
+    // Spawn / wet tick stay paused until opening Ren lines finish (§4.2).
     this._spawnTimer = this.time.addEvent({
       delay: 1500,
       callback: this._trySpawn,
       callbackScope: this,
       loop: true,
     })
+    this._spawnTimer.paused = true
 
-    // 100 ms game-state tick: advance wet timers, update rings, trigger degradation.
     this._tickTimer = this.time.addEvent({
       delay: 100,
       callback: this._gameTick,
       callbackScope: this,
       loop: true,
     })
+    this._tickTimer.paused = true
+
+    this._runCollectEntryFlow()
+  }
+
+  /**
+   * §4.2: camp Ren proposal + paths when booting straight to Collect; forest mechanism lines; then spawn.
+   * Skipped when flag set from FireBuildingMinigame clear handoff (`fireCollectCampProposalDone`).
+   */
+  _runCollectEntryFlow() {
+    if (this.registry.get('fireCollectCampProposalDone')) {
+      this._startForestMechanismIntro()
+      return
+    }
+
+    this._collectInputLocked = true
+    this._pauseForestSimulationForDialogue()
+
+    const finishCampPaths = () => {
+      this.registry.set('fireCollectCampProposalDone', true)
+      this._dialogue.hide()
+      this._collectInputLocked = false
+      this._resumeForestSimulationAfterDialogue()
+      this._startForestMechanismIntro()
+    }
+
+    this._dialogue.showSequence(
+      [
+        { speaker: 'Ren', text: 'Right. We need wood.' },
+        { speaker: 'Ren', text: 'Rain is picking up so whatever is dry out there will not stay dry for long.' },
+        { speaker: 'Ren', text: 'You go ahead — you know what to grab, yeah?' },
+      ],
+      () => {
+        this._dialogue.showChoices([
+          {
+            text: 'Of course. Three types — tinder, kindling, fuel wood.',
+            onSelect: () => {
+              this._dialogue.show({
+                speaker: 'Ren',
+                text: 'Alright, let us go then.',
+                onComplete: finishCampPaths,
+              })
+            },
+          },
+          {
+            text: 'Roughly, but remind me.',
+            onSelect: () => {
+              this._dialogue.showSequence(
+                [
+                  { speaker: 'Ren', text: 'Three types: tinder, kindling, and fuel wood.' },
+                  { speaker: 'Ren', text: 'Tinder is the lightest, driest stuff — leaves, dry grass, anything that crumbles. That catches the spark.' },
+                  { speaker: 'Ren', text: 'Kindling is thin sticks, things you can snap. They catch from the tinder and give the flame time to grow.' },
+                  { speaker: 'Ren', text: 'Fuel wood is the thick pieces. Once the fire is going, that keeps it alive.' },
+                  { speaker: 'Ren', text: 'Aim for three handfuls of tinder, three of kindling, and two good pieces of fuel.' },
+                  { speaker: 'Ren', text: 'Do not grab anything heavy or damp — wet wood kills a fire before it starts.' },
+                ],
+                finishCampPaths,
+              )
+            },
+          },
+        ])
+      },
+    )
+  }
+
+  /** §4.2 forest mechanism lines (after camp proposal or when resuming collect). */
+  _startForestMechanismIntro() {
+    this._showRenDialogueSequence(
+      [
+        'Rain is getting heavier. Whatever is dry now will not be for long.',
+        'Move fast.',
+      ],
+      () => {
+        this._trySpawn()
+      },
+    )
   }
 
   // ── Background ──────────────────────────────────────────────────────────────
@@ -282,7 +370,7 @@ export class FireCollectMinigame extends Phaser.Scene {
     this.add.rectangle(W / 2, H / 2, W, H, 0x0a1820, 0.18)
   }
 
-  // ── Backpack panel ──────────────────────────────────────────────────────────
+  // ── Backpack panel (counts + list — corner backpack icon intentionally omitted) ──
 
   _buildBackpackPanel(W, H) {
     const uiDepth = 12
@@ -294,15 +382,27 @@ export class FireCollectMinigame extends Phaser.Scene {
     }).setOrigin(0, 0).setDepth(uiDepth)
 
     this._counterBlockText = this.add.text(24, H * 0.74, '', {
-          fontSize: '13px',
+      fontSize: '13px',
       fontFamily: 'Georgia, serif',
-          fill: '#e8d8a0',
-      lineSpacing: 4,
+      fill: '#e8d8a0',
+      wordWrap: { width: Math.min(W - 48, 520) },
     }).setOrigin(0, 0).setDepth(uiDepth)
+
+    this._toastText = this.add
+      .text(W / 2, H * 0.52, '', {
+        fontSize: '18px',
+        fontFamily: 'Georgia, serif',
+        fill: '#f5e6b8',
+        stroke: '#1a1208',
+        strokeThickness: 3,
+      })
+      .setOrigin(0.5)
+      .setDepth(uiDepth + 2)
+      .setAlpha(0)
 
     this._packListTitle = this.add.text(W * 0.38, H * 0.74 - 22, 'Collected — click to drop:', {
       fontSize: '13px',
-          fontFamily: 'Georgia, serif',
+      fontFamily: 'Georgia, serif',
       fill: '#a08040',
     }).setOrigin(0, 0).setDepth(uiDepth)
 
@@ -311,45 +411,64 @@ export class FireCollectMinigame extends Phaser.Scene {
     this._rebuildPackListRows()
   }
 
-  /** Fixed bottom-left backpack + total item count (visible for whole collect). */
-  _buildPackCornerHud(W, H) {
-    const depth = 16
-    const y     = H - PACK_HUD_Y_FROM_BT
-
-    this._packHudStroke = this.add
-      .rectangle(PACK_HUD_X, y, 58, 52, 0x1a1208, 0.92)
-      .setStrokeStyle(2, 0x7a9050)
-      .setDepth(depth)
-
-    this._packHudIcon = this.add
-      .text(PACK_HUD_X - 2, y - 2, '🎒', { fontSize: '28px' })
-      .setOrigin(0.5)
-      .setDepth(depth + 1)
-
-    this._packHudBadge = this.add
-      .text(PACK_HUD_X + 22, y - 20, '0', {
-        fontSize: '14px',
-        fontFamily: 'Georgia, serif',
-        fill: '#f5e8c0',
-        stroke: '#1a0f00',
-        strokeThickness: 3,
-      })
-      .setOrigin(0.5)
-      .setDepth(depth + 2)
-
-    this._refreshPackHudCount()
-  }
-
-  _refreshPackHudCount() {
-    if (this._packHudBadge) {
-      this._packHudBadge.setText(String(this._packedOrder.length))
-    }
-  }
-
   _refreshCategoryDisplay() {
     const c = this._categoryCounts
+    const t = COLLECT_TARGETS
     this._counterBlockText.setText(
-      `Tinder:   ${c.tinder}\nKindling: ${c.kindling}\nFuel:      ${c.fuel}\nUnusable: ${c.unusable}`
+      `Tinder: ${c.tinder}/${t.tinder}  |  Kindling: ${c.kindling}/${t.kindling}  |  Fuel: ${c.fuel}/${t.fuel}  |  Unusable: ${c.unusable}`,
+    )
+  }
+
+  /** §337 — HUD toast after pickup (shown immediately, or after tutorial Ren finishes). */
+  _flashCollectToastForPickupCategory(cat) {
+    if (cat === 'tinder') this._flashCollectToast('+1 Tinder')
+    else if (cat === 'kindling') this._flashCollectToast('+1 Kindling')
+    else if (cat === 'fuel') this._flashCollectToast('+1 Fuel Wood')
+    else if (cat === 'unusable') this._flashCollectToast('Too wet.')
+  }
+
+  _flashCollectToast(message) {
+    if (!this._toastText || !message) return
+    if (this._toastTween) {
+      this._toastTween.stop()
+      this._toastTween = null
+    }
+    this._toastText.setText(message).setAlpha(1).setVisible(true)
+    this._toastTween = this.tweens.add({
+      targets: this._toastText,
+      alpha: { from: 1, to: 0 },
+      delay: 320,
+      duration: COLLECT_TOAST_MS,
+      ease: 'Sine.easeIn',
+      onComplete: () => {
+        this._toastTween = null
+      },
+    })
+  }
+
+  /** §247–257 — rough mix / too much wet junk; once per run. */
+  _maybeCollectImbalanceRen() {
+    if (this._collectImbalanceRenShown || this._collectInputLocked) return
+    if (this._lifetimeCollectCount < COLLECT_IMBALANCE_MIN_PICKUPS) return
+
+    const c = this._categoryCounts
+    const looksWrong =
+      c.unusable >= 4 ||
+      (c.fuel >= 2 && c.tinder === 0 && c.kindling === 0) ||
+      (c.tinder >= 5 && c.kindling === 0) ||
+      (c.kindling >= 5 && c.tinder === 0)
+
+    if (!looksWrong) return
+
+    this._collectImbalanceRenShown = true
+    this._showRenDialogueSequence(
+      [
+        'Hold on — look at what you have got so far.',
+        'You are going to try to start a fire with that?',
+        'You need the fine stuff — tinder — to catch the spark first.',
+        'And enough kindling to bridge to the bigger pieces. Think about what is missing.',
+      ],
+      null,
     )
   }
 
@@ -386,22 +505,8 @@ export class FireCollectMinigame extends Phaser.Scene {
 
   // ── Dialogue / monologue box ─────────────────────────────────────────────────
 
-  _buildDialogueBox(W, H) {
-    const boxY = H * 0.68
-
-    this._monoBg = this.add
-      .rectangle(W / 2, boxY, W * 0.8, 52, 0x0d0a04, 0.88)
-      .setStrokeStyle(1, 0x6b5020)
-      .setVisible(false)
-
-    this._monoText = this.add.text(W / 2, boxY, '', {
-        fontSize: '15px',
-        fontFamily: 'Georgia, serif',
-        fontStyle: 'italic',
-      fill: '#f5e8c0',
-        wordWrap: { width: W * 0.76 },
-        align: 'center',
-    }).setOrigin(0.5).setVisible(false)
+  _buildDialogueBox(_W, _H) {
+    this._dialogue = new DialogueBox(this)
   }
 
   // ── Head Back button ─────────────────────────────────────────────────────────
@@ -428,6 +533,8 @@ export class FireCollectMinigame extends Phaser.Scene {
   // ── Spawn system ─────────────────────────────────────────────────────────────
 
   _trySpawn() {
+    if (this._forestSimPauseDepth > 0) return
+
     if (this._pool.length === 0) {
       this._pool = Phaser.Utils.Array.Shuffle(buildMaterialPoolDeck())
     }
@@ -463,7 +570,7 @@ export class FireCollectMinigame extends Phaser.Scene {
 
     const label = this.add.text(x, y + 52, displayLabelForQuality(matDef, startQuality), {
       fontSize: '12px',
-        fontFamily: 'Georgia, serif',
+      fontFamily: 'Georgia, serif',
       fill: '#e8d8a0',
     }).setOrigin(0.5).setDepth(6)
 
@@ -501,6 +608,8 @@ export class FireCollectMinigame extends Phaser.Scene {
   // ── 100 ms game-state tick ───────────────────────────────────────────────────
 
   _gameTick() {
+    if (this._forestSimPauseDepth > 0) return
+
     const DT = 100 // ms per tick
 
     this._ringGraphics.clear()
@@ -598,26 +707,12 @@ export class FireCollectMinigame extends Phaser.Scene {
   // ── Click handling ────────────────────────────────────────────────────────────
 
   _onMaterialClick(instanceId) {
+    if (this._collectInputLocked) return
     const state = this._onScreen[instanceId]
     if (!state || state.inPack) return
 
-    if (!this._inspected.has(instanceId)) {
-      // First click: Aiden's tactile observation.
-      this._inspected.add(instanceId)
-      this._showMonologue(`"${state.matDef.line}"`)
-        return
-      }
-
-    // Second click: add to pack (unlimited).
+    // §4.2 拾取交互：点击即收入背包（无 Aiden 检视独白）
     this._addToPack(instanceId)
-
-    // Day 2 immediate feedback for BAD quality — plays once per spawned item.
-    if (state.currentQuality === 'BAD' && !this._badFeedbackShown.has(instanceId)) {
-      this._badFeedbackShown.add(instanceId)
-      this._showMonologue(
-        '"That\'s already too wet — it won\'t catch. You can swap it out before heading back."'
-      )
-    }
   }
 
   // ── Pack management ──────────────────────────────────────────────────────────
@@ -638,32 +733,80 @@ export class FireCollectMinigame extends Phaser.Scene {
     this._categoryCounts[cat]++
     this._refreshCategoryDisplay()
     this._rebuildPackListRows()
-    this._refreshPackHudCount()
 
-    if (cat === 'tinder' && !this._tutorialTinderShown) {
+    let tutorialLines = null
+    if (cat === 'unusable' && state.currentQuality === 'BAD' && !this._renBadPickupTutorialShown) {
+      this._renBadPickupTutorialShown = true
+      tutorialLines = [
+        'Feel that? Heavy. Damp inside.',
+        'Wet material will smother a flame, not feed it.',
+        'Leave it.',
+      ]
+    } else if (cat === 'tinder' && !this._tutorialTinderShown) {
       this._tutorialTinderShown = true
-      this._showMonologue(
-        '"Light and dry — I should grab a few more. This is what actually catches the spark."',
-      )
+      tutorialLines = [
+        'That is good tinder. See how it crumbles?',
+        'Dry enough to catch a spark.',
+      ]
     } else if (cat === 'kindling' && !this._tutorialKindlingShown) {
       this._tutorialKindlingShown = true
-      this._showMonologue(
-        '"Good kindling. I\'ll want two or three pieces — it bridges the spark into a real flame."',
-      )
+      tutorialLines = [
+        'Thin and dry, snaps clean.',
+        'Good kindling — it will catch from the tinder and keep the flame growing.',
+      ]
     } else if (cat === 'fuel' && !this._tutorialFuelShown) {
       this._tutorialFuelShown = true
-      this._showMonologue(
-        '"This keeps it going — a couple of pieces like this should be enough to sustain it."',
-      )
+      tutorialLines = [
+        'Solid piece. That is fuel wood.',
+        'Once the fire is going, that is what keeps it alive through the night.',
+      ]
     }
 
     this._refreshHeadBackButton()
 
     this._lifetimeCollectCount++
-    if (this._lifetimeCollectCount === 8 && !this._warnedEight) {
-      this._warnedEight = true
-      this._showMonologue('"That should be enough. I should head back."')
+
+    const maybeShowTargetsMet = () => {
+      if (this._targetsMetDialogueShown) return
+      const { tinder, kindling, fuel } = this._categoryCounts
+      const tgt = COLLECT_TARGETS
+      if (tinder >= tgt.tinder && kindling >= tgt.kindling && fuel >= tgt.fuel) {
+        this._targetsMetDialogueShown = true
+        this._headBackGoodFeedbackShown = true
+        this._showRenDialogueSequence(
+          [
+            'That should do it. Let us head back and get this fire built.',
+            'Before the rain gets any worse.',
+          ],
+          () => {
+            this._showRenDialogueSequence(
+              [
+                'I could carry more, but we are already loaded and the rain is not letting up.',
+                'More trips means more weight on your legs — something to think about next time.',
+              ],
+              null,
+            )
+          },
+        )
+      }
     }
+
+    const afterPickup = () => {
+      maybeShowTargetsMet()
+      this._maybeCollectImbalanceRen()
+    }
+
+    const finishPickupFeedback = () => {
+      this._flashCollectToastForPickupCategory(cat)
+      afterPickup()
+    }
+
+    if (tutorialLines?.length) {
+      this._showRenDialogueSequence(tutorialLines, finishPickupFeedback)
+    } else {
+      finishPickupFeedback()
+    }
+
     // Stamina: 12th, 15th, 18th… collect → one penalty each (tiers = floor((n-9)/3) for n≥12).
     const owedStaminaTiers = Math.max(0, Math.floor((this._lifetimeCollectCount - 9) / 3))
     if (this._staminaPenaltyTiersApplied < owedStaminaTiers) {
@@ -695,7 +838,6 @@ export class FireCollectMinigame extends Phaser.Scene {
 
     this._refreshCategoryDisplay()
     this._rebuildPackListRows()
-    this._refreshPackHudCount()
     this._refreshHeadBackButton()
   }
 
@@ -720,7 +862,7 @@ export class FireCollectMinigame extends Phaser.Scene {
   }
 
   _applyStaminaOverburdenPenalty() {
-    this._showMonologue('"I\'m carrying too much. This is slowing me down."')
+    // Day 3+ overburden: spec has no Ren line here; stamina only.
     this.time.delayedCall(450, () => {
       const stamina = this.registry.get('stamina')
       const alive = stamina?.deduct(1) ?? true
@@ -736,18 +878,52 @@ export class FireCollectMinigame extends Phaser.Scene {
     })
   }
 
-  // ── Dialogue ─────────────────────────────────────────────────────────────────
+  // ── Dialogue (Ren only — day2_firemaking_dev_spec §4.2) ───────────────────────
 
-  _showMonologue(text) {
-    this._monoText.setText(text)
-    this._monoBg.setVisible(true)
-    this._monoText.setVisible(true)
+  _pauseForestSimulationForDialogue() {
+    if (this._forestSimPauseDepth === 0) {
+      if (this._spawnTimer) this._spawnTimer.paused = true
+      if (this._tickTimer) this._tickTimer.paused = true
+      for (const state of Object.values(this._onScreen)) {
+        if (state.inPack || !state.onScreen || !state.wetTween) continue
+        state.wetTween.pause()
+        state._wetTweenHeldForDialogue = true
+      }
+    }
+    this._forestSimPauseDepth++
+  }
 
-    if (this._dialogueTimer) this._dialogueTimer.remove()
-    this._dialogueTimer = this.time.delayedCall(3000, () => {
-      this._monoText.setVisible(false)
-      this._monoBg.setVisible(false)
-      this._dialogueTimer = null
+  _resumeForestSimulationAfterDialogue() {
+    this._forestSimPauseDepth = Math.max(0, this._forestSimPauseDepth - 1)
+    if (this._forestSimPauseDepth > 0) return
+    if (this._spawnTimer) this._spawnTimer.paused = false
+    if (this._tickTimer) this._tickTimer.paused = false
+    for (const state of Object.values(this._onScreen)) {
+      if (!state._wetTweenHeldForDialogue || !state.wetTween) continue
+      if (!state.inPack && state.onScreen) state.wetTween.resume()
+      state._wetTweenHeldForDialogue = false
+    }
+  }
+
+  /**
+   * Click-through Ren lines; locks material pickup until finished.
+   * Pauses spawning + wet progression while the box is up.
+   * @param {string[]} lines
+   * @param {() => void} [onComplete]
+   */
+  _showRenDialogueSequence(lines, onComplete = null) {
+    if (!lines?.length) {
+      onComplete?.()
+      return
+    }
+    this._collectInputLocked = true
+    this._pauseForestSimulationForDialogue()
+    const seq = lines.map((text) => ({ speaker: 'Ren', text }))
+    this._dialogue.showSequence(seq, () => {
+      this._dialogue.hide()
+      this._collectInputLocked = false
+      this._resumeForestSimulationAfterDialogue()
+      onComplete?.()
     })
   }
 
@@ -760,47 +936,68 @@ export class FireCollectMinigame extends Phaser.Scene {
       quality: this._onScreen[instanceId].currentQuality,
     }))
 
+    const count = buildCollectCounts(items)
+    const tgt = COLLECT_TARGETS
+    const meetsTargets =
+      count.tinder >= tgt.tinder && count.kindling >= tgt.kindling && count.fuel >= tgt.fuel
+
     const difficulty = computeDifficulty(items)
 
-    const inkBridge = this.registry.get('inkBridge')
-    inkBridge?.setVariable?.('mg_fire_collect_score', difficulty)
+    const proceedToCampsite = () => {
+      const inkBridge = this.registry.get('inkBridge')
+      inkBridge?.setVariable?.('mg_fire_collect_score', difficulty)
 
-    // Write internal game state to registry for downstream scenes.
-    // Note: ignitionDifficulty is NOT written to registry — it flows
-    // through the Ink story via MINIGAME_COMPLETE score → InkBridge.
-    const count = buildCollectCounts(items)
-    this.registry.set('collectedMaterials', { items, count })
-    this.registry.set('fuelStock', 5)
-    console.log('collected:', this.registry.get('collectedMaterials'))
+      // Write internal game state to registry for downstream scenes.
+      // Note: ignitionDifficulty is NOT written to registry — it flows
+      // through the Ink story via MINIGAME_COMPLETE score → InkBridge.
+      this.registry.set('collectedMaterials', { items, count })
+      this.registry.set('fuelStock', 5)
+      console.log('collected:', this.registry.get('collectedMaterials'))
 
-    this.game.events.emit(GameEvents.MINIGAME_COMPLETE, {
-      id: 'fire_collect',
-      success: true,
-      score: difficulty,  // InkBridge writes this to mg_fire_collect_score in Ink
-    })
-
-    if (this.registry.get('fireCampsiteStackResume')) {
-      this.scene.stop('FireCollectMinigame')
-      this.scene.start('FireCampsiteMinigame', {
-        day: this.day,
-        startStep: 'stack',
-        resumeStackAfterCollect: true,
+      this.game.events.emit(GameEvents.MINIGAME_COMPLETE, {
+        id: 'fire_collect',
+        success: true,
+        score: difficulty,  // InkBridge writes this to mg_fire_collect_score in Ink
       })
+
+      if (this.registry.get('fireCampsiteStackResume')) {
+        this.scene.stop('FireBuildingCollect')
+        this.scene.start('FireBuildingMinigame', {
+          day: this.day,
+          startStep: 'stack',
+          resumeStackAfterCollect: true,
+        })
+        return
+      }
+
+      if (this.registry.get('devQuickFireChain')) {
+        this.scene.stop('FireBuildingCollect')
+        this.scene.start('FireBuildingMinigame', { day: this.day, startStep: 'ignite' })
+        return
+      }
+
+      if (this.registry.get('devFireBuildChain')) {
+        this.scene.stop('FireBuildingCollect')
+        this.scene.start('FireBuildingMinigame', { day: this.day, startStep: 'sort' })
+        return
+      }
+
+      this.scene.stop()
+    }
+
+    // §259–265 — good load heading back (skip if quota dialogue already praised).
+    if (meetsTargets && count.unusable <= 1 && !this._headBackGoodFeedbackShown) {
+      this._headBackGoodFeedbackShown = true
+      this._showRenDialogueSequence(
+        [
+          'Not bad. You have got tinder to catch the spark, kindling to grow it, fuel wood to keep it going.',
+          'Enough of each — we will not be scrambling in the dark later. Good.',
+        ],
+        proceedToCampsite,
+      )
       return
     }
 
-    if (this.registry.get('devQuickFireChain')) {
-      this.scene.stop('FireCollectMinigame')
-      this.scene.start('FireCampsiteMinigame', { day: this.day, startStep: 'ignite' })
-      return
-    }
-
-    if (this.registry.get('devFireBuildChain')) {
-      this.scene.stop('FireCollectMinigame')
-      this.scene.start('FireCampsiteMinigame', { day: this.day, startStep: 'sort' })
-      return
-    }
-
-    this.scene.stop()
+    proceedToCampsite()
   }
 }

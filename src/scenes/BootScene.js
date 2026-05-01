@@ -6,6 +6,11 @@ import {
   resolveDay2FireMockEntryScene,
   getDay2FireMockBootPayload,
 } from '../dev/day2FireMock.js'
+import {
+  DEV_MOCK_FIRE_BUILDING,
+  seedFireBuildingMockRegistry,
+  getFireBuildingMockPayload,
+} from './minigames/fire/New/day2FireBuildingMock.js'
 import { StaminaSystem } from '../systems/StaminaSystem.js'
 import { DaySystem } from '../systems/DaySystem.js'
 
@@ -109,6 +114,20 @@ export class BootScene extends Phaser.Scene {
       seedDay2FireMockRegistry(this.registry)
       this.scene.launch('HUDScene')
       this.scene.start(resolveDay2FireMockEntryScene(), getDay2FireMockBootPayload())
+      return
+    }
+
+    if (DEV_MOCK_FIRE_BUILDING) {
+      seedFireBuildingMockRegistry(this.registry)
+      this.scene.launch('HUDScene')
+      const payload = getFireBuildingMockPayload()
+      // `collect` lives in FireBuildingCollect — FireBuildingMinigame has no collect step handler.
+      if (payload.startStep === 'collect') {
+        this.registry.set('devFireBuildChain', true)
+        this.scene.start('FireBuildingCollect', { day: payload.day })
+      } else {
+        this.scene.start('FireBuildingMinigame', payload)
+      }
       return
     }
 
