@@ -1,5 +1,5 @@
 // main.ink
-// Compile this file with Inky: File > Export story to JSON
+// Compile with Inky: File > Export story to JSON
 // Save output to: public/assets/story/main.ink.json
 
 // ── Global variables ──────────────────────────────────────────────────────
@@ -20,18 +20,23 @@ VAR next_day_stamina_max = 5
 VAR buffer_days_used = 0
 VAR buffer_days_total = 2
 VAR mg_campsite_success = false
-VAR mg_fire_collect_success = false
-VAR mg_fire_collect_score = ""
-VAR mg_fire_campsite_success = false
-VAR mg_fire_campsite_score = ""
+VAR mg_fire_ignite_success = false
+VAR mg_fire_sustain_success = false
 VAR mg_search_success = false
 VAR stamina_depleted = false
 VAR fail_reason = ""
+VAR day3_petra_seen = false
+VAR mg_fire_collect_quality = ""
+VAR mg_fire_campsite_success = false
+VAR mg_fire_campsite_score = ""
 
 // ── Story files ───────────────────────────────────────────────────────────
 INCLUDE prologue.ink
 INCLUDE day1.ink
 INCLUDE day2.ink
+INCLUDE day3.ink
+INCLUDE endings.ink
+
 
 // ── Start ─────────────────────────────────────────────────────────────────
 -> prologue
