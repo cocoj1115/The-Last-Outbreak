@@ -5,9 +5,6 @@ import { NarrativeScene } from './scenes/narrative/NarrativeScene.js'
 import { VillageScene } from './scenes/VillageScene.js'
 import { MapScene } from './scenes/MapScene.js'
 import { CampsiteMinigame } from './scenes/minigames/campsite/CampsiteMinigame.js'
-import { FireMinigame } from './scenes/minigames/fire/FireMinigame.js'
-import { FireCollectMinigame } from './scenes/minigames/fire/FireCollectMinigame.js'
-import { FireCampsiteMinigame } from './scenes/minigames/fire/FireCampsiteMinigame.js'
 import { FireBuildingMinigame } from './scenes/minigames/fire/New/FireBuildingMinigame.js'
 import { FireBuildingCollect } from './scenes/minigames/fire/New/FireBuildingCollect.js'
 import { HUDScene } from './scenes/HUDScene.js'
@@ -36,9 +33,6 @@ const config = {
   scene: [
     BootScene, OnboardingScene, NarrativeScene, VillageScene, MapScene,
     CampsiteMinigame,
-    FireMinigame,
-    FireCollectMinigame,
-    FireCampsiteMinigame,
     FireBuildingMinigame,
     FireBuildingCollect,
     HUDScene, DebugScene,

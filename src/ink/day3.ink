@@ -83,9 +83,7 @@ I need to make camp before it gets dark.
     - false:
         ~ campsite_quality = "poor"
 }
-// DEV: skip fire minigames, go straight to buffer
-~ fail_reason = "no_fire"
--> day3_buffer
+-> day3_fire_collect
 
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -99,69 +97,27 @@ I need to make camp before it gets dark.
     ~ fail_reason = "stamina"
     -> day3_buffer
 }
--> day3_fire_ignite
+-> day3_fire
 
 
 // ═════════════════════════════════════════════════════════════════════════════
-// MINIGAME 3 — IGNITION attempt 1
+// MINIGAME 3 — BUILD & SUSTAIN FIRE (wind night)
 // ═════════════════════════════════════════════════════════════════════════════
 
-=== day3_fire_ignite ===
-# minigame:fire_ignite day:3
+=== day3_fire ===
+# minigame:fire_campsite day:3
 
 { stamina_depleted:
-    ~ fail_reason = "stamina"
+    ~ fail_reason = "no_fire"
     -> day3_buffer
 }
 
-{ mg_fire_ignite_success:
-    - true:  -> day3_fire_sustain
-    - false: -> day3_fire_ignite_retry
-}
-
-
-// ═════════════════════════════════════════════════════════════════════════════
-// MINIGAME 3 — IGNITION attempt 2
-// ═════════════════════════════════════════════════════════════════════════════
-
-=== day3_fire_ignite_retry ===
-# minigame:fire_ignite day:3
-
-{ stamina_depleted:
-    ~ fail_reason = "stamina"
-    -> day3_buffer
-}
-
-{ mg_fire_ignite_success:
-    - true:  -> day3_fire_sustain
-    - false: -> day3_fire_ignite_fail2
-}
-
-=== day3_fire_ignite_fail2 ===
-~ fail_reason = "no_fire"
--> day3_buffer
-
-
-// ═════════════════════════════════════════════════════════════════════════════
-// MINIGAME 4 — SUSTAIN FIRE (wind night)
-// ═════════════════════════════════════════════════════════════════════════════
-
-=== day3_fire_sustain ===
-# minigame:fire_sustain day:3
-
-{ stamina_depleted:
-    ~ fail_reason = "stamina"
-    -> day3_buffer
-}
-
-{ mg_fire_sustain_success:
+{ mg_fire_campsite_success:
     - true:  -> day3_dawn
-    - false: -> day3_fire_sustain_fail
+    - false:
+        ~ fail_reason = "no_fire"
+        -> day3_buffer
 }
-
-=== day3_fire_sustain_fail ===
-~ fail_reason = "fire_out"
--> day3_buffer
 
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -262,18 +218,12 @@ The window. I have to move now.
 
     One more night. I know what I need to do differently.
 - else:
-    { fail_reason == "fire_out":
-        The wind just went straight through everything.
+    { fail_reason == "missed_herb":
+        I saw the frost. I just could not get there in time.
 
-        Petra said find something to put between me and the wind. I did not listen carefully enough.
+        I was too exhausted. I need to hold the fire better so I can actually move when it matters.
     - else:
-        { fail_reason == "missed_herb":
-            I saw the frost. I just could not get there in time.
-
-            I was too exhausted. I need to hold the fire better so I can actually move when it matters.
-        - else:
-            Something went wrong out there.
-        }
+        Something went wrong out there.
     }
 }
 

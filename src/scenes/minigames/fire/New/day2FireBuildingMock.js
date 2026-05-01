@@ -11,7 +11,7 @@
  */
 
 /** Master switch — set true to bypass OnboardingScene and jump straight to the minigame. */
-export const DEV_MOCK_FIRE_BUILDING = true 
+export const DEV_MOCK_FIRE_BUILDING = false
 
 const STEP_ORDER = ['ren_intro', 'clear', 'collect', 'sort', 'stack', 'ignite', 'spread', 'sustain']
 
