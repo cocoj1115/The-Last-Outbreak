@@ -2,27 +2,25 @@
 // Day 2 — Shimmerleaf
 
 === day2_transition ===
-# scene:path_to_forest
+# day_advance
+# scene:village_day1
 # portrait:aiden
 # speaker:Aiden
-One herb down. The next is north. Half a day's walk.
-
-Isla said to be there before the storm hits. I need to move.
+It's another day. Half day's walk to the forest. I need to move now.
 * [Head out] -> day2_forest
 
 === day2_forest ===
-# scene:forest_day2
+# scene:path_to_forest
 # portrait:aiden
 # speaker:Aiden
 Rain is coming. I can feel it in the air.
-
 I need to make camp now — and be ready to search the moment it stops.
 -> day2_campsite
 
 === day2_campsite ===
 # minigame:campsite day:2
-
-{ stamina_depleted:
++ [Continue]
+- { stamina_depleted:
     ~ fail_reason = "stamina"
     -> day2_buffer
 }
@@ -37,13 +35,13 @@ I need to make camp now — and be ready to search the moment it stops.
 }
 
 === day2_fire_collect ===
-# scene:forest_day2
+# scene:path_to_forest
 # portrait:aiden
 # speaker:Aiden
-I need to gather wood before the rain starts. Move fast.
+It's becoming colder. I need to gather wood to make fire. Move fast.
 # minigame:fire_collect day:2
-
-{ stamina_depleted:
++ [Continue]
+- { stamina_depleted:
     ~ fail_reason = "fire"
     -> day2_buffer
 }
@@ -52,8 +50,8 @@ I need to gather wood before the rain starts. Move fast.
 
 === day2_fire ===
 # minigame:fire_campsite day:2
-
-{ stamina_depleted:
++ [Continue]
+- { stamina_depleted:
     ~ fail_reason = "fire"
     -> day2_buffer
 }
@@ -78,8 +76,8 @@ I need to gather wood before the rain starts. Move fast.
 # speaker:Aiden
 There — at the edge of the tree line. A pale green glow.
 # minigame:search day:2 difficulty:easy
-
-{ mg_search_success:
++ [Continue]
+- { mg_search_success:
     - true:
         # speaker:Aiden
         Shimmerleaf. The rain woke it up. And I was here to see it.
@@ -100,8 +98,8 @@ The rain stopped. But this ground — I can barely move without sinking.
 
 The window is open. I cannot waste it.
 # minigame:search day:2 difficulty:hard
-
-{ mg_search_success:
++ [Continue]
+- { mg_search_success:
     - true:
         # speaker:Aiden
         Got it. But this ground nearly cost me everything.
@@ -131,6 +129,7 @@ The window is open. I cannot waste it.
 -> day3_transition
 
 === day2_buffer ===
+# day_advance
 # scene:village_interior
 ~ current_day = current_day + 1
 ~ buffer_days_used = buffer_days_used + 1

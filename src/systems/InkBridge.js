@@ -84,6 +84,9 @@ export class InkBridge {
           index: i,
         })),
       })
+    } else if (!this.story.canContinue) {
+      // Story truly ended (-> END reached)
+      this.events.emit(GameEvents.STORY_END)
     } else {
       this.events.emit(GameEvents.INK_WAITING)
     }
@@ -153,6 +156,12 @@ export class InkBridge {
         day: parseInt(tags.day ?? '1', 10),
         difficulty: tags.difficulty ?? 'learn',
       })
+    }
+    if (tags.day_advance) {
+      const days    = this.scene.registry.get('days')
+      const stamina = this.scene.registry.get('stamina')
+      if (days)    days.advance()
+      if (stamina) stamina.reset(days?.currentDay)
     }
     if (tags.hide_character) {
       console.log('[InkBridge] emitting HIDE_CHARACTER')

@@ -97,7 +97,32 @@ export class OnboardingScene extends Phaser.Scene {
         .on('pointerover',  () => day3Link.setColor('#a0c8d8'))
         .on('pointerout',   () => day3Link.setColor('#5a7a8a'))
         .on('pointerup',    () => this._startGame('day3_transition'))
+
+      const d3CampLink = this.add.text(W * 0.199 + 200 * dpr, linkY, '→ Day 3 Campsite [C]', linkStyle)
+        .setOrigin(0, 1)
+        .setInteractive({ useHandCursor: true })
+        .on('pointerover',  () => d3CampLink.setColor('#a0c8d8'))
+        .on('pointerout',   () => d3CampLink.setColor('#5a7a8a'))
+        .on('pointerup',    () => this._jumpToCampsiteDay3())
+
+      const goodEndLink = this.add.text(W * 0.199 + 370 * dpr, linkY, '→ Good End [G]', linkStyle)
+        .setOrigin(0, 1)
+        .setInteractive({ useHandCursor: true })
+        .on('pointerover',  () => goodEndLink.setColor('#a0c8d8'))
+        .on('pointerout',   () => goodEndLink.setColor('#5a7a8a'))
+        .on('pointerup',    () => this._startGame('good_ending'))
+
+      const badEndLink = this.add.text(W * 0.199 + 510 * dpr, linkY, '→ Bad End [B]', linkStyle)
+        .setOrigin(0, 1)
+        .setInteractive({ useHandCursor: true })
+        .on('pointerover',  () => badEndLink.setColor('#a0c8d8'))
+        .on('pointerout',   () => badEndLink.setColor('#5a7a8a'))
+        .on('pointerup',    () => this._startGame('worst_ending'))
     })
+
+    this.input.keyboard.once('keydown-C', () => this._jumpToCampsiteDay3())
+    this.input.keyboard.once('keydown-G', () => this._startGame('good_ending'))
+    this.input.keyboard.once('keydown-B', () => this._startGame('worst_ending'))
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
@@ -134,6 +159,17 @@ export class OnboardingScene extends Phaser.Scene {
         },
       })
     }
+  }
+
+  _jumpToCampsiteDay3() {
+    this.cameras.main.fadeOut(400, 0, 0, 0)
+    this.cameras.main.once(
+      Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE,
+      () => {
+        this.scene.launch('HUDScene')
+        this.scene.start('CampsiteMinigame', { day: 3 })
+      },
+    )
   }
 
   _startGame(jumpTo = null) {

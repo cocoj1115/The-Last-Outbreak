@@ -81,6 +81,9 @@ export const GameEvents = {
   /** Prologue (pre-time-transition) finished — show HUD. */
   PROLOGUE_END: 'game:prologue_end',
 
+  /** Ink story reached -> END with no more choices or content. */
+  STORY_END: 'game:story_end',
+
   // ── Village scene ─────────────────────────────────────────────────────
 
   /** Player clicked an NPC portrait in the village scene.

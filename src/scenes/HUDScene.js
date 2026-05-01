@@ -23,13 +23,14 @@ export class HUDScene extends Phaser.Scene {
   create() {
     const W = this.scale.width
 
-    // ── Stamina flames (top-left) ─────────────────────────────────────────
+    // ── Stamina flames (top-left) — hidden until Day 1 begins ────────────
     this._buildFlames()
+    this._flames.forEach(f => f.setVisible(false))
+    this._buildStaminaRulesPanel()
 
     // ── Day counter (top-right) — hidden until prologue ends ────────────
     this._buildDayCounter(W)
     this._dayText.setVisible(false)
-    this._moonIcon.setVisible(false)
 
     // ── Event listeners ──────────────────────────────────────────────────
     this.game.events.on(GameEvents.STAMINA_CHANGE, ({ current, max }) => {
@@ -41,18 +42,87 @@ export class HUDScene extends Phaser.Scene {
     })
 
     this.game.events.once(GameEvents.PROLOGUE_END, () => {
+      this._flames.forEach(f => f.setVisible(true))
       this._dayText.setVisible(true)
-      this._moonIcon.setVisible(true)
     })
+  }
+
+  // ── Stamina rules panel ──────────────────────────────────────────────────
+
+  _buildStaminaRulesPanel() {
+    const dpr  = window.devicePixelRatio || 1
+    const W    = this.scale.width
+    const H    = this.scale.height
+
+    // Invisible hit zone over the 5 flames
+    const zoneW = (16 + 4 * 18 + 16) * dpr
+    const zoneH = 52 * dpr
+    const zone  = this.add.zone(zoneW / 2, zoneH / 2, zoneW, zoneH)
+      .setInteractive({ useHandCursor: true }).setDepth(5000)
+
+    // ── Panel (hidden by default) ─────────────────────────────────────────
+    const panelW = 360 * dpr
+    const panelH = 280 * dpr
+    const panelX = 24 * dpr
+    const panelY = 60 * dpr
+
+    const overlay = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.45)
+      .setDepth(5999).setVisible(false).setInteractive()
+
+    const panel = this.add.rectangle(
+      panelX + panelW / 2, panelY + panelH / 2, panelW, panelH, 0x1a0c02, 0.97
+    ).setStrokeStyle(1.5 * dpr, 0xb8943c, 0.9).setDepth(6000).setVisible(false)
+
+    const title = this.add.text(panelX + 16 * dpr, panelY + 16 * dpr, 'Stamina', {
+      fontSize:   `${18 * dpr}px`,
+      fontFamily: '"IM Fell English", serif',
+      fontStyle:  'italic',
+      color:      '#c49850',
+    }).setDepth(6001).setVisible(false)
+
+    const body = this.add.text(panelX + 16 * dpr, panelY + 50 * dpr, [
+      'Each flame is 1 stamina point.',
+      '',
+      'Poor decisions cost stamina:',
+      '  · Wrong campsite         −2',
+      '  · Failed fire / overload  −1',
+      '  · Giving up               −2',
+      '',
+      'Stamina resets each new day.',
+      'If all flames go out, the day is lost.',
+    ].join('\n'), {
+      fontSize:    `${13 * dpr}px`,
+      fontFamily:  '"IM Fell English", serif',
+      color:       '#e8d5a3',
+      lineSpacing: 5 * dpr,
+      wordWrap:    { width: panelW - 32 * dpr },
+    }).setDepth(6001).setVisible(false)
+
+    const close = this.add.text(
+      panelX + panelW - 16 * dpr, panelY + 14 * dpr, '✕', {
+        fontSize:   `${16 * dpr}px`,
+        fontFamily: 'monospace',
+        color:      '#b8943c',
+      }
+    ).setOrigin(1, 0).setDepth(6001).setVisible(false)
+      .setInteractive({ useHandCursor: true })
+
+    const all = [overlay, panel, title, body, close]
+    const show = () => all.forEach(o => o.setVisible(true))
+    const hide = () => all.forEach(o => o.setVisible(false))
+
+    zone.on('pointerup',    show)
+    close.on('pointerup',   hide)
+    overlay.on('pointerup', hide)
   }
 
   // ── Stamina flames ───────────────────────────────────────────────────────
 
   _buildFlames() {
     const dpr = window.devicePixelRatio || 1
-    const startX = 24 * dpr
-    const startY = 24 * dpr
-    const spacing = 32 * dpr
+    const startX = 16 * dpr
+    const startY = 18 * dpr
+    const spacing = 18 * dpr
 
     for (let i = 0; i < 5; i++) {
       const flame = this._drawFlame(startX + i * spacing, startY, true)
@@ -76,14 +146,14 @@ export class HUDScene extends Phaser.Scene {
     if (lit) {
       // Outer flame
       g.fillStyle(0xff6600, 0.9)
-      g.fillTriangle(x, y - 20 * dpr, x - 8 * dpr, y + 8 * dpr, x + 8 * dpr, y + 8 * dpr)
+      g.fillTriangle(x, y - 5 * dpr, x - 4 * dpr, y + 4 * dpr, x + 4 * dpr, y + 4 * dpr)
       // Inner flame
       g.fillStyle(0xffcc00, 0.95)
-      g.fillTriangle(x, y - 12 * dpr, x - 4 * dpr, y + 6 * dpr, x + 4 * dpr, y + 6 * dpr)
+      g.fillTriangle(x, y - 3 * dpr, x - 2 * dpr, y + 3 * dpr, x + 2 * dpr, y + 3 * dpr)
     } else {
       // Extinguished — just a small grey ember
       g.fillStyle(0x444444, 0.6)
-      g.fillCircle(x, y + 4 * dpr, 4 * dpr)
+      g.fillCircle(x, y + 2 * dpr, 2 * dpr)
     }
   }
 
@@ -115,9 +185,7 @@ export class HUDScene extends Phaser.Scene {
 
   _buildDayCounter(W) {
     const dpr = window.devicePixelRatio || 1
-    // Moon icon (drawn in code)
-    this._moonIcon = this.add.graphics()
-    this._renderMoon(1, 5)
+    this._moonIcon = null
 
     this._dayText = this.add.text(W - 20 * dpr, 20 * dpr, 'Day 1 / 5', {
       fontSize: `${16 * dpr}px`,
@@ -126,27 +194,8 @@ export class HUDScene extends Phaser.Scene {
     }).setOrigin(1, 0)
   }
 
-  _renderMoon(currentDay, maxDays) {
-    const dpr = window.devicePixelRatio || 1
-    const W = this.scale.width
-    const x = W - 110 * dpr
-    const y = 32 * dpr
-    const r = 12 * dpr
-    const phase = currentDay / maxDays // 0 → 1
-
-    this._moonIcon.clear()
-    // Full circle (dark)
-    this._moonIcon.fillStyle(0x333333)
-    this._moonIcon.fillCircle(x, y, r)
-    // Lit portion grows from right
-    this._moonIcon.fillStyle(0xddddaa, 0.9)
-    const litWidth = r * 2 * phase
-    this._moonIcon.fillCircle(x + r - litWidth / 2, y, litWidth / 2)
-  }
-
   _updateDayCounter(day, maxDays) {
     this._dayText.setText(`Day ${day} / ${maxDays}`)
-    this._renderMoon(day, maxDays)
 
     // Flash the day text
     this.tweens.add({

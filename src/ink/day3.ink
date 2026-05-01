@@ -1,15 +1,16 @@
 // day3.ink
-// Day 3 — Frostleaf (wind)
+// Day 3 — Glaceweed (wind)
 
 // ═════════════════════════════════════════════════════════════════════════════
 // DAY 3 TRANSITION — map
 // ═════════════════════════════════════════════════════════════════════════════
 
 === day3_transition ===
+# day_advance
 # scene:path_petra
 # portrait:aiden
 # speaker:Aiden
-Two down. The Frostleaf is deeper in.
+Two down. The Glaceweed is deeper in.
 
 Further from any village. Further from anything familiar.
 * [Continue] -> petra_encounter
@@ -28,7 +29,7 @@ Heading deeper in? In this wind?
 
 # portrait:aiden
 # speaker:Aiden
-I am looking for Frostleaf. You know it?
+I am looking for Glaceweed. You know it?
 
 # portrait:petra
 # speaker:Petra
@@ -71,8 +72,8 @@ I need to make camp before it gets dark.
 
 === day3_campsite ===
 # minigame:campsite day:3
-
-{ stamina_depleted:
++ [Continue]
+- { stamina_depleted:
     ~ fail_reason = "stamina"
     -> day3_buffer
 }
@@ -92,8 +93,8 @@ I need to make camp before it gets dark.
 
 === day3_fire_collect ===
 # minigame:fire_collect day:3
-
-{ stamina_depleted:
++ [Continue]
+- { stamina_depleted:
     ~ fail_reason = "stamina"
     -> day3_buffer
 }
@@ -106,8 +107,8 @@ I need to make camp before it gets dark.
 
 === day3_fire ===
 # minigame:fire_campsite day:3
-
-{ stamina_depleted:
++ [Continue]
+- { stamina_depleted:
     ~ fail_reason = "no_fire"
     -> day3_buffer
 }
@@ -139,11 +140,11 @@ The wind dropped. Just a little.
 
 Petra said before the sun hits. That means now.
 # minigame:search day:3 difficulty:easy
-
-{ mg_search_success:
++ [Continue]
+- { mg_search_success:
     - true:
         # speaker:Aiden
-        Frostleaf. Still cold. Still good.
+        Glaceweed. Still cold. Still good.
         ~ herb_count = herb_count + 1
         -> day3_morning_good
     - false:
@@ -161,8 +162,8 @@ Made it through. Barely.
 
 The window. I have to move now.
 # minigame:search day:3 difficulty:hard
-
-{ mg_search_success:
++ [Continue]
+- { mg_search_success:
     - true:
         # speaker:Aiden
         Got it. The edges were already melting.
@@ -202,6 +203,7 @@ The window. I have to move now.
 // ═════════════════════════════════════════════════════════════════════════════
 
 === day3_buffer ===
+# day_advance
 # scene:village_interior
 ~ current_day = current_day + 1
 ~ buffer_days_used = buffer_days_used + 1
@@ -272,9 +274,8 @@ One more night. This time I know where to stand.
 // ═════════════════════════════════════════════════════════════════════════════
 
 === day4_transition ===
-# scene:map
-# speaker:Aiden
-Three herbs found.
-
-One more to go.
--> END
+{ herb_count >= 2:
+    -> good_ending
+- else:
+    -> worst_ending
+}

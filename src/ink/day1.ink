@@ -4,16 +4,13 @@
 # scene:village_day1
 # portrait:aiden
 # speaker:Aiden
-A village. Small. Quiet.
-
-Someone here must know about the Shimmerleaf.
+Three people nearby.
 -> village_hub
 
 === village_hub ===
 # scene:village_hub
 # portrait:none
 # speaker:
-Three people nearby.
 + [Talk to Mara — the hunter] -> mara_entry
 + [Talk to Finn — the woodcutter] -> finn_entry
 + [Talk to Isla — the village elder] -> isla_entry
@@ -46,13 +43,13 @@ Three people nearby.
         It is important. Do you know it?
         # portrait:mara
         # speaker:Mara
-        You will need to camp in the forest. Ask me what you need.
+        You will need to survive in the forest. Ask me what you need.
         ~ talked_to_mara = true
         -> mara_questions
 }
 
 === mara_questions ===
-+ [How do I choose a campsite?] -> mara_campsite
++ [How do I choose where to sleep?] -> mara_campsite
 + [What do you know about the Shimmerleaf?] -> mara_shimmerleaf
 + [Have you seen anyone else pass through?] -> mara_others
 + [That is all I needed.] -> village_hub
@@ -66,7 +63,7 @@ Find somewhere high — not a hilltop, just higher than what surrounds it. Water
 
 Stay back from water. Fifteen steps at least. The bank looks stable until it is not.
 # speaker:Mara
-Tell me — flat ground right beside a stream, or a slight rise thirty steps away. Which do you take?
+Now tell me — flat ground right beside a stream, or a slight rise thirty steps away. Which do you take?
 + [The flat spot — easier access to water]
     # portrait:mara
     # speaker:Mara
@@ -86,11 +83,9 @@ Tell me — flat ground right beside a stream, or a slight rise thirty steps awa
 === mara_shimmerleaf ===
 # portrait:mara
 # speaker:Mara
-Grows near water but not in it. Look for damp ground on a slope — where runoff collects but does not flood.
+It grows near water but not in it. 
 
 The north-facing edges of the forest, mostly. Less sun. The plant likes the shade.
-
-It only blooms after rain. You will not find it on a dry night.
 -> mara_questions
 
 === mara_others ===
@@ -144,12 +139,13 @@ Two spots. One under a big oak — sheltered. One in a clearing — open sky but
 + [Under the oak — better shelter]
     # portrait:finn
     # speaker:Finn
-    That oak has three dead branches I can see from here. Any one comes down in the night... Clearing. Always the clearing.
+    That oak has three dead branches I can see from here. Any one comes down in the night... Always choose the clearing, which is the open area.
     -> finn_questions
 + [The clearing — open sky is safer]
     # portrait:finn
     # speaker:Finn
     Exactly. Wind you can deal with. A branch through your tent you cannot.
+
     { not has_rope:
         ~ has_rope = true
         # item:rope
@@ -201,7 +197,8 @@ A hollow between two hills — sheltered, soft ground. Or a flat open space on t
 +  [The hollow — sheltered and quiet]
     # portrait:isla
     # speaker:Isla
-    Cold air pools in hollows like water in a bowl. By midnight shivering. By dawn sick. The hillside. Cold flows down — remember that.
+    Cold air pools in hollows like water in a bowl. By midnight shivering. By dawn sick. 
+    Cold flows downhill — remember that.
     -> isla_questions
 +  [The hillside — higher and better air]
     # portrait:isla
@@ -217,13 +214,10 @@ A hollow between two hills — sheltered, soft ground. Or a flat open space on t
 === isla_shimmerleaf ===
 # portrait:isla
 # speaker:Isla
-My grandmother collected it. Said you could never go looking while the rain was falling.
-
-The rain wakes something in the leaf. Half an hour after a storm passes, they glow — pale green. Easy to spot. But only for a short while.
+My grandmother collected it. Said the rain wakes something in the leaf. Half an hour after a storm passes, they glow — pale green. Easy to spot. But only for a short while.
 
 You need to already be there when the rain stops. Camped and waiting.
-# speaker:Isla
-That is the only way. Be in the right place before the storm. Not after.
+
 -> isla_questions
 
 
@@ -234,5 +228,5 @@ That is the only way. Be in the right place before the storm. Not after.
 === day1_end ===
 # portrait:aiden
 # speaker:Aiden
-Time to head out. The storm will not wait.
+I know where to go. I'll head to the north edge of the forest tomorrow. 
 -> day2_transition

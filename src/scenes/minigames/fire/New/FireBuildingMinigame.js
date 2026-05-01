@@ -944,7 +944,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _buildBackground(W, H) {
     this._bgRect = this.add.rectangle(W / 2, H / 2, W, H, BG_NIGHT).setDepth(0)
 
-    this._titleText = this.add.text(W / 2, 28, `Day ${this.day} — Build the fire`, {
+    this._titleText = this.add.text(W / 2, 60 * (window.devicePixelRatio || 1), `Day ${this.day} — Build the fire`, {
       fontSize: '20px',
       fontFamily: 'Georgia, serif',
       fill: '#8a9a7a',
@@ -1068,11 +1068,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
   // ── Clear counter ─────────────────────────────────────────────────────────────
 
   _buildClearCounter(W) {
-    this._clearCounterText = this.add.text(W / 2, 64, this._clearCounterLabel(), {
+    this._clearCounterText = this.add.text(W / 2, 82 * (window.devicePixelRatio || 1), this._clearCounterLabel(), {
       fontSize: '15px', fontFamily: 'monospace', fill: '#aaaaaa',
     }).setOrigin(0.5).setDepth(10).setAlpha(0)
 
-    this._clearCheckmark = this.add.text(W / 2, 64, '✔  Area cleared', {
+    this._clearCheckmark = this.add.text(W / 2, 82 * (window.devicePixelRatio || 1), '✔  Area cleared', {
       fontSize: '15px', fontFamily: 'monospace', fill: '#7adf7a',
     }).setOrigin(0.5).setDepth(10).setAlpha(0)
   }
