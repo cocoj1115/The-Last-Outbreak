@@ -2,12 +2,12 @@
  * Day 2 FireBuildingMinigame — dev mock config.
  *
  * Usage:
- *   1. Set DEV_MOCK_FIRE_BUILDING = false
- *   2. Change MOCK_CONFIG.startStep to jump to any step directly
- *      (`collect` → BootScene starts FireBuildingCollect; other steps → FireBuildingMinigame.)
- *   3. npm run dev / vite — BootScene picks this up and skips straight to the scene
+ *   1. Set DEV_MOCK_FIRE_BUILDING = false before committing.
+ *   2. Set MOCK_CONFIG.startStep — collect launches FireBuildingCollect; others → FireBuildingMinigame.
+ *   3. Use mockPreset `'ideal' | 'mixed' | 'bad'` for quantity‑consistent stacks / reserves / qualities.
  *
- * Keep DEV_MOCK_FIRE_BUILDING = false before committing.
+ * Data flow (registry): Collect → collectedMaterials → Sort → sortedMaterials → Stack → stackData +
+ * reserveMaterials → Ignite / Spread / Sustain (reserveMaterials stays live via `_syncStackLayRegistry`).
  */
 
 /** Master switch — set true to bypass OnboardingScene and jump straight to the minigame. */
@@ -15,55 +15,179 @@ export const DEV_MOCK_FIRE_BUILDING = false
 
 const STEP_ORDER = ['ren_intro', 'clear', 'collect', 'sort', 'stack', 'ignite', 'spread', 'sustain']
 
+/** Lay + reserve payloads keyed by QA preset — counts always sum to collectedMaterials.items.length (8). */
+export const MOCK_PRESETS = {
+  /** Full GOOD-ish lay; ignite reserve matches user spec (thin_branch_2 + pine_cone). */
+  ideal: {
+    collectedMaterials: {
+      items: [
+        { id: 'dry_leaves', type: 'tinder', quality: 'GOOD' },
+        { id: 'dry_grass', type: 'tinder', quality: 'GOOD' },
+        { id: 'dry_grass_2', type: 'tinder', quality: 'GOOD' },
+        { id: 'dry_twigs', type: 'kindling', quality: 'GOOD' },
+        { id: 'thin_branch', type: 'kindling', quality: 'GOOD' },
+        { id: 'thin_branch_2', type: 'kindling', quality: 'GOOD' },
+        { id: 'thick_branch', type: 'fuel_wood', quality: 'GOOD' },
+        { id: 'pine_cone', type: 'fuel_wood', quality: 'MID' },
+      ],
+      count: 8,
+      tinder_count: 3,
+      kindling_count: 3,
+      fuel_count: 2,
+    },
+    sortedMaterials: {
+      tinder: [
+        { id: 'dry_leaves', quality: 'GOOD' },
+        { id: 'dry_grass', quality: 'GOOD' },
+        { id: 'dry_grass_2', quality: 'GOOD' },
+      ],
+      kindling: [
+        { id: 'dry_twigs', quality: 'GOOD' },
+        { id: 'thin_branch', quality: 'GOOD' },
+        { id: 'thin_branch_2', quality: 'GOOD' },
+      ],
+      fuel_wood: [
+        { id: 'thick_branch', quality: 'GOOD' },
+        { id: 'pine_cone', quality: 'MID' },
+      ],
+    },
+    stackData: {
+      bottom: [
+        { id: 'dry_leaves', quality: 'GOOD' },
+        { id: 'dry_grass', quality: 'GOOD' },
+        { id: 'dry_grass_2', quality: 'GOOD' },
+      ],
+      middle: [
+        { id: 'dry_twigs', quality: 'GOOD' },
+        { id: 'thin_branch', quality: 'GOOD' },
+      ],
+      top: [{ id: 'thick_branch', quality: 'GOOD' }],
+    },
+    reserveMaterials: [
+      { id: 'thin_branch_2', type: 'kindling', quality: 'GOOD' },
+      { id: 'pine_cone', type: 'fuel_wood', quality: 'MID' },
+    ],
+  },
+
+  /** Softer MID pieces — tighter ignite clicks, spread margin lower. */
+  mixed: {
+    collectedMaterials: {
+      items: [
+        { id: 'dry_leaves', type: 'tinder', quality: 'GOOD' },
+        { id: 'dry_grass', type: 'tinder', quality: 'GOOD' },
+        { id: 'dry_grass_2', type: 'tinder', quality: 'MID' },
+        { id: 'dry_twigs', type: 'kindling', quality: 'GOOD' },
+        { id: 'thin_branch', type: 'kindling', quality: 'MID' },
+        { id: 'thin_branch_2', type: 'kindling', quality: 'GOOD' },
+        { id: 'thick_branch', type: 'fuel_wood', quality: 'GOOD' },
+        { id: 'pine_cone', type: 'fuel_wood', quality: 'MID' },
+      ],
+      count: 8,
+      tinder_count: 3,
+      kindling_count: 3,
+      fuel_count: 2,
+    },
+    sortedMaterials: {
+      tinder: [
+        { id: 'dry_leaves', quality: 'GOOD' },
+        { id: 'dry_grass', quality: 'GOOD' },
+        { id: 'dry_grass_2', quality: 'MID' },
+      ],
+      kindling: [
+        { id: 'dry_twigs', quality: 'GOOD' },
+        { id: 'thin_branch', quality: 'MID' },
+        { id: 'thin_branch_2', quality: 'GOOD' },
+      ],
+      fuel_wood: [
+        { id: 'thick_branch', quality: 'GOOD' },
+        { id: 'pine_cone', quality: 'MID' },
+      ],
+    },
+    stackData: {
+      bottom: [
+        { id: 'dry_leaves', quality: 'GOOD' },
+        { id: 'dry_grass', quality: 'GOOD' },
+        { id: 'dry_grass_2', quality: 'MID' },
+      ],
+      middle: [
+        { id: 'dry_twigs', quality: 'GOOD' },
+        { id: 'thin_branch', quality: 'MID' },
+      ],
+      top: [{ id: 'thick_branch', quality: 'GOOD' }],
+    },
+    reserveMaterials: [
+      { id: 'thin_branch_2', type: 'kindling', quality: 'GOOD' },
+      { id: 'pine_cone', type: 'fuel_wood', quality: 'MID' },
+    ],
+  },
+
+  /**
+   * BAD kindling on lay → spread tends stuck‑kindling; spare GOOD kindling in reserve for remediation.
+   * Sustain reserve only MID pine — tight backup wood.
+   */
+  bad: {
+    collectedMaterials: {
+      items: [
+        { id: 'dry_leaves', type: 'tinder', quality: 'GOOD' },
+        { id: 'dry_grass', type: 'tinder', quality: 'GOOD' },
+        { id: 'dry_grass_2', type: 'tinder', quality: 'GOOD' },
+        { id: 'dry_twigs', type: 'kindling', quality: 'GOOD' },
+        { id: 'thin_branch', type: 'kindling', quality: 'BAD' },
+        { id: 'thin_branch_2', type: 'kindling', quality: 'BAD' },
+        { id: 'thick_branch', type: 'fuel_wood', quality: 'GOOD' },
+        { id: 'pine_cone', type: 'fuel_wood', quality: 'MID' },
+      ],
+      count: 8,
+      tinder_count: 3,
+      kindling_count: 3,
+      fuel_count: 2,
+    },
+    sortedMaterials: {
+      tinder: [
+        { id: 'dry_leaves', quality: 'GOOD' },
+        { id: 'dry_grass', quality: 'GOOD' },
+        { id: 'dry_grass_2', quality: 'GOOD' },
+      ],
+      kindling: [
+        { id: 'dry_twigs', quality: 'GOOD' },
+        { id: 'thin_branch', quality: 'BAD' },
+        { id: 'thin_branch_2', quality: 'BAD' },
+      ],
+      fuel_wood: [
+        { id: 'thick_branch', quality: 'GOOD' },
+        { id: 'pine_cone', quality: 'MID' },
+      ],
+    },
+    stackData: {
+      bottom: [
+        { id: 'dry_leaves', quality: 'GOOD' },
+        { id: 'dry_grass', quality: 'GOOD' },
+        { id: 'dry_grass_2', quality: 'GOOD' },
+      ],
+      middle: [
+        { id: 'thin_branch', quality: 'BAD' },
+        { id: 'thin_branch_2', quality: 'BAD' },
+      ],
+      top: [{ id: 'thick_branch', quality: 'GOOD' }],
+    },
+    reserveMaterials: [
+      { id: 'dry_twigs', type: 'kindling', quality: 'GOOD' },
+      { id: 'pine_cone', type: 'fuel_wood', quality: 'MID' },
+    ],
+  },
+}
+
 export const MOCK_CONFIG = {
-  /** Which step to start from. One of STEP_ORDER above. */
-  startStep:       'ignite',
-  campsiteQuality: 'good',    // 'good' | 'poor'
-  /** Passed to inkBridge `mg_fire_collect_score` — maps to DIFFICULTY_CONFIG (EASY|MEDIUM|HARD). */
-  mockIgniteDifficulty: 'EASY', // 'EASY' | 'MEDIUM' | 'HARD'
-  stamina:         5,
+  startStep: 'spread',
+  /** `'ideal'` | `'mixed'` | `'bad'` — drives collected / sorted / stack / reserve coherence. */
+  mockPreset: 'ideal',
+  campsiteQuality: 'good',
+  mockIgniteDifficulty: 'EASY',
+  mockFireQuality: 'strong',
+  stamina: 5,
 
-  // ── Pre-filled state for mid-flow starts ──────────────────────────────────
-
-  /** Used when startStep >= 'sort' */
-  mockCollectedMaterials: {
-    items: [
-      { id: 'dry_leaves',    type: 'tinder',    quality: 'GOOD' },
-      { id: 'dry_grass',     type: 'tinder',    quality: 'GOOD' },
-      { id: 'dry_grass_2',   type: 'tinder',    quality: 'GOOD' },
-      { id: 'dry_twigs',     type: 'kindling',  quality: 'GOOD' },
-      { id: 'thin_branch',   type: 'kindling',  quality: 'GOOD' },
-      { id: 'thin_branch_2', type: 'kindling',  quality: 'GOOD' },
-      { id: 'thick_branch',  type: 'fuel_wood', quality: 'GOOD' },
-      { id: 'pine_cone',     type: 'fuel_wood', quality: 'MID'  },
-    ],
-    count: 8, tinder_count: 3, kindling_count: 3, fuel_count: 2,
-  },
-
-  /** Used when startStep >= 'stack' */
-  mockSortedMaterials: {
-    tinder:    [
-      { id: 'dry_leaves',  quality: 'GOOD' },
-      { id: 'dry_grass',   quality: 'GOOD' },
-      { id: 'dry_grass_2', quality: 'GOOD' },
-    ],
-    kindling:  [
-      { id: 'dry_twigs',     quality: 'GOOD' },
-      { id: 'thin_branch',   quality: 'GOOD' },
-      { id: 'thin_branch_2', quality: 'GOOD' },
-    ],
-    fuel_wood: [
-      { id: 'thick_branch', quality: 'GOOD' },
-      { id: 'pine_cone',    quality: 'MID'  },
-    ],
-  },
-
-  /** Used when startStep >= 'ignite' */
-  mockStackData: {
-    bottom: [{ id: 'dry_leaves', quality: 'GOOD' }, { id: 'dry_grass', quality: 'GOOD' }],
-    middle: [{ id: 'dry_twigs',  quality: 'GOOD' }],
-    top:    [{ id: 'thick_branch', quality: 'GOOD' }],
-  },
+  spreadDevScenario: null,
+  spreadTestReserveKindling: false,
 }
 
 // ── Registry seeding ──────────────────────────────────────────────────────────
@@ -76,25 +200,42 @@ export const MOCK_CONFIG = {
 export function seedFireBuildingMockRegistry(registry) {
   const cfg = MOCK_CONFIG
   const idx = STEP_ORDER.indexOf(cfg.startStep)
+  const presetKey = cfg.mockPreset ?? 'ideal'
+  const preset = MOCK_PRESETS[presetKey] ?? MOCK_PRESETS.ideal
 
   registry.set('campsiteQuality', cfg.campsiteQuality)
 
-  // groundCleared: set if we're past the clear step
-  if (idx > STEP_ORDER.indexOf('clear')) {
+  if (cfg.startStep === 'clear') {
+    registry.set('groundCleared', false)
+  } else if (cfg.startStep === 'collect') {
+    registry.set('groundCleared', true)
+  } else if (idx > STEP_ORDER.indexOf('clear')) {
     registry.set('groundCleared', true)
   }
 
   if (idx >= STEP_ORDER.indexOf('sort')) {
-    registry.set('collectedMaterials', _deepClone(cfg.mockCollectedMaterials))
+    registry.set('collectedMaterials', _deepClone(preset.collectedMaterials))
   }
 
   if (idx >= STEP_ORDER.indexOf('stack')) {
-    registry.set('sortedMaterials', _deepClone(cfg.mockSortedMaterials))
+    registry.set('sortedMaterials', _deepClone(preset.sortedMaterials))
   }
 
   if (idx >= STEP_ORDER.indexOf('ignite')) {
-    registry.set('stackData',        _deepClone(cfg.mockStackData))
-    registry.set('reserveMaterials', [])
+    let sd = _deepClone(preset.stackData)
+    if (cfg.spreadTestReserveKindling) {
+      sd.middle = [
+        { id: 'thin_branch', quality: 'BAD' },
+        { id: 'thin_branch_2', quality: 'BAD' },
+      ]
+    }
+    registry.set('stackData', sd)
+    registry.set('reserveMaterials', _deepClone(preset.reserveMaterials))
+  }
+
+  if (idx >= STEP_ORDER.indexOf('spread')) {
+    registry.set('ignitionSuccess', true)
+    registry.set('fireQuality', cfg.mockFireQuality ?? 'strong')
   }
 
   const cq = cfg.campsiteQuality === 'poor' ? 'poor' : 'good'
@@ -110,15 +251,13 @@ export function seedFireBuildingMockRegistry(registry) {
   })
 }
 
-/**
- * Payload for BootScene: FireBuildingMinigame for most steps; use startStep === 'collect'
- * to launch FireBuildingCollect instead (handled in BootScene).
- */
 export function getFireBuildingMockPayload() {
   return {
-    day:             2,
-    startStep:       MOCK_CONFIG.startStep,
-    campsiteQuality: MOCK_CONFIG.campsiteQuality,
+    day:               2,
+    startStep:         MOCK_CONFIG.startStep,
+    campsiteQuality:   MOCK_CONFIG.campsiteQuality,
+    spreadDevScenario: MOCK_CONFIG.spreadDevScenario ?? null,
+    mockPreset:        MOCK_CONFIG.mockPreset ?? 'ideal',
   }
 }
 

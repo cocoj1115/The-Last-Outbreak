@@ -1,6 +1,7 @@
 import Phaser from 'phaser'
 import { GameEvents } from '../../../../systems/GameEvents.js'
 import { DialogueBox } from './DialogueBox.js'
+import { COLLECT_SESSION_RESUME_CAMPSITE, COLLECT_TARGETS } from './FireBuildingCollect.js'
 
 // ─── Sort configuration ───────────────────────────────────────────────────────
 
@@ -183,8 +184,8 @@ function assertSortedMaterialsShape(sorted, ctx = '') {
 
 function assertStackRegistryShape(registry, ctx = '') {
   if (!import.meta.env.DEV) return
-  const sd = registry?.stackData
-  const rs = registry?.reserveMaterials
+  const sd = registry?.get?.('stackData')
+  const rs = registry?.get?.('reserveMaterials')
   const sdOk =
     sd &&
     Array.isArray(sd.bottom) &&
@@ -233,6 +234,8 @@ const STACK_MAT_VISUAL = {
 const STACK_BOTTOM_R = 45
 const STACK_MIDDLE_R = 80
 const STACK_TOP_R    = 115
+/** Blow halo stroke sits just outside the ring for the active spark layer (matches STRIKE burst radius). */
+const IGNITE_HALO_RING_PAD = 12
 
 /** Ignite HUD progress bar sits just below outer pit ring (§4.5 UI). */
 const IGNITE_BAR_RING_GAP = 18
@@ -247,29 +250,78 @@ const DIFFICULTY_CONFIG = {
 }
 
 const IGNITE_PROGRESS_MAX = 100
-const MAX_CLICKS            = 30
+/** Fallback STRIKE+Blow cap when stackData.bottom is missing or empty (dev jump / guard). */
+const MAX_CLICKS            = 36
+function normalizeMatQualityTier(q) {
+  const s = String(q ?? '').toUpperCase()
+  if (s === 'GOOD' || s === 'MID' || s === 'BAD') return s
+  return 'MID'
+}
+
+/** Ignite STRIKE+Blow budget contributed by one bottom-layer tinder (`registry.stackData.bottom`). */
+function igniteClicksForBottomTinderItem(item) {
+  const q = normalizeMatQualityTier(item?.quality)
+  if (q === 'GOOD') return 10
+  if (q === 'MID') return 6
+  return 3
+}
+
+function sumIgniteClickBudgetFromBottom(bottomArr) {
+  if (!Array.isArray(bottomArr)) return 0
+  let t = 0
+  for (const item of bottomArr) t += igniteClicksForBottomTinderItem(item)
+  return t
+}
+
+/** Failed ignite retry removes one bottom bundle — worst quality first (BAD → MID → GOOD). */
+function igniteRetryBottomConsumeRank(quality) {
+  const t = normalizeMatQualityTier(quality)
+  if (t === 'BAD') return 0
+  if (t === 'MID') return 1
+  return 2
+}
+
+/** §4.6 spread — aggregate layer material quality for auto outcome. */
+function spreadLayerQualityScore(entries) {
+  if (!Array.isArray(entries)) return 0
+  let s = 0
+  for (const m of entries) {
+    const q = normalizeMatQualityTier(m?.quality)
+    if (q === 'GOOD') s += 3
+    else if (q === 'MID') s += 2
+    else s += 1
+  }
+  return s
+}
+
+/** Placeholder BG keys — swap for BG-SPREAD-* assets later. */
+const SPREAD_PLACEHOLDER = {
+  spread1: { fill: 0x261810, caption: 'BG-SPREAD-1 — tinder burning' },
+  spread2: { fill: 0x352018, caption: 'BG-SPREAD-2 — tinder + kindling' },
+  spread3: { fill: 0x442818, caption: 'BG-SPREAD-3 — full fire' },
+  stuck1:  { fill: 0x141016, caption: 'BG-SPREAD-STUCK-1 — flame at bottom' },
+  stuck2:  { fill: 0x18141a, caption: 'BG-SPREAD-STUCK-2 — middle burns, top cold' },
+}
+
 const IDLE_THRESHOLD        = 2000
 
 // ─── Sustain configuration ───────────────────────────────────────────────────
 
 const SEGMENT_COUNT = 5
 
-/** Base burn duration from materials on the stack (placed layers), before backup fuel. */
-const SUSTAIN_SEC_PER_TOP    = 20
-const SUSTAIN_SEC_PER_MIDDLE = 6
-const SUSTAIN_SEC_PER_BOTTOM = 2
-const SUSTAIN_NIGHT_MIN_SEC  = 20
-const SUSTAIN_NIGHT_MAX_SEC  = 100
+/** Fixed night length (§ rebalance): progress bar reaches full in 30s regardless of lay size. */
+const SUSTAIN_NIGHT_TOTAL_MS = 30000
 
 const DRAIN_MS = {
-  good_cleared: 18000,
-  good_dirty:   14000,
-  poor_cleared: 11000,
-  poor_dirty:    8000,
+  good_cleared: 4000,
+  good_dirty:   3500,
+  poor_cleared: 3000,
+  poor_dirty:   2500,
 }
 
-const FLOOD_INTERVAL_CLEARED = 20000
-const FLOOD_INTERVAL_DIRTY   = 15000
+/** Flood loop interval when `_campsiteQuality === 'poor'` only (`_startFloodTimer`). */
+const FLOOD_INTERVAL_CLEARED = 12000
+const FLOOD_INTERVAL_DIRTY   = 10000
 const FLOOD_BG_DURATION      = 1200
 
 // ─── Background colours ──────────────────────────────────────────────────────
@@ -290,8 +342,28 @@ const SORT_PACK_HUD_Y_FROM_BOTTOM  = 48
 
 const ZONE_W        = 210
 const ZONE_H        = 100
+/** Campsite steps where the three sort-zone panels show read-only `placed` lay chips. Sustain uses `_createSustainBackupUi` instead (same zones, no duplicate placeholders). */
+const SORT_ZONE_LAY_PREVIEW_STEPS = ['sort', 'stack', 'ignite', 'spread']
 /** Stack-phase piles above STRIKE / BLOW (depth ~18) so pointer picks draggable fuel, not pit chrome. */
 const STACK_SORTED_PILE_DEPTH = 24
+/** Sustain reserve panels — below draggable pile sprites so wood receives drag. */
+const SUSTAIN_RESERVE_PANEL_DEPTH = 22
+/** Dim/unavailable reserve piles during sustain (BAD / not in backup keys). */
+const SUSTAIN_RESERVE_DIM_PILE_DEPTH = 19
+/** Active reserve wood — above panels so hits go to sprites. */
+const SUSTAIN_RESERVE_PILE_DEPTH = 30
+/** @deprecated label-only; panels use `SUSTAIN_RESERVE_PANEL_DEPTH`. */
+const SUSTAIN_BACKUP_UI_DEPTH = SUSTAIN_RESERVE_PANEL_DEPTH
+
+/** Pit-relative STRIKE/BLOW placement — stack lay preview + ignite mechanics share this geometry. */
+const CAMPSITE_FLINT_OFF_X = 185
+const CAMPSITE_FLINT_HALF_W = 55
+const CAMPSITE_STRIKE_BLOW_GAP = 12
+const CAMPSITE_BLOW_W = 88
+const CAMPSITE_BLOW_H = 110
+function campsiteBlowCenterX(pitX) {
+  return pitX + CAMPSITE_FLINT_OFF_X + CAMPSITE_FLINT_HALF_W + CAMPSITE_STRIKE_BLOW_GAP + CAMPSITE_BLOW_W / 2
+}
 const SEG_COLOR_LIT = 0xe8a020
 const SEG_COLOR_DIM = 0x3a2e18
 
@@ -306,6 +378,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this.day       = data?.day ?? 2
     this.step      = null
     this._startStep = data?.startStep ?? null
+    /** Mock / QA: `'clean'` | `'stuck_kindling'` | `'stuck_fuel'` forces §4.6 branch. */
+    this._spreadDevScenario = data?.spreadDevScenario ?? null
     this._resumeStackAfterCollect = data?.resumeStackAfterCollect === true
 
     // Material tracking — id → state object
@@ -370,11 +444,10 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._stackPitPromptTween        = null
 
     // Ignite state
-    this._igniteSparks      = 0
     this._igniteTotalClicks = 0
-    this._igniteRetryUsed   = false
+    /** Blow phase (§4.5): no decay until first BLOW after smoke tutorial / dialogue beat. */
+    this._igniteDecayHoldUntilNextBlow = false
     this._igniteLastClick   = 0
-    this._igniteTarget      = 0
     this._igniteUseRain     = false
     this._igniteDifficulty  = null
     /** `spark` | `blow` — §4.5 two-phase ignite */
@@ -384,17 +457,34 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._igniteSmokeThresholdPct = 40
     this._igniteDecayPerTick      = 1
     this._igniteBlowGain          = 12
-    /** Spark layer selected before mechanics — pit-ring pick (§4.5). */
+    /** Spark layer chosen via ignite chips (before mechanics). */
     this._igniteSparkTargetZone = 'tinder'
-    /** Ignite Ren proposal branch: pathA = three rings; pathB = tinder-only highlight (§4.5). */
+
+    /** Max STRIKE+Blow attempts this ignite — scales down when fewer tinder units on stack. */
+    this._igniteClickBudget = MAX_CLICKS
+    /** One-shot Ren when remaining attempts drop to ≤5 (§ ignite UX). */
+    this._igniteRenTinderLowShown = false
+    /** After forest collect — skip ignite Ren intro when player already began ignite. */
+    this._igniteResumeFromForest = null
+    this._igniteTinderBarGfx = null
+    this._igniteTinderBarLabel = null
+    this._igniteTinderBarPulseTween = null
+    this._igniteTinderBarX = 0
+    this._igniteTinderBarTopY = 0
+    this._igniteTinderBarW = 16
+    this._igniteTinderBarH = 128
+    /** Ignite Ren proposal: pathA = three chips; pathB = only tinder chip active + highlighted. */
     this._igniteProposalPath = 'pathA'
-    /** Hit circle + ring highlights during pit layer pick */
-    this._ignitePitPickHit = null
-    this._ignitePitPickGraphics = null
-    /** After proposal: awaiting pit-ring tap for spark layer */
+    /** After dialogue: first STRIKE opens Spark-at chips; second STRIKE confirms layer → Ren → mechanics */
+    this._igniteAwaitFirstStrikeForSparkUi = false
+    /** Chips visible: adjust selection (path A); STRIKE confirms → Ren feedback */
     this._igniteAwaitingLayerStrike = false
     this._igniteSparkPickPhaseObjs = []
     this._igniteSparkPickLabel = null
+    /** Spark-at phase: highlights pit ring matching chip (Base→bottom …). */
+    this._igniteSparkPickRingGfx = null
+    /** Blow phase: warm accent strokes on **bottom (tinder) ring only** above `_stackGraphics`. */
+    this._igniteLayRingGlowGfx = null
 
     /** Lay locked: Blow sits beside STRIKE (dim until ignite smoke phase — same control as ignite HUD later). */
     this._stackLockedBlowBg = null
@@ -406,6 +496,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._igniteBarFireMarker       = null
     this._igniteBlowBg              = null
     this._igniteBlowTxt             = null
+    /** Read-only chips showing the `placed` lay inside sort zones (sort → sustain). */
+    this._sortZoneLayPreviewNodes = []
     /** Blow phase smoke pulse: `bright` = good blow window (§4.5). */
     this._igniteSmokePulsePhase = 'bright'
     this._igniteSmokePulseTimer = null
@@ -420,10 +512,21 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._idleTimer         = null
     this._effectiveDecayMs   = DIFFICULTY_CONFIG.EASY.decayMs
 
+    /** §4.6 Spread — flame climb after ignite */
+    this._spreadTimers        = []
+    this._spreadAwaitingRemediation = false
+    this._spreadRemediationZone = null // 'kindling' | 'fuel_wood'
+    this._spreadRemediatedWeak = false
+    this._spreadPlaceholderCapTxt = null
+    this._spreadSymptomGfx = null
+    this._spreadGlowGfx = null
+    this._spreadPromptTxt = null
+    this._spreadRingPulseTween = null
+
     // Sustain state
     this._fireStrength       = 0
     this._nightElapsed       = 0
-    this._nightTotalMs       = 60000
+    this._nightTotalMs       = SUSTAIN_NIGHT_TOTAL_MS
     /** Monotonic floor for night bar fill so extending _nightTotalMs never shrinks the bar. */
     this._nightBarProgressFloor = 0
     this._strengthCeiling     = SEGMENT_COUNT
@@ -436,6 +539,13 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._sustainFuelSlowUntil      = 0
     this._sustainBackupKeysByZone   = { tinder: [], kindling: [], fuel_wood: [] }
     this._sustainBackupUi         = null
+    /** §4.7 — analytics + Ren one-shots */
+    this._sustainFuelUsedCount      = 0
+    this._sustainFireOutCount       = 0
+    this._sustainRenHintThreeShown  = false
+    this._sustainRenFloodIntroShown = false
+    /** Full-lay pit ring glow after spread — spread FX is destroyed on exit. */
+    this._sustainPitGlowGfx = null
 
     // Inputs
     this._campsiteQuality = 'good'
@@ -472,8 +582,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._buildMaterialPile(W, H)
     this._buildHoldingArea(W, H)
     this._buildStackRings(W, H)
-    this._buildFlintButton(W, H)
-    this._buildSparkCounter(W, H)
+    this._buildFlintButton()
     this._buildStrengthBar(W, H)
     this._buildNightBar(W, H)
     this._buildMoveOnButton(W, H)
@@ -486,6 +595,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
       sort:      () => this._enterSort(),
       stack:     () => this._enterStack(),
       ignite:    () => this._enterIgnite(),
+      spread:    () => this._enterSpread(),
       sustain:   () => this._enterSustain(),
     }
 
@@ -495,6 +605,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
       sort:    () => this._exitSort(),
       stack:   () => this._exitStack(),
       ignite:  () => this._exitIgnite(),
+      spread:  () => this._exitSpread(),
       sustain: () => this._exitSustain(),
     }
 
@@ -505,7 +616,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
     let stackResumeHandled = false
     if (this._resumeStackAfterCollect) {
       const snap = this.registry.get('fireCampsiteStackResume')
-      if (snap?.matSnapshot?.length) {
+      if (snap) {
+        this._igniteResumeFromForest = snap.igniteResume ?? null
         this._applyStackResumeFromCollect(snap)
         this._stackReenterPreserveLayout = true
         this.registry.remove('fireCampsiteStackResume')
@@ -523,17 +635,34 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     if (entry !== 'ren_intro' && entry !== 'clear' && !stackResumeHandled) {
       this._seedMatPhasesForDevStart(entry)
-      this._hydrateSortedMaterialsFromRegistryIfNeeded(entry)
-      this._hydratePlacedStackFromRegistryIfNeeded()
-      if (entry === 'stack') {
+      if (entry === 'ignite' || entry === 'spread' || entry === 'sustain') {
+        this._hydratePlacedStackFromRegistryIfNeeded()
+        this._hydrateSortedMaterialsFromRegistryIfNeeded(entry)
+      } else {
+        this._hydrateSortedMaterialsFromRegistryIfNeeded(entry)
+        this._hydratePlacedStackFromRegistryIfNeeded()
+      }
+      if (entry === 'stack' || entry === 'ignite' || entry === 'spread' || entry === 'sustain') {
         this._ensureSortedMaterialsZoneLayout()
       }
+    }
+
+    if (entry === 'spread') {
+      this.registry.set('ignitionSuccess', true)
+      this._tinderSprite?.setAlpha(0)
+      this._fireIcon?.setAlpha(1)
     }
 
     this._enterStep(entry)
   }
 
   // ── Inputs ───────────────────────────────────────────────────────────────────
+
+  /** Phaser: `setDraggable` touches `sprite.input`; skip if interactive was never enabled or already torn down. */
+  _safeSetDraggable(sprite, enabled = false) {
+    if (!sprite?.input) return
+    this.input.setDraggable(sprite, enabled)
+  }
 
   _readInputs() {
     const inkBridge = this.registry.get('inkBridge')
@@ -542,8 +671,15 @@ export class FireBuildingMinigame extends Phaser.Scene {
     const newItems = Array.isArray(rawMat) ? rawMat : (rawMat?.items ?? [])
     const stackResumeSnap = this.registry.get('fireCampsiteStackResume')
 
-    if (this._resumeStackAfterCollect && stackResumeSnap?.matSnapshot?.length) {
-      const oldItems = stackResumeSnap.matSnapshot.map(s => ({ id: s.id, quality: s.quality }))
+    if (
+      this._resumeStackAfterCollect &&
+      stackResumeSnap != null &&
+      Array.isArray(stackResumeSnap.matSnapshot)
+    ) {
+      const oldItems = stackResumeSnap.matSnapshot.map((s) => ({
+        id: s.id,
+        quality: s.quality,
+      }))
       this._collected = [...oldItems, ...newItems]
       this.registry.set('collectedMaterials', {
         items: this._collected,
@@ -579,6 +715,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     return {
       matSnapshot,
+      resumeCampsiteStep: this.step === 'ignite' ? 'ignite' : 'stack',
+      igniteResume: this.step === 'ignite' ? this._buildIgniteResumeSnapshot() : undefined,
       stackDropCount:       { ...this._stackDropCount },
       stackUnitIndexInZone: { ...this._stackUnitIndexInZone },
       stackActiveLayerIndex:   this._stackActiveLayerIndex,
@@ -590,11 +728,23 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
   }
 
-  _applyStackResumeFromCollect(snap) {
-    const nOld = snap.matSnapshot.length
+  /** Serialized when leaving campsite for forest mid-ignite (Head Back resumes ignite dialogue/mechanics). */
+  _buildIgniteResumeSnapshot() {
+    if (this.step !== 'ignite') return undefined
+    const igniteProposalComplete =
+      !!this._stepProposalShown.ignite ||
+      !!this._igniteMechanicsPhase ||
+      this._igniteAwaitingLayerStrike ||
+      this._igniteAwaitFirstStrikeForSparkUi
+    return { igniteProposalComplete }
+  }
 
-    this._stackDropCount       = { ...snap.stackDropCount }
-    this._stackUnitIndexInZone = { ...snap.stackUnitIndexInZone }
+  _applyStackResumeFromCollect(snap) {
+    const matSnapshot = Array.isArray(snap?.matSnapshot) ? snap.matSnapshot : []
+    const nOld = matSnapshot.length
+
+    this._stackDropCount       = { ...(snap.stackDropCount ?? { tinder: 0, kindling: 0, fuel_wood: 0 }) }
+    this._stackUnitIndexInZone = { ...(snap.stackUnitIndexInZone ?? { tinder: 0, kindling: 0, fuel_wood: 0 }) }
     this._stackActiveLayerIndex   = snap.stackActiveLayerIndex ?? 0
     this._stackLayLockedComplete  = snap.stackLayLockedComplete ?? false
     this._stackSparkTargetZone     = snap.stackSparkTargetZone ?? 'tinder'
@@ -603,7 +753,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     if (snap.stackFreeHintFlags) this._stackFreeHintFlags = { ...snap.stackFreeHintFlags }
 
     for (let i = 0; i < nOld; i++) {
-      const s = snap.matSnapshot[i]
+      const s = matSnapshot[i]
       const pileKey = `pile_${i}`
       const st = this._matStates[pileKey]
       if (!st) continue
@@ -671,8 +821,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
         st.greyed = true
         st.sprite.setAlpha(0.3)
         st.label.setAlpha(0.3)
+        this._safeSetDraggable(st.sprite, false)
         st.sprite.disableInteractive()
-        this.input.setDraggable(st.sprite, false)
       }
     }
 
@@ -680,20 +830,36 @@ export class FireBuildingMinigame extends Phaser.Scene {
   }
 
   _seedMatPhasesForDevStart(startStep) {
-    // When jumping to stack/ignite/sustain, mark sortable materials as if
-    // they went through the earlier steps so _enterStack etc. can find them.
-    const phaseMap = { sort: 'pile', stack: 'sorted', ignite: 'placed', sustain: 'placed' }
+    // When jumping to stack/ignite/spread/sustain, mark sortable materials so later steps match runtime.
+    const phaseMap = {
+      sort: 'pile',
+      stack: 'sorted',
+      ignite: 'sorted',
+      spread: 'sorted',
+      sustain: 'sorted',
+    }
     const phase = phaseMap[startStep] ?? 'pile'
     for (const state of Object.values(this._matStates)) {
       if (state.isSortable) {
         state.phase = phase
-        if (startStep === 'stack' && !state.sortZoneId) {
+        if (
+          (startStep === 'stack' ||
+            startStep === 'ignite' ||
+            startStep === 'spread' ||
+            startStep === 'sustain') &&
+          !state.sortZoneId
+        ) {
           const z = normalizeStackSortZoneId(correctSortZoneForMatId(state.id))
           if (z) state.sortZoneId = z
         }
       }
     }
-    if (startStep === 'stack' || startStep === 'ignite' || startStep === 'sustain') {
+    if (
+      startStep === 'stack' ||
+      startStep === 'ignite' ||
+      startStep === 'spread' ||
+      startStep === 'sustain'
+    ) {
       this._sortedCount = this._sortableIds.length
     }
   }
@@ -703,7 +869,13 @@ export class FireBuildingMinigame extends Phaser.Scene {
    * matches the mock buckets (runs after `_seedMatPhasesForDevStart`).
    */
   _hydrateSortedMaterialsFromRegistryIfNeeded(startStep) {
-    if (startStep !== 'stack') return
+    if (
+      startStep !== 'stack' &&
+      startStep !== 'ignite' &&
+      startStep !== 'spread' &&
+      startStep !== 'sustain'
+    )
+      return
     const sm = this.registry.get('sortedMaterials')
     if (!sm || typeof sm !== 'object') return
 
@@ -730,6 +902,9 @@ export class FireBuildingMinigame extends Phaser.Scene {
           piles.find(
             (p) =>
               !p._sortedHydratedFromRegistry &&
+              !p._registryHydrated &&
+              p.phase !== 'placed' &&
+              p.phase !== 'ignite_spent' &&
               p.isSortable &&
               p.id === entry.id &&
               (!entry.quality || p.quality === entry.quality),
@@ -737,6 +912,9 @@ export class FireBuildingMinigame extends Phaser.Scene {
           piles.find(
             (p) =>
               !p._sortedHydratedFromRegistry &&
+              !p._registryHydrated &&
+              p.phase !== 'placed' &&
+              p.phase !== 'ignite_spent' &&
               p.isSortable &&
               p.id === entry.id,
           )
@@ -758,6 +936,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     if (this.step && this._exitHandlers) this._exitHandlers[this.step]?.()
     this.step = nextStep
     this._enterHandlers[nextStep]?.()
+    this._refreshSortZoneLayPreview()
   }
 
   // ─── Background ──────────────────────────────────────────────────────────────
@@ -807,6 +986,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     if (this.step === 'sustain') {
       this._bgRect.setFillStyle(this._fireStrength >= 3 ? BG_FIRE_STRONG : BG_FIRE_WEAK)
       this._fireIcon.setAlpha(this._fireStrength >= 3 ? 1.0 : 0.45)
+      this._refreshSustainPitLayGlow()
     } else {
       this._bgRect.setFillStyle(BG_NIGHT)
     }
@@ -1059,15 +1239,19 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._flintBg = this.add
       .rectangle(btnX, btnY, 110, 110, 0x3a2a18)
       .setStrokeStyle(3, 0xa08040)
-      .setInteractive({ useHandCursor: true })
       .setDepth(18)
       .setAlpha(0.4)
 
-    this._flintIcon = this.add.text(btnX, btnY - 10, '🪨', { fontSize: '42px' })
-      .setOrigin(0.5).setDepth(19).setAlpha(0.4)
+    this._flintIcon = this.add
+      .text(btnX, btnY - 10, '🪨', { fontSize: '42px' })
+      .setOrigin(0.5)
+      .setDepth(19)
+      .setAlpha(0.4)
 
     this._flintLabel = this.add.text(btnX, btnY + 36, 'STRIKE', {
-      fontSize: '12px', fontFamily: 'monospace', fill: '#a08040',
+      fontSize: '12px',
+      fontFamily: 'monospace',
+      fill: '#a08040',
     }).setOrigin(0.5).setDepth(19).setAlpha(0.4)
 
     this._flintBg.on('pointerover', () => {
@@ -1079,10 +1263,98 @@ export class FireBuildingMinigame extends Phaser.Scene {
         this._flintBg.setFillStyle(0x3a2a18)
     })
     this._flintBg.on('pointerup', () => this._onFlintClick())
+    this._setFlintActive(false)
   }
 
-  _setFlintActive(active) {
-    const a = active ? 1 : 0.4
+  _deactivateFlintCompletely() {
+    this._flintBg?.disableInteractive()
+  }
+
+  _maybeWarnIgniteTinderLow() {
+    const budget = Math.max(1, this._igniteClickBudget || MAX_CLICKS)
+    const rem = budget - this._igniteTotalClicks
+    if (rem > 5 || rem <= 0 || this._igniteRenTinderLowShown) return
+    this._igniteRenTinderLowShown = true
+    this._dialogue.showSequence(
+      [
+        {
+          speaker: 'Ren',
+          text: 'Running out of tinder. Make these last ones count.',
+        },
+      ],
+      () => this._dialogue.hide(),
+    )
+  }
+
+  _onFlintClick() {
+    if (this.step === 'stack') {
+      if (this._stackLayLockedComplete) this._beginIgniteFromStack()
+      return
+    }
+
+    if (this.step !== 'ignite') return
+
+    if (this._igniteAwaitFirstStrikeForSparkUi) {
+      this._mountIgniteSparkPickUi()
+      return
+    }
+
+    if (this._igniteAwaitingLayerStrike) {
+      this._onIgniteStrikeAfterLayerPick()
+      return
+    }
+
+    if (!this._igniteMechanicsPhase || this._igniteMechanicsPhase !== 'spark') return
+
+    this._processIgniteSparkStrikeAtPit()
+  }
+
+  _processIgniteSparkStrikeAtPit() {
+    if (this.step !== 'ignite') return
+    if (!this._igniteMechanicsPhase || this._igniteMechanicsPhase !== 'spark') return
+    if (typeof this._dialogue?.isBlocking === 'function' && this._dialogue.isBlocking())
+      return
+
+    const { x: fx, y: fy } = this._randomIgniteSparkBurstPoint()
+
+    this._igniteLastClick = this.time.now
+    this._igniteTotalClicks++
+
+    this._playIgniteSparkFx(fx, fy)
+
+    const d = this._igniteDifficulty
+    const gained = Phaser.Math.Between(d.sparkMin, d.sparkMax)
+    this._igniteProgress = Math.min(
+      IGNITE_PROGRESS_MAX,
+      this._igniteProgress + gained,
+    )
+    this._refreshIgniteProgressUi()
+
+    this._maybePromoteIgniteToBlowPhase()
+
+    if (this._igniteProgress >= IGNITE_PROGRESS_MAX) {
+      this._igniteSuccess()
+      return
+    }
+
+    const budget = this._igniteClickBudget || MAX_CLICKS
+    if (this._igniteTotalClicks >= budget) {
+      this._igniteFail()
+      return
+    }
+
+    this._maybeWarnIgniteTinderLow()
+  }
+
+  /**
+   * @param {boolean} active
+   * @param {object} [opts]
+   * @param {boolean} [opts.igniteSparkingDisabled] — blow phase: dim STRIKE and block clicks (§4.5).
+   */
+  _setFlintActive(active, opts = {}) {
+    const dimStrike = opts.igniteSparkingDisabled === true
+    const a = active ? 1 : dimStrike ? 0.22 : 0.4
+    if (!this._flintBg) return
     this._flintBg.setAlpha(a)
     this._flintIcon.setAlpha(a)
     this._flintLabel.setAlpha(a)
@@ -1093,36 +1365,12 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
   }
 
-  // ── Spark counter ─────────────────────────────────────────────────────────────
-
-  _buildSparkCounter(W, H) {
-    const cx = W / 2
-    const cy = H * 0.20
-
-    this._sparkTitleText = this.add.text(cx, cy, 'Sparks', {
-      fontSize: '14px', fontFamily: 'Georgia, serif', fill: '#887050',
-    }).setOrigin(0.5).setDepth(10).setAlpha(0)
-
-    this._sparkCountText = this.add.text(cx, cy + 46, '0 / 0', {
-      fontSize: '38px', fontFamily: 'monospace', fill: '#ffcc44',
-      stroke: '#331a00', strokeThickness: 5,
-    }).setOrigin(0.5).setDepth(10).setAlpha(0)
-
-    this._sparkClickText = this.add.text(cx, cy + 82, `Clicks: 0 / ${MAX_CLICKS}`, {
-      fontSize: '13px', fontFamily: 'monospace', fill: '#665038',
-    }).setOrigin(0.5).setDepth(10).setAlpha(0)
-  }
-
-  _setSparkCounterVisible(v) {
-    const a = v ? 1 : 0
-    this._sparkTitleText.setAlpha(a)
-    this._sparkCountText.setAlpha(a)
-    this._sparkClickText.setAlpha(a)
-  }
-
-  _refreshSparkCounter() {
-    this._sparkCountText.setText(`${this._igniteSparks} / ${this._igniteTarget}`)
-    this._sparkClickText.setText(`Clicks: ${this._igniteTotalClicks} / ${MAX_CLICKS}`)
+  /** Fully hides STRIKE — `_setFlintActive(false)` leaves alpha 0.4 for stack-preview; spread/sustain need it gone. */
+  _hideFlintUiCompletely() {
+    if (!this._flintBg) return
+    this._flintBg.setAlpha(0).disableInteractive()
+    this._flintIcon?.setAlpha(0)
+    this._flintLabel?.setAlpha(0)
   }
 
   // ── Strength bar ──────────────────────────────────────────────────────────────
@@ -1259,8 +1507,15 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this.input.on('dragstart', (_, sprite) => {
       const st = this._spriteToMatState(sprite)
       let topD = 20
-      if (sprite._sustainBackupZoneId) topD = 22
+      if (st?.phase === 'sorted' && this.step === 'sustain')
+        topD = SUSTAIN_RESERVE_PILE_DEPTH + 8
       else if (st?.phase === 'sorted' && this.step === 'stack')
+        topD = STACK_SORTED_PILE_DEPTH + 6
+      else if (
+        st?.phase === 'sorted' &&
+        this.step === 'spread' &&
+        this._spreadAwaitingRemediation
+      )
         topD = STACK_SORTED_PILE_DEPTH + 6
       sprite.setDepth(topD)
       st?.label?.setDepth(topD + 1)
@@ -1274,23 +1529,37 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     this.input.on('dragend', (pointer, sprite) => {
       const state = this._spriteToMatState(sprite)
+      const wx = pointer.worldX
+      const wy = pointer.worldY
+
+      if (this.step === 'sustain' && state) {
+        this._onSustainReserveDragEnd(state, wx, wy)
+        const baseDepth =
+          state.phase === 'sustain_used'
+            ? SUSTAIN_RESERVE_DIM_PILE_DEPTH
+            : SUSTAIN_RESERVE_PILE_DEPTH
+        sprite.setDepth(baseDepth)
+        state.label?.setDepth(baseDepth + 1)
+        return
+      }
+
       let baseDepth = 5
-      if (sprite._sustainBackupZoneId) baseDepth = 12
-      else if (state?.phase === 'sorted' && this.step === 'stack')
+      if (state?.phase === 'sorted' && this.step === 'stack')
+        baseDepth = STACK_SORTED_PILE_DEPTH
+      else if (
+        state?.phase === 'sorted' &&
+        this.step === 'spread' &&
+        this._spreadAwaitingRemediation
+      )
         baseDepth = STACK_SORTED_PILE_DEPTH
 
       sprite.setDepth(baseDepth)
       state?.label?.setDepth(baseDepth + 1)
 
-      if (sprite._sustainBackupZoneId) {
-        this._onSustainBackupChipDragEnd(sprite, pointer.worldX, pointer.worldY)
-        return
-      }
       if (!state) return
 
-      const wx = pointer.worldX
-      const wy = pointer.worldY
       if (this.step === 'sort') this._onSortDragEnd(state, wx, wy)
+      else if (this.step === 'spread') this._onSpreadDragEnd(state, wx, wy)
       else if (this.step === 'stack') this._onStackDragEnd(state, wx, wy)
     })
   }
@@ -1674,7 +1943,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
       } else {
         state.sprite.setInteractive({ useHandCursor: true })
         state.sprite.off('pointerup')
-        state.        sprite.on('pointerup', () => {
+        state.sprite.on('pointerup', () => {
           if (this.step === 'sort') {
             this._showRenLines(WET_MATERIAL_REN_LINES, () => this._greyOut(state))
           }
@@ -1902,6 +2171,25 @@ export class FireBuildingMinigame extends Phaser.Scene {
     return n
   }
 
+  /** Sorted-but-not-placed count per stack zone; mirrors `_buildSortZoneLayPreview` reserve rows (spread remediation excludes duplicate pile sprite). */
+  _stackReserveCountInSortZone(zoneId) {
+    let n = 0
+    for (const s of Object.values(this._matStates)) {
+      if (s.phase !== 'sorted' || !s.isSortable) continue
+      const z = normalizeStackSortZoneId(s.sortZoneId ?? correctSortZoneForMatId(s.id))
+      if (z !== zoneId) continue
+      if (
+        this.step === 'spread' &&
+        this._spreadAwaitingRemediation &&
+        this._spreadRemediationZone &&
+        correctSortZoneForMatId(s.id) === this._spreadRemediationZone
+      )
+        continue
+      n++
+    }
+    return n
+  }
+
   _createStackCategoryCards(W, H) {
     this._destroyStackCategoryCards()
     const zoneY = H * 0.8
@@ -1934,9 +2222,34 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._refreshStackCategoryCards()
   }
 
+  /**
+   * Stack / lay-build: counts pieces still in sort piles (`phase === 'sorted'`).
+   * Ignite onward: placed on that layer **plus** spare still in the same sort bucket
+   * (matches zone placeholders and collect inventory).
+   */
   _refreshStackCategoryCards() {
+    const layerIdByZone = { tinder: 'bottom', kindling: 'middle', fuel_wood: 'top' }
+    const showOnLay =
+      this.step === 'ignite' || this.step === 'spread' || this.step === 'sustain'
+
     for (const c of this._stackCategoryCards) {
-      const n = this._stackRemainingInPile(c.zoneId)
+      if (this.step === 'sustain') {
+        c.bg.setVisible(false)
+        c.txt.setVisible(false)
+      } else {
+        c.bg.setVisible(true)
+        c.txt.setVisible(true)
+      }
+    }
+    if (this.step === 'sustain') {
+      this._refreshSortZoneLayPreview()
+      return
+    }
+
+    for (const c of this._stackCategoryCards) {
+      const placed = this._stackPlacedCountInLayer(layerIdByZone[c.zoneId])
+      const spare = this._stackReserveCountInSortZone(c.zoneId)
+      const n = showOnLay ? placed + spare : this._stackRemainingInPile(c.zoneId)
       c.txt.setText(`${c.label} × ${n}`)
       const empty = n <= 0
       c.bg.setFillStyle(empty ? 0x1f1810 : 0x3a3020)
@@ -1944,6 +2257,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
       c.bg.setAlpha(empty ? 0.5 : 1)
       c.txt.setAlpha(empty ? 0.4 : 1)
     }
+    this._refreshSortZoneLayPreview()
   }
 
   /** World-space rectangle for the active stack layer band (green highlight while building). */
@@ -2066,7 +2380,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
   /** Places sorted sprites over sort zones (visible). Needed when skipping sort via dev/mock jump. */
   _ensureSortedMaterialsZoneLayout() {
     for (const state of Object.values(this._matStates)) {
-      if (state.phase !== 'sorted' || !state.isSortable || !state.sortZoneId) continue
+      if (state.phase !== 'sorted' || !state.isSortable || !state.sortZoneId || !state.sprite) continue
       const zone = this._sortZones[state.sortZoneId]
       if (!zone) continue
       if (!state.zonePos) {
@@ -2085,11 +2399,16 @@ export class FireBuildingMinigame extends Phaser.Scene {
   }
 
   _syncStackSortedDraggability() {
+    if (this.step === 'sustain') {
+      this._syncSustainReserveDraggability()
+      return
+    }
+
     if (this.step === 'stack' && this._stackRenFeedbackLocked) {
       for (const state of Object.values(this._matStates)) {
         if (!state.sprite) continue
         if (state.phase !== 'sorted' || !state.isSortable) continue
-        this.input.setDraggable(state.sprite, false)
+        this._safeSetDraggable(state.sprite, false)
         state.sprite.disableInteractive()
       }
       return
@@ -2104,7 +2423,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
           state._stackTapHandler = null
         }
         if (state.phase === 'sorted' && state.isSortable) {
-          this.input.setDraggable(state.sprite, false)
+          this._safeSetDraggable(state.sprite, false)
           state.sprite.disableInteractive()
         }
       }
@@ -2118,11 +2437,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
         state._stackTapHandler = null
       }
       if (state.phase !== 'sorted' || !state.isSortable) {
-        this.input.setDraggable(state.sprite, false)
+        this._safeSetDraggable(state.sprite, false)
         continue
       }
       if (state.quality === 'BAD') {
-        this.input.setDraggable(state.sprite, false)
+        this._safeSetDraggable(state.sprite, false)
         state.sprite.disableInteractive()
         state.sprite.setDepth(5)
         state.label?.setDepth(6)
@@ -2130,7 +2449,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
       }
       const z = this._stackSortedCategory(state)
       if (z == null) {
-        this.input.setDraggable(state.sprite, false)
+        this._safeSetDraggable(state.sprite, false)
         state.sprite.disableInteractive()
         state.sprite.setDepth(5)
         state.label?.setDepth(6)
@@ -2138,7 +2457,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
       }
       const rem = this._stackRemainingInPile(z)
       if (rem <= 0) {
-        this.input.setDraggable(state.sprite, false)
+        this._safeSetDraggable(state.sprite, false)
         state.sprite.disableInteractive()
         state.sprite.setDepth(5)
         state.label?.setDepth(6)
@@ -2149,10 +2468,45 @@ export class FireBuildingMinigame extends Phaser.Scene {
         state.label?.setDepth(labelDepth)
         state.sprite.setInteractive({ useHandCursor: true })
         if (this.step === 'stack') {
-          this.input.setDraggable(state.sprite, true)
+          this._safeSetDraggable(state.sprite, true)
         } else {
-          this.input.setDraggable(state.sprite, false)
+          this._safeSetDraggable(state.sprite, false)
         }
+      }
+    }
+  }
+
+  /** Sustain — drag spare sorted piles onto the pit (`_onSustainReserveDragEnd`). */
+  _syncSustainReserveDraggability() {
+    for (const state of Object.values(this._matStates)) {
+      if (!state.sprite) continue
+      if (state._stackTapHandler) {
+        state.sprite.off('pointerup', state._stackTapHandler)
+        state._stackTapHandler = null
+      }
+      if (state.phase !== 'sorted' || !state.isSortable) {
+        this._safeSetDraggable(state.sprite, false)
+        continue
+      }
+      const zoneId = this._stackSortedCategory(state)
+      const keys = zoneId ? this._sustainBackupKeysByZone[zoneId] : null
+      const inReserve = !!(zoneId && keys?.includes(state.pileKey))
+      const blocked =
+        this._nightComplete ||
+        this._floodLocked ||
+        state.quality === 'BAD' ||
+        !inReserve
+
+      if (blocked) {
+        this._safeSetDraggable(state.sprite, false)
+        state.sprite.disableInteractive()
+        state.sprite.setDepth(SUSTAIN_RESERVE_DIM_PILE_DEPTH)
+        state.label?.setDepth(SUSTAIN_RESERVE_DIM_PILE_DEPTH + 1)
+      } else {
+        state.sprite.setDepth(SUSTAIN_RESERVE_PILE_DEPTH)
+        state.label?.setDepth(SUSTAIN_RESERVE_PILE_DEPTH + 1)
+        state.sprite.setInteractive({ useHandCursor: true })
+        this._safeSetDraggable(state.sprite, true)
       }
     }
   }
@@ -2355,10 +2709,10 @@ export class FireBuildingMinigame extends Phaser.Scene {
       sx += 64
     }
 
-    const blowCX = this._pitX + 185 + 55 + 12 + 44
+    const blowCX = campsiteBlowCenterX(this._pitX)
     const blowCy = this._pitY
     this._stackLockedBlowBg = this.add
-      .rectangle(blowCX, blowCy, 88, 110, 0x241810)
+      .rectangle(blowCX, blowCy, CAMPSITE_BLOW_W, CAMPSITE_BLOW_H, 0x241810)
       .setStrokeStyle(2, 0x3a3028)
       .setDepth(18)
       .setAlpha(0.38)
@@ -2836,17 +3190,6 @@ export class FireBuildingMinigame extends Phaser.Scene {
     return n
   }
 
-  _computeSustainBaseNightDurationSec() {
-    const fuel = this._stackPlacedCountInLayer('top')
-    const kind = this._stackPlacedCountInLayer('middle')
-    const tind = this._stackPlacedCountInLayer('bottom')
-    const sec =
-      fuel * SUSTAIN_SEC_PER_TOP +
-      kind * SUSTAIN_SEC_PER_MIDDLE +
-      tind * SUSTAIN_SEC_PER_BOTTOM
-    return Phaser.Math.Clamp(sec, SUSTAIN_NIGHT_MIN_SEC, SUSTAIN_NIGHT_MAX_SEC)
-  }
-
   _sustainPitContains(wx, wy) {
     const dx = wx - this._pitX
     const dy = wy - this._pitY
@@ -2880,90 +3223,155 @@ export class FireBuildingMinigame extends Phaser.Scene {
     return n
   }
 
+  _hideSortZonesUnderSustainReservePanels(hide) {
+    const ra = hide ? 0 : 0.3
+    const ta = hide ? 0 : 0.3
+    Object.values(this._sortZones).forEach(z => z.rect.setAlpha(ra))
+    this._sortZoneParts.forEach(({ labelTxt, descTxt }) => {
+      labelTxt.setAlpha(ta)
+      descTxt.setAlpha(ta)
+    })
+  }
+
   _destroySustainBackupUi() {
     if (!this._sustainBackupUi) return
     for (const c of this._sustainBackupUi.chips) {
-      this.input.setDraggable(c.container, false)
+      this.tweens.killTweensOf(c.container)
     }
     this._sustainBackupUi.root.destroy(true)
     this._sustainBackupUi = null
   }
 
-  _createSustainBackupUi(W, H) {
+  /**
+   * Sustain reserve — static zone panels (counts only). Drag **sorted pile sprites** into the pit to add fuel.
+   * @param {object} [opts]
+   * @param {() => void} [opts.onFlyComplete] — e.g. start night timers (called synchronously after UI build).
+   */
+  _createSustainBackupUi(W, H, opts = {}) {
+    const onFlyComplete =
+      typeof opts.onFlyComplete === 'function' ? opts.onFlyComplete : null
+
     this._destroySustainBackupUi()
-    const zoneY = H * 0.79
-    const gap = 14
-    const chipW = 108
-    const chipH = 56
-    const totalW = 3 * chipW + 2 * gap
-    const x0 = W / 2 - totalW / 2 + chipW / 2
-    const root = this.add.container(0, 0).setDepth(12)
+    const root = this.add.container(0, 0).setDepth(SUSTAIN_RESERVE_PANEL_DEPTH)
     const chips = []
+    const padInner = 10
 
     for (let i = 0; i < 3; i++) {
       const zoneId = STACK_LAYER_ORDER[i]
-      const cx = x0 + i * (chipW + gap)
-      const cy = zoneY
-      const cont = this.add.container(cx, cy)
-      const col = STACK_MAT_VISUAL[zoneId]
-      const bg = this.add.rectangle(0, 0, chipW, chipH, col).setStrokeStyle(2, 0x3a2a18)
+      const sz = this._sortZones[zoneId]
       const def = SORT_ZONE_DEFS.find(d => d.id === zoneId)
+      const cx = sz?.x ?? W / 2
+      const cy = sz?.y ?? H * 0.8
+
+      const cont = this.add.container(cx, cy)
+      const bg = this.add
+        .rectangle(0, 0, ZONE_W - padInner, ZONE_H - padInner, def?.tint ?? 0x5a4020, 0.42)
+        .setStrokeStyle(2, 0xaaaaaa)
       const title = this.add
-        .text(0, -16, def?.label ?? zoneId, {
-          fontSize: '11px', fontFamily: 'monospace', fill: '#1a1208',
+        .text(0, -ZONE_H / 2 + 16, def?.label ?? zoneId, {
+          fontSize: '15px',
+          fontFamily: 'Georgia, serif',
+          fill: '#e0c870',
         })
         .setOrigin(0.5)
       const countTxt = this.add
-        .text(0, 12, '0', { fontSize: '18px', fontFamily: 'monospace', fill: '#0a0806' })
+        .text(0, 2, '× 0', {
+          fontSize: '22px',
+          fontFamily: 'monospace',
+          fill: '#1a1208',
+        })
         .setOrigin(0.5)
-      cont.add([bg, title, countTxt])
-      cont.setSize(chipW, chipH)
-      cont.setInteractive({ draggable: true, useHandCursor: true })
-      cont._sustainBackupZoneId = zoneId
-      cont._sustainHomeX = cx
-      cont._sustainHomeY = cy
-      cont._sustainCountText = countTxt
-      this.input.setDraggable(cont, true)
+      const zHint = this.add
+        .text(0, ZONE_H / 2 - 16, 'Spare wood', {
+          fontSize: '10px',
+          fontFamily: 'Georgia, serif',
+          fill: '#887050',
+        })
+        .setOrigin(0.5, 1)
+
+      cont.add([bg, title, countTxt, zHint])
       root.add(cont)
       chips.push({ zoneId, container: cont, countTxt })
     }
 
-    this._sustainBackupUi = { root, chips }
+    const refZ = this._sortZones.kindling ?? this._sortZones.tinder
+    const hintY = Math.min(
+      (refZ?.y ?? H * 0.8) + ZONE_H / 2 + 44,
+      H - 44,
+    )
+    const hintTxt = this.add
+      .text(W / 2, hintY, 'Drag spare wood into the fire to raise the flame.', {
+        fontSize: '13px',
+        fontFamily: 'Georgia, serif',
+        fill: '#c8b898',
+        stroke: '#000000',
+        strokeThickness: 3,
+        align: 'center',
+      })
+      .setOrigin(0.5)
+
+    root.add(hintTxt)
+
+    this._sustainBackupUi = { root, chips, hintTxt }
     this._refreshSustainBackupUi()
+    onFlyComplete?.()
   }
 
   _refreshSustainBackupUi() {
     if (!this._sustainBackupUi) return
     for (const c of this._sustainBackupUi.chips) {
       const n = this._sustainBackupKeysByZone[c.zoneId]?.length ?? 0
-      c.countTxt.setText(`${n}`)
-      const active =
+      c.countTxt.setText(`× ${n}`)
+      const panelLit =
         n > 0 &&
         !this._floodLocked &&
         this.step === 'sustain' &&
         !this._nightComplete
-      c.container.setAlpha(active ? 1 : 0.38)
-      if (active) {
-        c.container.setInteractive({ draggable: true, useHandCursor: true })
-        this.input.setDraggable(c.container, true)
+      c.container.setAlpha(panelLit ? 1 : 0.42)
+    }
+
+    const hint = this._sustainBackupUi.hintTxt
+    if (hint) {
+      const any = this._sustainBackupRemainingCount() > 0
+      const show =
+        any &&
+        !this._floodLocked &&
+        this.step === 'sustain' &&
+        !this._nightComplete
+      hint.setAlpha(show ? 1 : 0.34)
+    }
+
+    this._syncStackSortedDraggability()
+  }
+
+  _applySustainReserveSpritePresentation() {
+    for (const st of Object.values(this._matStates)) {
+      if (!st.sprite || st.phase !== 'sorted' || !st.isSortable) continue
+      st.sprite.setVisible(true)
+      st.label?.setVisible(true)
+      const zoneId = this._stackSortedCategory(st)
+      const keys = zoneId ? this._sustainBackupKeysByZone[zoneId] : null
+      const inReserve = !!(zoneId && keys?.includes(st.pileKey))
+      const usable = inReserve && st.quality !== 'BAD'
+      if (usable) {
+        st.sprite.setAlpha(1)
+        st.label?.setAlpha(1)
       } else {
-        this.input.setDraggable(c.container, false)
-        c.container.disableInteractive()
+        st.sprite.setAlpha(0.22)
+        st.label?.setAlpha(0.22)
       }
     }
   }
 
-  _setSortedPileSpritesHiddenForSustain(hide) {
+  _restoreSortedPilePresentationAfterSustain() {
     for (const st of Object.values(this._matStates)) {
-      if (st.phase !== 'sorted') continue
-      if (hide) {
-        st.sprite?.setAlpha(0)
-        st.label?.setAlpha(0)
-      } else {
-        const a = st.greyed ? 0.3 : 1
-        st.sprite?.setAlpha(a)
-        st.label?.setAlpha(a)
-      }
+      if (!st.sprite || st.phase !== 'sorted') continue
+      const dim = st.greyed || st.quality === 'BAD'
+      const a = dim ? 0.3 : 1
+      st.sprite.setVisible(true).setAlpha(a)
+      st.label?.setVisible(true).setAlpha(a)
+      st.sprite.setDepth(STACK_SORTED_PILE_DEPTH)
+      st.label?.setDepth(STACK_SORTED_PILE_DEPTH + 1)
     }
   }
 
@@ -2976,61 +3384,87 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this.input.setDraggable(st.sprite, false)
   }
 
-  _onSustainBackupChipDragEnd(chip, wx, wy) {
+  _onSustainReserveDragEnd(state, wx, wy) {
     if (this.step !== 'sustain' || this._nightComplete || this._floodLocked) {
-      this.tweens.add({
-        targets: chip,
-        x: chip._sustainHomeX,
-        y: chip._sustainHomeY,
-        duration: 160,
-      })
+      this._bounceToStackOrHome(state)
       return
     }
-    const zoneId = chip._sustainBackupZoneId
-    const keys = this._sustainBackupKeysByZone[zoneId]
-    if (!keys?.length || !this._sustainPitContains(wx, wy)) {
-      this.tweens.add({
-        targets: chip,
-        x: chip._sustainHomeX,
-        y: chip._sustainHomeY,
-        duration: 160,
-      })
+    if (state.phase !== 'sorted' || !state.isSortable || state.quality === 'BAD') {
+      this._bounceToStackOrHome(state)
       return
     }
-    const pileKey = keys.shift()
-    this._consumeSustainBackupMat(pileKey)
+    const zoneId = this._stackSortedCategory(state)
+    const keys = zoneId ? this._sustainBackupKeysByZone[zoneId] : null
+    const idx = keys?.indexOf(state.pileKey) ?? -1
+    if (idx < 0) {
+      this._bounceToStackOrHome(state)
+      return
+    }
+    if (!this._sustainPitContains(wx, wy)) {
+      this._bounceToStackOrHome(state)
+      return
+    }
+    keys.splice(idx, 1)
+    this._consumeSustainBackupMat(state.pileKey)
     this._applySustainBackupEffect(zoneId)
-    chip.setPosition(chip._sustainHomeX, chip._sustainHomeY)
+    this._syncStackLayRegistry()
     this._refreshSustainBackupUi()
     this._refreshNightBar()
   }
 
+  /**
+   * §4.7 backup timing + material modifiers.
+   * Chip already consumed from `_sustainBackupKeysByZone`.
+   */
   _applySustainBackupEffect(zoneId) {
     if (this._nightComplete) return
-    if (this._fireStrength < this._strengthCeiling) {
-      this._fireStrength++
-      this._refreshStrengthBar()
-      this._refreshBackground()
+
+    this._sustainFuelUsedCount++
+
+    const ceil = this._strengthCeiling
+    const before = this._fireStrength
+    const showRen = this.day < 3
+
+    if (before >= ceil) {
+      if (showRen) {
+        this._dialogue.showSequence(
+          [{ speaker: 'Ren', text: 'Wasted one. Save it for when it needs it.' }],
+          () => this._dialogue.hide(),
+        )
+      }
+      return
     }
+
+    let gain = zoneId === 'tinder' ? 1 : 2
     const now = this.time.now
     if (zoneId === 'tinder') {
       this._sustainTinderBurdenUntil = Math.max(this._sustainTinderBurdenUntil, now + 6000)
       this._rescheduleDrainTimer()
-    } else if (zoneId === 'kindling') {
-      this._nightTotalMs += 10000
     } else if (zoneId === 'fuel_wood') {
-      this._nightTotalMs += 20000
-      this._sustainFuelSlowUntil = Math.max(this._sustainFuelSlowUntil, now + 20000)
+      this._sustainFuelSlowUntil = Math.max(this._sustainFuelSlowUntil, now + 10000)
       this._rescheduleDrainTimer()
+    }
+
+    this._fireStrength = Phaser.Math.Clamp(before + gain, 0, ceil)
+    this._refreshStrengthBar()
+    this._refreshBackground()
+
+    if (showRen && before <= 2) {
+      this._dialogue.showSequence(
+        [{ speaker: 'Ren', text: 'Cutting it close.' }],
+        () => this._dialogue.hide(),
+      )
     }
   }
 
   _computeSustainDrainDelayMs() {
-    const key = `${this._campsiteQuality}_${this._groundCleared ? 'cleared' : 'dirty'}`
+    const quality = this._campsiteQuality === 'poor' ? 'poor' : 'good'
+    const key = `${quality}_${this._groundCleared ? 'cleared' : 'dirty'}`
     let d = DRAIN_MS[key] ?? DRAIN_MS.good_cleared
     const now = this.time.now
     if (now < this._sustainTinderBurdenUntil) d *= 0.5
     if (now < this._sustainFuelSlowUntil) d *= 1.25
+    if (this.registry.get('fireQuality') === 'weak') d *= 0.88
     return Math.max(250, Math.floor(d))
   }
 
@@ -3086,7 +3520,12 @@ export class FireBuildingMinigame extends Phaser.Scene {
         stackData[st.layerId].push({ id: st.id, quality: st.quality })
       }
       if (st.phase === 'sorted' && st.isSortable && st.quality !== 'BAD') {
-        reserveMaterials.push({ id: st.id, quality: st.quality })
+        const matType = normalizeStackSortZoneId(correctSortZoneForMatId(st.id))
+        reserveMaterials.push({
+          id: st.id,
+          quality: st.quality,
+          type: matType,
+        })
       }
     }
     this.registry.set('stackData', stackData)
@@ -3098,7 +3537,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._stackRenFeedbackLocked = true
     for (const state of Object.values(this._matStates)) {
       if (state.phase !== 'sorted' || !state.isSortable || !state.sprite) continue
-      this.input.setDraggable(state.sprite, false)
+      this._safeSetDraggable(state.sprite, false)
       state.sprite.disableInteractive()
       state.sprite.setDepth(5)
       state.label?.setDepth(6)
@@ -3381,7 +3820,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
 
     for (const state of Object.values(this._matStates)) {
-      if (state.phase !== 'sorted' || !state.isSortable) continue
+      if (state.phase !== 'sorted' || !state.isSortable || !state.sprite) continue
       if (!state.zonePos && state.sortZoneId) {
         const zone = this._sortZones[state.sortZoneId]
         if (zone) {
@@ -3391,15 +3830,15 @@ export class FireBuildingMinigame extends Phaser.Scene {
         }
       }
       state.sprite.setVisible(true)
-      state.label.setVisible(true)
+      state.label?.setVisible(true)
       const dim = state.greyed || state.quality === 'BAD'
       state.sprite.setAlpha(dim ? 0.3 : 1)
-      state.label.setAlpha(dim ? 0.3 : 1)
+      state.label?.setAlpha(dim ? 0.3 : 1)
       if (state.zonePos) {
         state.sprite.setPosition(state.zonePos.x, state.zonePos.y)
-        state.label.setPosition(state.zonePos.x, state.zonePos.y + ITEM_H / 2 + 4)
+        state.label?.setPosition(state.zonePos.x, state.zonePos.y + ITEM_H / 2 + 4)
       }
-      this.input.setDraggable(state.sprite, false)
+      this._safeSetDraggable(state.sprite, false)
       state.sprite.disableInteractive()
     }
 
@@ -3432,7 +3871,6 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _exitStack() {
     this._stackAwaitingPitForLay = false
     this._destroyStackPitTapPrompt()
-    this._destroyStackGoFindMaterials()
     this._destroyStackStrikeHint()
     this._destroyStackLayerNavUi()
     this._destroyStackBuildFire()
@@ -3449,7 +3887,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
         state.label?.setDepth(6)
       }
       if (state.sprite?.input) {
-        this.input.setDraggable(state.sprite, false)
+        this._safeSetDraggable(state.sprite, false)
         state.sprite.disableInteractive()
       }
     }
@@ -3474,6 +3912,20 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._stackGoFindTxt = null
   }
 
+  _hideCampsiteForestButton() {
+    this._stackGoFindBg?.setVisible(false)
+    this._stackGoFindTxt?.setVisible(false)
+  }
+
+  /** Stack + ignite share this scene — forest exit stays available until spread/sustain. */
+  _ensureCampsiteForestButton(W, H) {
+    if (!this._stackGoFindBg || !this._stackGoFindTxt) {
+      this._buildStackGoFindMaterials(W, H)
+    }
+    this._stackGoFindBg.setVisible(true)
+    this._stackGoFindTxt.setVisible(true)
+  }
+
   _buildStackGoFindMaterials(W, H) {
     this._destroyStackGoFindMaterials()
     const x = 118
@@ -3493,11 +3945,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
       .setDepth(15)
     this._stackGoFindBg.on('pointerover', () => this._stackGoFindBg.setFillStyle(0x2a4434))
     this._stackGoFindBg.on('pointerout', () => this._stackGoFindBg.setFillStyle(0x1e3428))
-    this._stackGoFindBg.on('pointerup', () => this._onStackGoFindMaterials())
+    this._stackGoFindBg.on('pointerup', () => this._onCampsiteForestClick())
   }
 
-  _onStackGoFindMaterials() {
-    if (this.step !== 'stack') return
+  _onCampsiteForestClick() {
+    if (this.step !== 'stack' && this.step !== 'ignite') return
 
     const stamina = this.registry.get('stamina')
     const alive = stamina?.deduct(1) ?? true
@@ -3508,7 +3960,10 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     this.registry.set('fireCampsiteStackResume', this._buildStackResumePayload())
     this.scene.stop('FireBuildingMinigame')
-    this.scene.start('FireBuildingCollect', { day: this.day })
+    this.scene.start('FireBuildingCollect', {
+      day: this.day,
+      collectSessionKind: COLLECT_SESSION_RESUME_CAMPSITE,
+    })
   }
 
   _tryStackPlace(state, zoneId) {
@@ -3526,10 +3981,10 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
 
     this._maybeStackFreePlacementHints(state, zoneId)
-    this._stackFreePlace(state, zoneId)
+    this._stackFreePlace(state, zoneId, {})
   }
 
-  _stackFreePlace(state, zoneId) {
+  _stackFreePlace(state, zoneId, opts = {}) {
     const idx = this._stackUnitIndexInZone[zoneId]++
     this._stackDropCount[zoneId]++
 
@@ -3538,8 +3993,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
     state.phase   = 'placed'
     state.layerId = STACK_ZONE_TO_LAYER[zoneId]
     state.pitPos  = { x: pit.x, y: pit.y }
+    this._safeSetDraggable(state.sprite, false)
     state.sprite.disableInteractive()
-    this.input.setDraggable(state.sprite, false)
 
     this._addStackCrossSectionMarker(zoneId, state)
 
@@ -3566,7 +4021,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     })
 
     this._flashZone(zoneId, 0x44dd44)
-    this._stackOnPlacedTutorial(zoneId, state)
+    if (!opts.skipStackTutorial) this._stackOnPlacedTutorial(zoneId, state)
     this._refreshStackCategoryCards()
     this._syncStackSortedDraggability()
     this._updateStackLayerHighlight()
@@ -3589,10 +4044,10 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._bounceBack(state)
   }
 
-  /** Dev/jump `startStep` ignite|sustain — apply registry `stackData` to placed materials + drop counts. */
+  /** Dev/jump `startStep` ignite|spread|sustain — apply registry `stackData` to placed materials + drop counts. */
   _hydratePlacedStackFromRegistryIfNeeded() {
     const entry = this._startStep
-    if (!entry || (entry !== 'ignite' && entry !== 'sustain')) return
+    if (!entry || (entry !== 'ignite' && entry !== 'spread' && entry !== 'sustain')) return
 
     const sd = this.registry.get('stackData')
     if (!sd || !Array.isArray(sd.bottom)) return
@@ -3634,6 +4089,9 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._stackDropCount.tinder = sd.bottom?.length ?? 0
     this._stackDropCount.kindling = sd.middle?.length ?? 0
     this._stackDropCount.fuel_wood = sd.top?.length ?? 0
+    this._stackUnitIndexInZone.tinder = this._stackDropCount.tinder
+    this._stackUnitIndexInZone.kindling = this._stackDropCount.kindling
+    this._stackUnitIndexInZone.fuel_wood = this._stackDropCount.fuel_wood
   }
 
   _configureIgniteDifficultyParams() {
@@ -3678,8 +4136,38 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._igniteBlowGain = kindN >= 3 ? 15 : kindN === 2 ? 11 : 7
     /** Blow mistake penalty — fewer kindling → larger dip (§4.5). */
     this._igniteBlowPenalty = kindN >= 3 ? 9 : kindN === 2 ? 13 : 17
+  }
 
-    this._igniteTarget = IGNITE_PROGRESS_MAX
+  /** Live pit bottom-layer rows matching `_syncStackLayRegistry` → `stackData.bottom` shape (`{ id, quality }`). */
+  _liveBottomTinderLayEntries() {
+    const rows = []
+    for (const st of Object.values(this._matStates)) {
+      if (st.phase !== 'placed' || st.layerId !== 'bottom') continue
+      rows.push(st)
+    }
+    rows.sort((a, b) => this._pileKeySortOrder(a, b))
+    return rows.map((st) => ({ id: st.id, quality: st.quality }))
+  }
+
+  /**
+   * STRIKE+Blow attempt budget from `registry.stackData.bottom`:
+   * GOOD→10, MID→6, BAD→3 per piece (see `sumIgniteClickBudgetFromBottom`).
+   */
+  _computeIgniteClickBudget() {
+    const liveBottom = this._liveBottomTinderLayEntries()
+    if (liveBottom.length > 0) {
+      const raw = sumIgniteClickBudgetFromBottom(liveBottom)
+      return Math.max(1, raw)
+    }
+    let bottom = this.registry.get('stackData')?.bottom
+    if (!Array.isArray(bottom) || bottom.length === 0) {
+      this._syncStackLayRegistry()
+      bottom = this.registry.get('stackData')?.bottom
+    }
+    if (!Array.isArray(bottom) || bottom.length === 0)
+      return Math.max(1, MAX_CLICKS)
+    const raw = sumIgniteClickBudgetFromBottom(bottom)
+    return Math.max(1, raw)
   }
 
   /** Vertical center for UI-IGNITE-BAR — below outer pit ring (§4.5). */
@@ -3692,6 +4180,89 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._igniteBarBg?.setPosition(cx, barY)
     this._igniteBarFill?.setPosition(cx - outerW / 2 + 4, barY)
     this._layoutIgniteThresholdMarkers(cx, barY, outerW)
+    this._layoutIgniteTinderBurnBarPositions()
+  }
+
+  _stopIgniteTinderBarPulse() {
+    if (this._igniteTinderBarPulseTween) {
+      this._igniteTinderBarPulseTween.stop()
+      this._igniteTinderBarPulseTween = null
+    }
+    this._igniteTinderBarGfx?.setAlpha(1)
+  }
+
+  _layoutIgniteTinderBurnBarPositions() {
+    if (!this._igniteTinderBarGfx || !this._igniteTinderBarLabel) return
+    const bw = this._igniteTinderBarW
+    const bh = this._igniteTinderBarH
+    const left = this._pitX - STACK_TOP_R - 30
+    const top = this._pitY - bh / 2
+    this._igniteTinderBarX = left
+    this._igniteTinderBarTopY = top
+    this._igniteTinderBarLabel.setPosition(left + bw / 2, top - 12)
+    this._refreshIgniteTinderBurnBar()
+  }
+
+  _refreshIgniteTinderBurnBar() {
+    const gfx = this._igniteTinderBarGfx
+    if (!gfx) return
+
+    const bw = this._igniteTinderBarW
+    const bh = this._igniteTinderBarH
+    const px = this._igniteTinderBarX
+    const pyTop = this._igniteTinderBarTopY
+
+    gfx.clear()
+
+    const budget = Math.max(1, this._igniteClickBudget || MAX_CLICKS)
+    const used = Phaser.Math.Clamp(this._igniteTotalClicks, 0, budget)
+    const remain = budget - used
+    const frac = remain / budget
+
+    gfx.lineStyle(2, 0x8a8270, 0.92)
+    gfx.strokeRect(px, pyTop, bw, bh)
+
+    const pad = 3
+    const innerW = bw - pad * 2
+    const innerH = Math.max(0, bh - pad * 2)
+    const fillH = innerH * frac
+    const fillTop = pyTop + pad + (innerH - fillH)
+
+    const warnLow = remain <= 5 && remain > 0
+    const fillCol = warnLow ? 0xff5533 : 0xf5eec8
+
+    gfx.fillStyle(0x232018, 0.88)
+    gfx.fillRect(px + pad, pyTop + pad, innerW, innerH)
+
+    if (fillH > 0.5) {
+      gfx.fillStyle(fillCol, warnLow ? 0.96 : 0.9)
+      gfx.fillRect(px + pad, fillTop, innerW, fillH)
+    }
+
+    if (warnLow) {
+      if (!this._igniteTinderBarPulseTween) {
+        gfx.setAlpha(1)
+        this._igniteTinderBarPulseTween = this.tweens.add({
+          targets: gfx,
+          alpha: { from: 1, to: 0.38 },
+          duration: 270,
+          yoyo: true,
+          repeat: -1,
+        })
+      }
+    } else {
+      this._stopIgniteTinderBarPulse()
+    }
+
+    const liveBund = this._liveBottomTinderLayEntries().length
+    const bottomArr = this.registry.get('stackData')?.bottom
+    const regBund = Array.isArray(bottomArr) ? bottomArr.length : 0
+    const bundles = liveBund > 0 ? liveBund : regBund
+    const cap =
+      bundles > 0
+        ? `Tinder ×${bundles}\n${remain} tries left`
+        : `Tinder\n${remain} tries left`
+    this._igniteTinderBarLabel?.setText(cap)
   }
 
   _ensureIgniteMechanicsHud(W, H) {
@@ -3727,28 +4298,99 @@ export class FireBuildingMinigame extends Phaser.Scene {
       .setAlpha(0.95)
       .setVisible(false)
 
-    const bx = this._pitX + 210
-    const by = this._pitY + 95
+    const lblStyle = {
+      fontSize: '10px',
+      fontFamily: 'Georgia, serif',
+      fill: '#8a7860',
+    }
+    this._igniteBarSmokeLbl = this.add
+      .text(cx, barY - 14, 'Smoke', lblStyle)
+      .setOrigin(0.5, 1)
+      .setDepth(27)
+      .setAlpha(0.9)
+      .setVisible(false)
+    this._igniteBarFireLbl = this.add
+      .text(cx, barY - 14, 'Fire', lblStyle)
+      .setOrigin(0.5, 1)
+      .setDepth(27)
+      .setAlpha(0.95)
+      .setVisible(false)
+
+    const bx = campsiteBlowCenterX(this._pitX)
+    const by = this._pitY
     this._igniteBlowBg = this.add
-      .rectangle(bx, by, 96, 72, 0x2a2218)
-      .setStrokeStyle(2, 0x4a4038)
-      .setDepth(130)
+      .rectangle(bx, by, CAMPSITE_BLOW_W, CAMPSITE_BLOW_H, 0x241810)
+      .setStrokeStyle(2, 0x3a3028)
+      .setDepth(18)
       .setVisible(false)
 
     this._igniteBlowTxt = this.add
-      .text(bx, by, 'Blow 💨', {
-        fontSize: '14px',
+      .text(bx, by + 28, 'BLOW', {
+        fontSize: '13px',
         fontFamily: 'Georgia, serif',
-        fill: '#7a7060',
+        fill: '#5a5048',
       })
       .setOrigin(0.5)
-      .setDepth(131)
+      .setDepth(19)
       .setVisible(false)
 
     this._igniteBlowBg.on('pointerup', () => this._onIgniteBlowClick())
+
+    this._igniteTinderBarGfx = this.add.graphics().setDepth(28).setVisible(false)
+    this._igniteTinderBarLabel = this.add
+      .text(0, 0, 'Tinder', {
+        fontSize: '10px',
+        fontFamily: 'Georgia, serif',
+        fill: '#d8d4b8',
+        align: 'center',
+        wordWrap: { width: 84 },
+      })
+      .setOrigin(0.5, 1)
+      .setDepth(28)
+      .setVisible(false)
+    this._layoutIgniteTinderBurnBarPositions()
+  }
+
+  _pitRadiusForSparkZone(zoneId) {
+    if (zoneId === 'tinder') return STACK_BOTTOM_R
+    if (zoneId === 'kindling') return STACK_MIDDLE_R
+    return STACK_TOP_R
+  }
+
+  /** Random point on the pit ring for `_igniteSparkTargetZone` (same geometry as `_refreshIgniteSparkPickPitHighlight`). */
+  _randomIgniteSparkBurstPoint() {
+    const zone = this._igniteSparkTargetZone ?? 'tinder'
+    const r = this._pitRadiusForSparkZone(zone)
+    const ang = Phaser.Math.FloatBetween(0, Math.PI * 2)
+    return {
+      x: this._pitX + Math.cos(ang) * r,
+      y: this._pitY + Math.sin(ang) * r,
+    }
+  }
+
+  /** Redraw amber ring on pit for current `_igniteSparkTargetZone` (Spark-at chips). */
+  _refreshIgniteSparkPickPitHighlight() {
+    const gfx = this._igniteSparkPickRingGfx
+    if (!gfx || !gfx.scene) return
+    gfx.clear()
+    const px = this._pitX
+    const py = this._pitY
+    const r = this._pitRadiusForSparkZone(this._igniteSparkTargetZone)
+    gfx.lineStyle(8, 0xffcc44, 0.35)
+    gfx.strokeCircle(px, py, r)
+    gfx.lineStyle(4, 0xffe8a8, 0.98)
+    gfx.strokeCircle(px, py, r)
+    gfx.lineStyle(2, 0xffdca8, 0.72)
+    gfx.strokeCircle(px, py, r - 2)
   }
 
   _destroyIgniteSparkPickPhaseUi() {
+    if (this._stackGraphics && this.step === 'ignite') {
+      this._stackGraphics.setAlpha(0.3)
+      this._stackLabelTexts?.forEach((t) => t.setAlpha(0.3))
+    }
+    this._igniteSparkPickRingGfx?.destroy()
+    this._igniteSparkPickRingGfx = null
     for (const o of this._igniteSparkPickPhaseObjs) {
       o.bg?.destroy()
       o.txt?.destroy()
@@ -3756,144 +4398,145 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._igniteSparkPickPhaseObjs = []
     this._igniteSparkPickLabel?.destroy()
     this._igniteSparkPickLabel = null
-    this._ignitePitPickHit?.destroy()
-    this._ignitePitPickHit = null
-    this._ignitePitPickGraphics?.destroy()
-    this._ignitePitPickGraphics = null
   }
 
   _destroyIgniteLayerPickUi() {
     this._destroyIgniteSparkPickPhaseUi()
   }
 
-  /** Remove stack-phase pit overlay / recall chips that would sit above the igniter hit target. */
-  _igniteDisableConflictingStackHitTargets() {
-    this._destroyStackPitTapPrompt()
-    this._stackAwaitingPitForLay = false
-    for (const zoneId of Object.keys(this._stackLayerPlacements ?? {})) {
-      const arr = this._stackLayerPlacements[zoneId]
-      if (!Array.isArray(arr)) continue
-      for (const e of arr) {
-        e.marker?.disableInteractive?.()
-      }
-    }
-  }
-
-  _flashIgniteTapPitReminder() {
-    const hint = this._igniteSparkPickLabel
-    if (hint && hint.scene) {
-      this.tweens.add({
-        targets: hint,
-        scale: { from: 1, to: 1.12 },
-        duration: 100,
-        yoyo: true,
-        repeat: 2,
-        ease: 'Sine.easeInOut',
-      })
-    }
-    this._titleText.setText(
-      'Ignite — Tap the pit rings first (inner = tinder). STRIKE comes after.',
-    )
-  }
-
   _startIgniteLayerStrikePhase() {
     if (this.step !== 'ignite') return
-    this._igniteAwaitingLayerStrike = true
+    this._igniteAwaitFirstStrikeForSparkUi = true
+    this._igniteAwaitingLayerStrike = false
     this._stopIgniteTimers()
     this._igniteMechanicsPhase = null
     this._igniteProgress = 0
-    this._igniteSparks = 0
     this._igniteTotalClicks = 0
     this._setIgniteMechanicsHudVisible(false)
     this._setIgniteBlowInteractive(false)
 
     this._destroyIgniteSparkPickPhaseUi()
+    this._destroyStackPitTapPrompt()
 
     this._tinderSprite.setAlpha(0.72)
     this._tinderSprite.clearTint()
     this._setFlintActive(true)
 
     this._titleText.setText(
-      'Ignite — Tap the inner ring (tinder) or pick another layer (path A).',
+      'Ignite — Tap STRIKE to choose spark layer (chips), then tap STRIKE again to confirm.',
     )
 
     this._igniteSparkTargetZone = this._stackSparkTargetZone ?? 'tinder'
-    this._mountIgnitePitLayerPickUi()
   }
 
-  /** §4.5 — tap concentric pit rings to choose spark layer (path A = all rings; path B = tinder only). */
-  _mountIgnitePitLayerPickUi() {
+  _refreshIgniteSparkPickChipStyles() {
+    const pathB = this._igniteProposalPath === 'pathB'
+    for (const p of this._igniteSparkPickPhaseObjs) {
+      const sel = p.zoneId === this._igniteSparkTargetZone
+      if (pathB) {
+        const isTinder = p.zoneId === 'tinder'
+        if (isTinder) {
+          p.bg.setStrokeStyle(sel ? 3 : 2, sel ? 0xeec866 : 0x5a4834)
+          p.bg.setAlpha(1)
+          p.txt.setAlpha(1)
+        } else {
+          p.bg.setStrokeStyle(2, 0x2a2218)
+          p.bg.setAlpha(0.32)
+          p.txt.setAlpha(0.35)
+        }
+      } else {
+        p.bg.setStrokeStyle(sel ? 3 : 2, sel ? 0xeec866 : 0x5a4834)
+        p.bg.setAlpha(1)
+        p.txt.setAlpha(1)
+      }
+    }
+    this._refreshIgniteSparkPickPitHighlight()
+  }
+
+  /** After first STRIKE — Spark-at chips (path B = only Base/tinder selectable). */
+  _mountIgniteSparkPickUi() {
     if (this.step !== 'ignite') return
 
-    this._destroyIgniteSparkPickPhaseUi()
-    this._igniteDisableConflictingStackHitTargets()
+    this._igniteAwaitFirstStrikeForSparkUi = false
+    this._igniteAwaitingLayerStrike = true
 
-    const px = this._pitX
-    const py = this._pitY
     const pathB = this._igniteProposalPath === 'pathB'
-    const ringDepth = 380
-    const hitDepth = 400
+    this._igniteSparkTargetZone = pathB ? 'tinder' : (this._stackSparkTargetZone ?? 'tinder')
 
-    const g = this.add.graphics().setDepth(ringDepth)
-    this._ignitePitPickGraphics = g
-    if (pathB) {
-      g.lineStyle(4, 0xeec866, 0.95)
-      g.strokeCircle(px, py, STACK_BOTTOM_R)
-      g.lineStyle(2, 0x4a4038, 0.28)
-      g.strokeCircle(px, py, STACK_MIDDLE_R)
-      g.strokeCircle(px, py, STACK_TOP_R)
-    } else {
-      g.lineStyle(2, 0x8a7860, 0.55)
-      g.strokeCircle(px, py, STACK_BOTTOM_R)
-      g.strokeCircle(px, py, STACK_MIDDLE_R)
-      g.strokeCircle(px, py, STACK_TOP_R)
-    }
+    this._destroyIgniteSparkPickPhaseUi()
+    this._destroyStackPitTapPrompt()
 
-    const hitR = pathB ? STACK_BOTTOM_R + 10 : STACK_TOP_R + 14
-    const pick = (pointer) => {
-      if (this.step !== 'ignite' || !this._igniteAwaitingLayerStrike) return
-      this._onIgnitePitLayerSelected(pointer.worldX, pointer.worldY, pathB)
-    }
+    this._stackGraphics?.setAlpha(0.58)
+    this._stackLabelTexts?.forEach((t) => t.setAlpha(0.62))
 
-    const hit = this.add
-      .circle(px, py, hitR, 0x4a3820, 0.14)
-      .setStrokeStyle(2, 0xc4a060, 0.55)
-      .setDepth(hitDepth)
-      .setInteractive({ useHandCursor: true })
+    this._igniteSparkPickRingGfx = this.add.graphics().setDepth(48)
 
-    hit.on('pointerup', pick)
-    this._ignitePitPickHit = hit
+    const cx = this._pitX
+    const sy = this._pitY - STACK_TOP_R - 24
+    const chipGap = 68
+    const chipCenters = [cx - chipGap, cx, cx + chipGap]
 
-    const hint = pathB
-      ? 'Tap the tinder (inner) ring.'
-      : 'Tap a fire-pit layer — only tinder catches a spark.'
     this._igniteSparkPickLabel = this.add
-      .text(px, py - STACK_TOP_R - 36, hint, {
+      .text(chipCenters[0] - 34, sy, 'Spark at:', {
         fontSize: '12px',
         fontFamily: 'Georgia, serif',
-        fill: '#c8b8a0',
+        fill: '#c8b090',
       })
-      .setOrigin(0.5)
-      .setDepth(hitDepth + 1)
+      .setOrigin(1, 0.5)
+      .setDepth(140)
+
+    const sparkDefs = [
+      { zoneId: 'tinder', label: 'Base' },
+      { zoneId: 'kindling', label: 'Mid' },
+      { zoneId: 'fuel_wood', label: 'Top' },
+    ]
+    for (let i = 0; i < sparkDefs.length; i++) {
+      const d = sparkDefs[i]
+      const sx = chipCenters[i]
+      const locked = pathB && d.zoneId !== 'tinder'
+      const bg = this.add
+        .rectangle(sx, sy, 56, 28, 0x241a12)
+        .setStrokeStyle(2, 0x5a4834)
+        .setDepth(139)
+
+      if (!locked) {
+        bg.setInteractive({ useHandCursor: true })
+      }
+
+      const txt = this.add
+        .text(sx, sy, d.label, {
+          fontSize: '11px',
+          fontFamily: 'Georgia, serif',
+          fill: '#c8b898',
+        })
+        .setOrigin(0.5)
+        .setDepth(141)
+
+      const zonePick = d.zoneId
+      if (!locked) {
+        bg.on('pointerup', () => {
+          if (this.step !== 'ignite' || !this._igniteAwaitingLayerStrike) return
+          this._igniteSparkTargetZone = zonePick
+          this._refreshIgniteSparkPickChipStyles()
+        })
+      }
+
+      this._igniteSparkPickPhaseObjs.push({ zoneId: d.zoneId, bg, txt })
+    }
+    this._refreshIgniteSparkPickChipStyles()
+
+    this._titleText.setText(
+      pathB
+        ? 'Ignite — Tap STRIKE to confirm spark on Base (tinder).'
+        : 'Ignite — Pick Base / Mid / Top, then tap STRIKE to confirm.',
+    )
+    this._setFlintActive(true)
   }
 
-  _onIgnitePitLayerSelected(worldX, worldY, pathB) {
-    const dx = worldX - this._pitX
-    const dy = worldY - this._pitY
-    const d = Math.hypot(dx, dy)
+  _onIgniteStrikeAfterLayerPick() {
+    if (this.step !== 'ignite' || !this._igniteAwaitingLayerStrike) return
 
-    if (pathB) {
-      if (d > STACK_BOTTOM_R + 10) return
-      this._igniteSparkTargetZone = 'tinder'
-      this._finishIgniteLayerPickSuccess()
-      return
-    }
-
-    let zoneId
-    if (d <= STACK_BOTTOM_R) zoneId = 'tinder'
-    else if (d <= STACK_MIDDLE_R) zoneId = 'kindling'
-    else if (d <= STACK_TOP_R + 14) zoneId = 'fuel_wood'
-    else return
+    const zoneId = this._igniteSparkTargetZone
 
     if (zoneId !== 'tinder') {
       this._dialogue.showSequence(
@@ -3909,11 +4552,6 @@ export class FireBuildingMinigame extends Phaser.Scene {
       return
     }
 
-    this._igniteSparkTargetZone = 'tinder'
-    this._finishIgniteLayerPickSuccess()
-  }
-
-  _finishIgniteLayerPickSuccess() {
     const lines = [
       { speaker: 'Ren', text: 'Tinder. Right.' },
       {
@@ -3943,7 +4581,86 @@ export class FireBuildingMinigame extends Phaser.Scene {
       this._igniteSmokePulseTimer.remove(false)
       this._igniteSmokePulseTimer = null
     }
-    if (this._tinderSprite) this._tinderSprite.clearTint()
+    if (this._tinderSprite) {
+      this._tinderSprite.clearTint()
+      this._tinderSprite.setScale(1)
+    }
+    this._igniteSmokeHalo?.setVisible(false)
+    this._igniteLayRingGlowGfx?.clear()
+    if (this.step === 'ignite') this._stackGraphics?.setAlpha(0.3)
+  }
+
+  _ensureIgniteLayRingGlowGfx() {
+    if (!this._igniteLayRingGlowGfx || !this._igniteLayRingGlowGfx.scene) {
+      this._igniteLayRingGlowGfx = this.add.graphics().setDepth(4)
+    }
+  }
+
+  /** Blow phase: ember accent on **bottom / tinder ring only** (Mid/Top stay faint `_stackGraphics` guides). */
+  _drawIgniteBlowLayRingGlow(bright) {
+    this._ensureIgniteLayRingGlowGfx()
+    const g = this._igniteLayRingGlowGfx
+    if (!g) return
+    g.clear()
+    const px = this._pitX
+    const py = this._pitY
+    this._stackGraphics?.setAlpha(0.32)
+    const r = STACK_BOTTOM_R
+    if (bright) {
+      g.lineStyle(12, 0xff5200, 0.26)
+      g.strokeCircle(px, py, r)
+      g.lineStyle(6, 0xff9933, 0.76)
+      g.strokeCircle(px, py, r)
+      g.lineStyle(2, 0xffcc66, 0.94)
+      g.strokeCircle(px, py, r)
+    } else {
+      g.lineStyle(5, 0xb86838, 0.42)
+      g.strokeCircle(px, py, r)
+      g.lineStyle(2, 0x7a5030, 0.58)
+      g.strokeCircle(px, py, r)
+    }
+  }
+
+  /** §4.5 phase 1 — localized ember sparks at strike point (no camera flash). */
+  _playIgniteSparkFx(atX, atY) {
+    const depth = 96
+    const px = atX
+    const py = atY
+    const n = Phaser.Math.Between(10, 18)
+    for (let i = 0; i < n; i++) {
+      const sz = Phaser.Math.FloatBetween(1.2, 4)
+      const c = Phaser.Math.RND.pick([
+        0xffeecc,
+        0xffcc66,
+        0xff8844,
+        0xff5522,
+        0xffffff,
+      ])
+      const dot = this.add.circle(px, py, sz, c, 1).setDepth(depth)
+      const ang = Phaser.Math.FloatBetween(0, Math.PI * 2)
+      const dist = Phaser.Math.Between(16, 78)
+      this.tweens.add({
+        targets: dot,
+        x: px + Math.cos(ang) * dist,
+        y: py + Math.sin(ang) * dist,
+        alpha: 0,
+        scaleX: 0.08,
+        scaleY: 0.08,
+        duration: Phaser.Math.Between(110, 260),
+        ease: 'Cubic.Out',
+        onComplete: () => dot.destroy(),
+      })
+    }
+    const core = this.add.circle(px, py, 9, 0xfff0c8, 0.52).setDepth(depth - 1)
+    this.tweens.add({
+      targets: core,
+      scaleX: 2.5,
+      scaleY: 2.5,
+      alpha: 0,
+      duration: 145,
+      ease: 'Cubic.Out',
+      onComplete: () => core.destroy(),
+    })
   }
 
   _scheduleIgniteSmokePulseTick() {
@@ -3975,13 +4692,37 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _refreshIgniteSmokePulseVisual() {
     if (this._igniteMechanicsPhase !== 'blow') {
       this._tinderSprite.clearTint()
+      this._tinderSprite.setScale(1)
+      this._igniteSmokeHalo?.setVisible(false)
+      this._igniteLayRingGlowGfx?.clear()
+      if (this.step === 'ignite') this._stackGraphics?.setAlpha(0.3)
       return
     }
-    if (this._igniteSmokePulsePhase === 'bright') {
-      this._tinderSprite.setTint(0xffaa88)
+    const bright = this._igniteSmokePulsePhase === 'bright'
+    if (bright) {
+      this._tinderSprite.setTint(0xff9966)
+      this._tinderSprite.setScale(1.14)
     } else {
-      this._tinderSprite.setTint(0x8899aa)
+      this._tinderSprite.setTint(0x778899)
+      this._tinderSprite.setScale(0.88)
     }
+    const zone = this._igniteSparkTargetZone ?? 'tinder'
+    const haloR = this._pitRadiusForSparkZone(zone) + IGNITE_HALO_RING_PAD
+    if (!this._igniteSmokeHalo) {
+      this._igniteSmokeHalo = this.add
+        .circle(this._pitX, this._pitY, haloR, 0x000000, 0)
+        .setStrokeStyle(3, 0xffcc66, 0.5)
+        .setDepth(1)
+    }
+    this._igniteSmokeHalo.setPosition(this._pitX, this._pitY)
+    this._igniteSmokeHalo.setRadius(haloR)
+    this._igniteSmokeHalo.setVisible(true)
+    this._igniteSmokeHalo.setStrokeStyle(
+      bright ? 4 : 2,
+      bright ? 0xffe8a8 : 0x6a7a8a,
+      bright ? 0.72 : 0.42,
+    )
+    this._drawIgniteBlowLayRingGlow(bright)
   }
 
   _layoutIgniteThresholdMarkers(cx, barY, outerW) {
@@ -3991,6 +4732,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
     const fmx = left + inner
     this._igniteBarSmokeMarker.setPosition(smx, barY)
     this._igniteBarFireMarker.setPosition(fmx, barY)
+    this._igniteBarSmokeLbl?.setPosition(smx, barY - 14)
+    this._igniteBarFireLbl?.setPosition(fmx, barY - 14)
   }
 
   _setIgniteMechanicsHudVisible(v) {
@@ -3999,8 +4742,13 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._igniteBarFill?.setVisible(vis)
     this._igniteBarSmokeMarker?.setVisible(vis)
     this._igniteBarFireMarker?.setVisible(vis)
+    this._igniteBarSmokeLbl?.setVisible(vis)
+    this._igniteBarFireLbl?.setVisible(vis)
     this._igniteBlowBg?.setVisible(vis)
     this._igniteBlowTxt?.setVisible(vis)
+    this._igniteTinderBarGfx?.setVisible(vis)
+    this._igniteTinderBarLabel?.setVisible(vis)
+    if (!vis) this._stopIgniteTinderBarPulse()
   }
 
   _refreshIgniteProgressUi() {
@@ -4015,12 +4763,13 @@ export class FireBuildingMinigame extends Phaser.Scene {
     const blowReady = smoky
     const blowLit = blowReady && this._igniteBlowBg?.input?.enabled
     this._igniteBlowTxt?.setStyle({
-      fontSize: '14px',
+      fontSize: '13px',
       fontFamily: 'Georgia, serif',
       fill: blowLit ? '#d8ecc8' : '#5a5048',
     })
     this._igniteBlowBg?.setStrokeStyle(2, blowLit ? 0x8acb80 : 0x4a4038)
     this._refreshIgniteSmokePulseVisual()
+    this._refreshIgniteTinderBurnBar()
   }
 
   _setIgniteBlowInteractive(active) {
@@ -4039,21 +4788,215 @@ export class FireBuildingMinigame extends Phaser.Scene {
   // IGNITE STEP
   // ════════════════════════════════════════════════════════════════════════════
 
+  /** Sorted reserves + zone labels stay readable during ignite (stack exit destroys category HUD). */
+  _igniteEnsureReserveHud(W, H) {
+    this._applyStackStepZoneLabels()
+    Object.values(this._sortZones).forEach(z => {
+      this.tweens.killTweensOf(z.rect)
+      this.tweens.add({ targets: z.rect, alpha: 0.85, duration: 300 })
+    })
+    this._sortZoneParts.forEach(({ labelTxt, descTxt }) => {
+      this.tweens.killTweensOf([labelTxt, descTxt])
+      this.tweens.add({ targets: [labelTxt, descTxt], alpha: 1, duration: 300 })
+    })
+    this._createStackCategoryCards(W, H)
+    this._ensureSortedMaterialsZoneLayout()
+  }
+
+  _destroySortZoneLayPreview() {
+    for (const n of this._sortZoneLayPreviewNodes) {
+      n?.destroy?.()
+    }
+    this._sortZoneLayPreviewNodes = []
+  }
+
+  /** Show lay preview on these steps; hide and destroy nodes when leaving the fire-lay HUD. */
+  _refreshSortZoneLayPreview() {
+    this._syncSortZoneHudSortedSpriteVisibility()
+    if (SORT_ZONE_LAY_PREVIEW_STEPS.includes(this.step)) {
+      this._buildSortZoneLayPreview()
+    } else {
+      this._destroySortZoneLayPreview()
+    }
+    if (['stack', 'spread', 'ignite', 'sustain'].includes(this.step)) {
+      this._syncStackSortedDraggability()
+    }
+  }
+
+  /**
+   * Ignite / spread / sustain: hide real sorted sprites in zones (duplicate lay-preview placeholders).
+   * Spread remediation keeps one draggable pile visible for the active zone.
+   * Sustain uses `_applySustainReserveSpritePresentation` (visible spare wood above reserve panels).
+   */
+  _syncSortZoneHudSortedSpriteVisibility() {
+    for (const st of Object.values(this._matStates)) {
+      if (!st.sprite || !st.isSortable || st.phase !== 'sorted') continue
+
+      const remediationDrag =
+        this.step === 'spread' &&
+        this._spreadAwaitingRemediation &&
+        this._spreadRemediationZone &&
+        correctSortZoneForMatId(st.id) === this._spreadRemediationZone
+
+      if (this.step === 'ignite' || this.step === 'spread') {
+        if (remediationDrag) {
+          const dim = st.greyed || st.quality === 'BAD'
+          const a = dim ? 0.3 : 1
+          st.sprite.setVisible(true).setAlpha(a)
+          st.label?.setVisible(true).setAlpha(a)
+        } else {
+          st.sprite.setVisible(false)
+          st.label?.setVisible(false)
+        }
+        continue
+      }
+
+      if (this.step === 'sustain') continue
+
+      const dim = st.greyed || st.quality === 'BAD'
+      const a = dim ? 0.3 : 1
+      st.sprite.setVisible(true).setAlpha(a)
+      st.label?.setVisible(true).setAlpha(a)
+    }
+  }
+
+  /** Stable ordering for pit / pile placeholders (matches recall & registry). */
+  _pileKeySortOrder(a, b) {
+    const na = parseInt(String(a.pileKey).replace(/\D/g, ''), 10) || 0
+    const nb = parseInt(String(b.pileKey).replace(/\D/g, ''), 10) || 0
+    return na - nb
+  }
+
+  /** Same base string as `_buildMaterialPile` labels (`id.replace(/_/g, ' ')`), clipped for narrow scaled rects. */
+  _truncateSortZonePlaceholderLabel(id) {
+    if (!id || typeof id !== 'string') return ''
+    const s = id.replace(/_/g, ' ')
+    const maxLen = 20
+    if (s.length <= maxLen) return s
+    return `${s.slice(0, maxLen - 1).trimEnd()}…`
+  }
+
+  /**
+   * Read-only placeholders matching `_buildMaterialPile`: MAT_COLOR rects + Georgia labels.
+   * Steps: sort / stack / ignite / spread (see `SORT_ZONE_LAY_PREVIEW_STEPS`). Sustain uses reserve panels instead.
+   * Ignite/spread: includes sorted reserves (real sprites hidden) + placed pit pieces so
+   * forest-return and original piles look identical.
+   */
+  _buildSortZoneLayPreview() {
+    this._destroySortZoneLayPreview()
+
+    const padX = 12
+    const gap = 8
+    const rowGap = 10
+    const zoneBottomPad = 8
+    const labelBelow = 4
+
+    for (const def of SORT_ZONE_DEFS) {
+      const layerId = STACK_ZONE_TO_LAYER[def.id]
+      if (!layerId) continue
+      const zone = this._sortZones[def.id]
+      if (!zone) continue
+
+      const placed = Object.values(this._matStates).filter(
+        (s) => s.phase === 'placed' && s.layerId === layerId && s.isSortable,
+      )
+      placed.sort((a, b) => this._pileKeySortOrder(a, b))
+
+      let reserves = Object.values(this._matStates).filter((s) => {
+        if (s.phase !== 'sorted' || !s.isSortable) return false
+        const z = normalizeStackSortZoneId(s.sortZoneId ?? correctSortZoneForMatId(s.id))
+        if (z !== def.id) return false
+        if (
+          this.step === 'spread' &&
+          this._spreadAwaitingRemediation &&
+          this._spreadRemediationZone &&
+          correctSortZoneForMatId(s.id) === this._spreadRemediationZone
+        )
+          return false
+        return true
+      })
+      reserves.sort((a, b) => this._pileKeySortOrder(a, b))
+
+      const combined = [...placed, ...reserves]
+      if (!combined.length) continue
+
+      const innerW = ZONE_W - padX * 2
+      const n = combined.length
+
+      let cols = n
+      let rows = 1
+      let scale = innerW / (cols * ITEM_W + (cols - 1) * gap)
+      if (scale < 0.38 && n > 2) {
+        rows = 2
+        cols = Math.ceil(n / 2)
+        scale = innerW / (cols * ITEM_W + (cols - 1) * gap)
+      }
+      scale = Phaser.Math.Clamp(scale, 0.32, 0.68)
+
+      const w = ITEM_W * scale
+      const h = ITEM_H * scale
+      const fontPx = Math.max(8, Math.min(11, Math.round(11 * scale)))
+      const rowLaneH = h + labelBelow + fontPx + 2
+
+      const zoneBottom = zone.y + ZONE_H / 2 - zoneBottomPad
+      const blockH = rows * rowLaneH + (rows - 1) * rowGap
+
+      for (let r = 0; r < rows; r++) {
+        const rowItems = combined.slice(r * cols, r * cols + cols)
+        const rowLen = rowItems.length
+        const rowW = rowLen * w + (rowLen - 1) * gap
+        const rowCenterY =
+          zoneBottom - blockH + r * (rowLaneH + rowGap) + h / 2
+
+        for (let c = 0; c < rowLen; c++) {
+          const st = rowItems[c]
+          const cx =
+            zone.x - rowW / 2 + w / 2 + c * (w + gap)
+          const color = MAT_COLOR[st.quality] ?? 0x5a4a30
+          const dim = st.greyed || st.quality === 'BAD'
+          const alpha = dim ? 0.35 : 1
+
+          const bg = this.add
+            .rectangle(cx, rowCenterY, w, h, color)
+            .setDepth(13)
+            .setAlpha(alpha)
+
+          const txt = this.add
+            .text(cx, rowCenterY + h / 2 + labelBelow, this._truncateSortZonePlaceholderLabel(st.id), {
+              fontSize: `${fontPx}px`,
+              fontFamily: 'Georgia, serif',
+              fill: '#d8c898',
+              align: 'center',
+              wordWrap: { width: Math.ceil(w + gap) },
+            })
+            .setOrigin(0.5, 0)
+            .setDepth(14)
+            .setAlpha(alpha)
+
+          this._sortZoneLayPreviewNodes.push(bg, txt)
+        }
+      }
+    }
+  }
+
   _enterIgnite() {
     this._titleText.setText('Catch the spark — heat, smoke, then breathe.')
-
-    this._igniteRetryUsed = false
 
     this._syncStackLayRegistry()
     this._configureIgniteDifficultyParams()
 
     const W = this.scale.width
     const H = this.scale.height
+
+    this._igniteEnsureReserveHud(W, H)
+    this._ensureCampsiteForestButton(W, H)
     this._ensureIgniteMechanicsHud(W, H)
+
+    const forestResume = this._igniteResumeFromForest
+    this._igniteResumeFromForest = null
 
     this._igniteMechanicsPhase = null
     this._igniteProgress = 0
-    this._igniteSparks = 0
     this._igniteTotalClicks = 0
     this._igniteLastClick = this.time.now
     this._igniteSmokeRenShown = false
@@ -4061,15 +5004,22 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._igniteRenBlowCorrectShown = false
     this._igniteLastBlowTime = 0
 
+    this._igniteDecayHoldUntilNextBlow = false
+
     this._igniteAwaitingLayerStrike = false
+    this._igniteAwaitFirstStrikeForSparkUi = false
     this._destroyIgniteLayerPickUi()
 
-    this._setSparkCounterVisible(false)
     this._setIgniteMechanicsHudVisible(false)
     this._setIgniteBlowInteractive(false)
     this._refreshBackground()
 
-    if (this._stepProposalShown.ignite) {
+    const skipRenIntro =
+      this._stepProposalShown.ignite ||
+      forestResume?.igniteProposalComplete === true
+
+    if (skipRenIntro) {
+      this._stepProposalShown.ignite = true
       this._destroyIgniteLayerPickUi()
       this._beginIgniteMechanics()
       return
@@ -4122,8 +5072,14 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
   _beginIgniteMechanics() {
     this._igniteAwaitingLayerStrike = false
+    this._igniteAwaitFirstStrikeForSparkUi = false
     this._destroyIgniteSparkPickPhaseUi()
     this._stopIgniteTimers()
+
+    this._igniteDecayHoldUntilNextBlow = false
+
+    this._igniteClickBudget = this._computeIgniteClickBudget()
+    this._igniteRenTinderLowShown = false
 
     this._igniteMechanicsPhase = 'spark'
     this._igniteProgress = Math.min(this._igniteProgress, IGNITE_PROGRESS_MAX)
@@ -4138,11 +5094,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._setIgniteMechanicsHudVisible(true)
     this._refreshIgniteProgressUi()
 
-    this._setSparkCounterVisible(true)
-    this._refreshSparkCounter()
-
     this._titleText.setText(
-      'Ignite — Phase 1: STRIKE flint to build heat (watch the bar).',
+      'Ignite — Phase 1: Tap STRIKE to build heat (watch both bars).',
     )
 
     this._tinderSprite.setAlpha(0.72)
@@ -4178,6 +5131,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     if (this._igniteProgress < this._igniteSmokeThresholdPct) return
 
     this._igniteMechanicsPhase = 'blow'
+    this._setFlintActive(false, { igniteSparkingDisabled: true })
     this._setIgniteBlowInteractive(true)
     this._startIgniteSmokePulse()
 
@@ -4187,6 +5141,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     if (this.day >= 2 && !this._igniteSmokeRenShown) {
       this._igniteSmokeRenShown = true
+      this._igniteDecayHoldUntilNextBlow = true
       this._dialogue.showSequence(
         [
           {
@@ -4207,67 +5162,36 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._igniteMechanicsPhase = 'spark'
     this._stopIgniteSmokePulse()
     this._setIgniteBlowInteractive(false)
+    this._setFlintActive(true)
+    this._igniteDecayHoldUntilNextBlow = false
     this._tinderSprite.setAlpha(0.72)
     this._titleText.setText(
-      'Ignite — Phase 1: STRIKE flint again (smoke faded — rebuild heat).',
+      'Ignite — Phase 1: Tap STRIKE again (smoke faded — rebuild heat).',
     )
     this._refreshIgniteProgressUi()
   }
 
   _exitIgnite() {
+    this._hideCampsiteForestButton()
     this._stopIgniteTimers()
+    this._stopIgniteSmokePulse()
     this._igniteAwaitingLayerStrike = false
+    this._igniteAwaitFirstStrikeForSparkUi = false
     this._destroyIgniteLayerPickUi()
     this._setFlintActive(false)
-    this._setSparkCounterVisible(false)
     this._setIgniteMechanicsHudVisible(false)
     this._setIgniteBlowInteractive(false)
     this._tinderSprite.setAlpha(0)
     this._igniteMechanicsPhase = null
   }
 
-  _onFlintClick() {
-    if (this.step === 'stack') {
-      if (this._stackLayLockedComplete) this._beginIgniteFromStack()
-      return
-    }
-
-    if (this.step !== 'ignite') return
-
-    if (this._igniteAwaitingLayerStrike) {
-      this._flashIgniteTapPitReminder()
-      return
-    }
-
-    if (!this._igniteMechanicsPhase || this._igniteMechanicsPhase !== 'spark') return
-
-    this._igniteLastClick = this.time.now
-    this._igniteTotalClicks++
-
-    const d = this._igniteDifficulty
-    const gained = Phaser.Math.Between(d.sparkMin, d.sparkMax)
-    this._igniteProgress = Math.min(
-      IGNITE_PROGRESS_MAX,
-      this._igniteProgress + gained,
-    )
-    this._igniteSparks = Math.floor(this._igniteProgress)
-    this._refreshIgniteProgressUi()
-
-    this._maybePromoteIgniteToBlowPhase()
-
-    if (this._igniteProgress >= IGNITE_PROGRESS_MAX) {
-      this._igniteSuccess()
-      return
-    }
-
-    if (this._igniteTotalClicks >= MAX_CLICKS) {
-      this._igniteFail()
-    }
-  }
-
   _onIgniteBlowClick() {
     if (this.step !== 'ignite') return
     if (this._igniteMechanicsPhase !== 'blow') return
+    if (typeof this._dialogue?.isBlocking === 'function' && this._dialogue.isBlocking())
+      return
+
+    this._igniteDecayHoldUntilNextBlow = false
 
     const now = this.time.now
     this._igniteTotalClicks++
@@ -4293,6 +5217,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
         duration: 140,
         yoyo: true,
         ease: 'Sine.easeOut',
+        onComplete: () => this._refreshIgniteProgressUi(),
       })
     } else {
       const pen = this._igniteBlowPenalty ?? 14
@@ -4310,9 +5235,14 @@ export class FireBuildingMinigame extends Phaser.Scene {
         )
       }
       this.cameras.main.shake(180, 0.004)
+      this._tinderSprite.setTint(0xbbbbcc)
+      this.time.delayedCall(140, () => {
+        if (this._igniteMechanicsPhase === 'blow')
+          this._refreshIgniteSmokePulseVisual()
+        else this._tinderSprite.clearTint()
+      })
     }
 
-    this._igniteSparks = Math.floor(this._igniteProgress)
     this._maybeDemoteIgniteFromBlowPhase()
     this._refreshIgniteProgressUi()
 
@@ -4321,13 +5251,31 @@ export class FireBuildingMinigame extends Phaser.Scene {
       return
     }
 
-    if (this._igniteTotalClicks >= MAX_CLICKS) {
+    const budget = this._igniteClickBudget || MAX_CLICKS
+    if (this._igniteTotalClicks >= budget) {
       this._igniteFail()
+      return
     }
+
+    this._maybeWarnIgniteTinderLow()
+  }
+
+  /** Pause decay / rain during dialogue or until first BLOW after smoke tutorial (§4.5 UX). */
+  _igniteEnvironmentalEffectsPaused() {
+    if (this.step !== 'ignite' || !this._igniteMechanicsPhase) return true
+    if (typeof this._dialogue?.isBlocking === 'function' && this._dialogue.isBlocking())
+      return true
+    if (
+      this._igniteMechanicsPhase === 'blow' &&
+      this._igniteDecayHoldUntilNextBlow
+    )
+      return true
+    return false
   }
 
   _igniteDecayTick() {
     if (!this._igniteMechanicsPhase) return
+    if (this._igniteEnvironmentalEffectsPaused()) return
 
     let amt = this._igniteDecayPerTick
     if (this._igniteMechanicsPhase === 'blow') {
@@ -4335,16 +5283,15 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
 
     this._igniteProgress = Math.max(0, this._igniteProgress - amt)
-    this._igniteSparks = Math.floor(this._igniteProgress)
     this._maybeDemoteIgniteFromBlowPhase()
     this._refreshIgniteProgressUi()
   }
 
   _applyRainInterference() {
     if (this.step !== 'ignite' || !this._igniteMechanicsPhase) return
+    if (this._igniteEnvironmentalEffectsPaused()) return
 
     this._igniteProgress = Math.max(0, this._igniteProgress - 9)
-    this._igniteSparks = Math.floor(this._igniteProgress)
     this._maybeDemoteIgniteFromBlowPhase()
     this._refreshIgniteProgressUi()
 
@@ -4366,65 +5313,130 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
   _igniteSuccess() {
     this.registry.set('ignitionSuccess', true)
-    this.registry.set(
-      'fireQuality',
-      MAX_CLICKS - this._igniteTotalClicks >= 12 ? 'strong' : 'weak',
-    )
+    /** §4.6 — final `fireQuality` set after spread (strong / weak); cleared here so sustain reads registry truth. */
+    this.registry.set('fireQuality', null)
 
     this._stopIgniteTimers()
-    this._flintBg.disableInteractive()
+    this._stopIgniteSmokePulse()
+    this._deactivateFlintCompletely()
     this._setIgniteMechanicsHudVisible(false)
     this._setIgniteBlowInteractive(false)
-    this._setSparkCounterVisible(false)
+
+    this._tinderSprite.setAlpha(0)
+    this._fireIcon.setAlpha(1).setScale(1)
+    this.tweens.add({
+      targets: this._fireIcon,
+      scale: { from: 1, to: 1.28 },
+      duration: 260,
+      yoyo: true,
+      ease: 'Sine.Out',
+      onComplete: () => this._fireIcon.setScale(1),
+    })
 
     this.time.delayedCall(800, () => {
-      this._enterStep('sustain')
+      this._enterStep('spread')
     })
   }
 
   _igniteFail() {
     this._stopIgniteTimers()
-    this._flintBg.disableInteractive()
+    this._stopIgniteSmokePulse()
+    this._deactivateFlintCompletely()
     this._setIgniteMechanicsHudVisible(false)
     this._setIgniteBlowInteractive(false)
-    this._setSparkCounterVisible(false)
 
     const stamina = this.registry.get('stamina')
-
-    if (!this._igniteRetryUsed) {
-      this._igniteRetryUsed = true
-      this._dialogue.showSequence(
-        [
-          { speaker: 'Ren', text: 'Spark will not hold.' },
-          {
-            speaker: 'Ren',
-            text: 'That is alright — we have got enough tinder to try again.',
-          },
-        ],
-        () => {
-          this._dialogue.hide()
-          const alive = stamina?.deduct(1) ?? true
-          if (!alive) {
-            this.time.delayedCall(800, () => this._emitDayFail('fire_campsite'))
-            return
-          }
-          this.time.delayedCall(400, () => this._igniteRetry())
-        },
-      )
-      return
-    }
-
-    const aliveSecond = stamina?.deduct(2) ?? true
-    if (!aliveSecond) {
+    const alive = stamina?.deduct(1) ?? true
+    if (!alive) {
       this.time.delayedCall(800, () => this._emitDayFail('fire_campsite'))
       return
     }
-    this.time.delayedCall(600, () => this._emitDayFail('fire_campsite'))
+
+    this._dialogue.showSequence(
+      [
+        { speaker: 'Ren', text: 'Spark will not hold.' },
+        {
+          speaker: 'Ren',
+          text: 'Try again on this lay — or go into the forest for more dry tinder.',
+        },
+      ],
+      () => {
+        this._dialogue.showChoices([
+          {
+            text: 'Try lighting again.',
+            onSelect: () => {
+              this._dialogue.hide()
+              this._igniteRetry()
+            },
+          },
+          {
+            text: 'Go to the forest for materials.',
+            onSelect: () => {
+              this._dialogue.hide()
+              this._igniteGoForestFromIgnite()
+            },
+          },
+        ])
+      },
+    )
+  }
+
+  _igniteGoForestFromIgnite() {
+    if (this.step !== 'ignite') return
+
+    this.registry.set('fireCampsiteStackResume', this._buildStackResumePayload())
+    this.registry.set('collectForestMinimumAdds', {
+      tinder: COLLECT_TARGETS.tinder,
+      kindling: 0,
+      fuel: 0,
+    })
+    this.scene.stop('FireBuildingMinigame')
+    this.scene.start('FireBuildingCollect', {
+      day: this.day,
+      collectSessionKind: COLLECT_SESSION_RESUME_CAMPSITE,
+    })
+  }
+
+  /**
+   * Ignite fail retry — burn one bottom-layer tinder bundle (worst quality first), sync registry,
+   * then `_computeIgniteClickBudget` reads fewer bottom rows / shorter `stackData.bottom`.
+   */
+  _igniteConsumeWorstBottomTinderForRetry() {
+    const victims = []
+    for (const st of Object.values(this._matStates)) {
+      if (st.phase !== 'placed' || st.layerId !== 'bottom') continue
+      victims.push(st)
+    }
+    if (!victims.length) return
+
+    victims.sort((a, b) => {
+      const ra = igniteRetryBottomConsumeRank(a.quality)
+      const rb = igniteRetryBottomConsumeRank(b.quality)
+      if (ra !== rb) return ra - rb
+      return this._pileKeySortOrder(a, b)
+    })
+
+    const v = victims[0]
+    v.phase = 'ignite_spent'
+    v.layerId = null
+    v.sprite?.setAlpha(0)
+    v.label?.setAlpha(0)
+    if (v.sprite?.input) {
+      this._safeSetDraggable(v.sprite, false)
+      v.sprite.disableInteractive()
+    }
+
+    this._stackDropCount.tinder = this._stackPlacedCountInLayer('bottom')
+    this._stackUnitIndexInZone.tinder = this._stackDropCount.tinder
+
+    this._syncStackLayRegistry()
   }
 
   _igniteRetry() {
+    this._igniteConsumeWorstBottomTinderForRetry()
+    this._configureIgniteDifficultyParams()
+
     this._igniteProgress = 0
-    this._igniteSparks = 0
     this._igniteTotalClicks = 0
     this._igniteSmokeRenShown = false
     this._igniteBlowHardRenShown = false
@@ -4454,8 +5466,550 @@ export class FireBuildingMinigame extends Phaser.Scene {
   }
 
   // ════════════════════════════════════════════════════════════════════════════
+  // SPREAD STEP (§4.6)
+  // ════════════════════════════════════════════════════════════════════════════
+
+  _spreadSchedule(delayMs, cb) {
+    const ev = this.time.delayedCall(delayMs, cb)
+    this._spreadTimers.push(ev)
+    return ev
+  }
+
+  _clearSpreadTimers() {
+    for (const ev of this._spreadTimers) {
+      try {
+        ev.remove()
+      } catch (_) {
+        /* noop */
+      }
+    }
+    this._spreadTimers = []
+  }
+
+  /** Day 3+ reuses mechanics with no Ren lines (spec §4.6). */
+  _spreadRenEnabled() {
+    return this.day < 3
+  }
+
+  _applySpreadPlaceholder(key) {
+    const spec = SPREAD_PLACEHOLDER[key]
+    if (!spec || !this._bgRect) return
+    this._bgRect.setFillStyle(spec.fill)
+    this._spreadPlaceholderCapTxt?.setText(spec.caption).setAlpha(0.92)
+    this._spreadSyncGlowFromPlaceholderKey(key)
+  }
+
+  /** Maps BG placeholder keys to pit-ring “fire climbing” glow (clean + stuck paths). */
+  _spreadSyncGlowFromPlaceholderKey(key) {
+    if (key === 'spread1' || key === 'stuck1') this._spreadDrawProgressGlow(1)
+    else if (key === 'spread2' || key === 'stuck2') this._spreadDrawProgressGlow(2)
+    else if (key === 'spread3') this._spreadDrawProgressGlow(3)
+  }
+
+  /**
+   * Progressive ring emphasis: inner (tinder) → middle → outer (fuel).
+   * Drawn above faint `_stackGraphics` so spread reads clearly vs §4.6 Ren beats.
+   */
+  _spreadDrawProgressGlow(stage) {
+    if (this.step !== 'spread') return
+    if (!Number.isFinite(stage) || stage < 1 || stage > 3) return
+    this._ensureSpreadFxUi()
+    const g = this._spreadGlowGfx
+    if (!g) return
+    g.clear()
+    const px = this._pitX
+    const py = this._pitY
+    const rings = [
+      { r: STACK_BOTTOM_R, lit: stage >= 1 },
+      { r: STACK_MIDDLE_R, lit: stage >= 2 },
+      { r: STACK_TOP_R, lit: stage >= 3 },
+    ]
+    for (const { r, lit } of rings) {
+      if (lit) {
+        g.lineStyle(14, 0xff5200, 0.2)
+        g.strokeCircle(px, py, r)
+        g.lineStyle(6, 0xff9933, 0.72)
+        g.strokeCircle(px, py, r)
+        g.lineStyle(2, 0xfff0cc, 0.95)
+        g.strokeCircle(px, py, r)
+      } else {
+        g.lineStyle(2, 0x4a4038, 0.42)
+        g.strokeCircle(px, py, r)
+      }
+    }
+    if (this._fireIcon) {
+      this.tweens.killTweensOf(this._fireIcon)
+      this.tweens.add({
+        targets: this._fireIcon,
+        scale: { from: 1, to: stage >= 3 ? 1.26 : 1.18 },
+        duration: stage >= 3 ? 340 : 280,
+        yoyo: true,
+        ease: 'Sine.Out',
+      })
+    }
+  }
+
+  _ensureSpreadFxUi() {
+    const W = this.scale.width
+    const H = this.scale.height
+    if (!this._spreadPlaceholderCapTxt) {
+      this._spreadPlaceholderCapTxt = this.add
+        .text(W / 2, H - 52, '', {
+          fontSize: '13px',
+          fontFamily: 'Georgia, serif',
+          fill: '#c8c8b8',
+          stroke: '#000000',
+          strokeThickness: 3,
+          align: 'center',
+          wordWrap: { width: W - 80 },
+        })
+        .setOrigin(0.5)
+        .setDepth(11)
+    }
+    if (!this._spreadSymptomGfx) {
+      this._spreadSymptomGfx = this.add.graphics().setDepth(9)
+    }
+    if (!this._spreadGlowGfx) {
+      this._spreadGlowGfx = this.add.graphics().setDepth(8)
+    }
+    if (!this._spreadPromptTxt) {
+      this._spreadPromptTxt = this.add
+        .text(W / 2, H * 0.72, '', {
+          fontSize: '15px',
+          fontFamily: 'Georgia, serif',
+          fill: '#e8dcc8',
+          stroke: '#000000',
+          strokeThickness: 3,
+          align: 'center',
+          wordWrap: { width: W - 120 },
+        })
+        .setOrigin(0.5)
+        .setDepth(12)
+    }
+  }
+
+  _destroySpreadFxUi() {
+    if (this._spreadRingPulseTween) {
+      this._spreadRingPulseTween.stop()
+      this._spreadRingPulseTween = null
+    }
+    this._spreadPlaceholderCapTxt?.destroy()
+    this._spreadPlaceholderCapTxt = null
+    this._spreadSymptomGfx?.destroy()
+    this._spreadSymptomGfx = null
+    this._spreadGlowGfx?.destroy()
+    this._spreadGlowGfx = null
+    this._spreadPromptTxt?.destroy()
+    this._spreadPromptTxt = null
+  }
+
+  _spreadDrawSymptom(mode) {
+    const g = this._spreadSymptomGfx
+    if (!g) return
+    g.clear()
+    const px = this._pitX
+    const py = this._pitY
+    if (mode === 'bottom') {
+      g.fillStyle(0xff6600, 0.35)
+      g.fillCircle(px, py + 28, STACK_BOTTOM_R + 8)
+      g.fillStyle(0x444444, 0.5)
+      g.fillCircle(px, py - 18, STACK_TOP_R + 4)
+    } else if (mode === 'middle') {
+      g.fillStyle(0xff8800, 0.38)
+      g.fillCircle(px, py + 6, STACK_MIDDLE_R + 10)
+      g.fillStyle(0x333344, 0.55)
+      g.fillCircle(px, py - 28, STACK_TOP_R + 6)
+    }
+    if (!this._spreadRenEnabled()) {
+      g.fillStyle(0x222226, 0.42)
+      for (let i = 0; i < 8; i++) {
+        const ox = px + (i - 3.5) * 34
+        const oy = py - 88 - i * 4
+        g.fillEllipse(ox, oy, 40 + i * 5, 24 + i * 3)
+      }
+    }
+  }
+
+  _spreadClearSymptom() {
+    this._spreadSymptomGfx?.clear()
+  }
+
+  _spreadReserveHasKindling() {
+    this._syncStackLayRegistry()
+    const rs = this.registry.get('reserveMaterials') ?? []
+    return rs.some((m) => correctSortZoneForMatId(m.id) === 'kindling')
+  }
+
+  _spreadReserveHasFuel() {
+    this._syncStackLayRegistry()
+    const rs = this.registry.get('reserveMaterials') ?? []
+    return rs.some((m) => correctSortZoneForMatId(m.id) === 'fuel_wood')
+  }
+
+  _evaluateSpreadBranches(sd) {
+    const dev = this._spreadDevScenario
+    if (dev === 'clean') return { mode: 'clean' }
+    if (dev === 'stuck_kindling') return { mode: 'stuckKindling' }
+    if (dev === 'stuck_fuel') return { mode: 'stuckFuel' }
+
+    const middle = sd?.middle ?? []
+    const top = sd?.top ?? []
+    const kPts = spreadLayerQualityScore(middle)
+    const kindlingOk = middle.length >= 2 && kPts >= 5
+    const fuelPts = spreadLayerQualityScore(top)
+    const allFuelBad =
+      top.length > 0 &&
+      top.every((m) => normalizeMatQualityTier(m?.quality) === 'BAD')
+    const fuelOk =
+      top.length >= STACK_MIN_TOP && !allFuelBad && fuelPts >= 3
+
+    if (!kindlingOk) return { mode: 'stuckKindling' }
+    if (!fuelOk) return { mode: 'stuckFuel' }
+    return { mode: 'clean' }
+  }
+
+  _spreadDisableSortedDragAll() {
+    for (const state of Object.values(this._matStates)) {
+      if (!state.sprite || state.phase !== 'sorted') continue
+      this._safeSetDraggable(state.sprite, false)
+      if (state.sprite.input) state.sprite.disableInteractive()
+    }
+  }
+
+  _spreadSyncRemediationDrag() {
+    const want = this._spreadRemediationZone
+    for (const state of Object.values(this._matStates)) {
+      if (!state.sprite) continue
+      if (state.phase !== 'sorted' || !state.isSortable || state.quality === 'BAD') {
+        this._safeSetDraggable(state.sprite, false)
+        if (state.sprite.input) state.sprite.disableInteractive()
+        continue
+      }
+      const cat = correctSortZoneForMatId(state.id)
+      const ok =
+        this.step === 'spread' &&
+        this._spreadAwaitingRemediation &&
+        want &&
+        cat === want
+      if (!ok) {
+        this._safeSetDraggable(state.sprite, false)
+        if (state.sprite.input) state.sprite.disableInteractive()
+        continue
+      }
+      state.sprite.setInteractive({ useHandCursor: true })
+      state.sprite.setDepth(STACK_SORTED_PILE_DEPTH)
+      state.label?.setDepth(STACK_SORTED_PILE_DEPTH + 1)
+      if (this.input) this.input.setDraggable(state.sprite, true)
+    }
+    this._refreshSortZoneLayPreview()
+  }
+
+  _spreadPulseRemediationPrompt() {
+    if (!this._spreadPromptTxt) return
+    if (this._spreadRingPulseTween) {
+      this._spreadRingPulseTween.stop()
+      this._spreadRingPulseTween = null
+    }
+    this._spreadPromptTxt.setAlpha(1)
+    this._spreadRingPulseTween = this.tweens.add({
+      targets: this._spreadPromptTxt,
+      alpha: { from: 0.55, to: 1 },
+      duration: 560,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.InOut',
+    })
+  }
+
+  _spreadRenSeq(lines, then) {
+    if (!lines?.length) {
+      then?.()
+      return
+    }
+    if (!this._spreadRenEnabled()) {
+      const ms = 520 + lines.length * 380
+      this._spreadSchedule(ms, () => then?.())
+      return
+    }
+    this._dialogue.showSequence(
+      lines.map((text) => ({ speaker: 'Ren', text })),
+      () => {
+        this._dialogue.hide()
+        then?.()
+      },
+    )
+  }
+
+  _enterSpread() {
+    this._clearSpreadTimers()
+    this._spreadAwaitingRemediation = false
+    this._spreadRemediationZone = null
+
+    this._hideFlintUiCompletely()
+    this._stackGraphics?.setAlpha(0.78)
+
+    this._syncStackLayRegistry()
+    this._ensureSpreadFxUi()
+    this._spreadDisableSortedDragAll()
+
+    this._titleText.setText('Spread — flame climbs the lay.')
+
+    const sd = this.registry.get('stackData')
+    const branch = this._evaluateSpreadBranches(sd)
+
+    if (branch.mode === 'clean') this._runSpreadCleanVisualSequence({})
+    else if (branch.mode === 'stuckKindling') this._runSpreadStuckKindling()
+    else this._runSpreadStuckFuel()
+  }
+
+  _exitSpread() {
+    this._clearSpreadTimers()
+    this._spreadAwaitingRemediation = false
+    this._spreadRemediationZone = null
+    if (this._spreadRingPulseTween) {
+      this._spreadRingPulseTween.stop()
+      this._spreadRingPulseTween = null
+    }
+    this._destroySpreadFxUi()
+    this._spreadClearSymptom()
+    this._stackGraphics?.setAlpha(0.3)
+    this._spreadDisableSortedDragAll()
+  }
+
+  _spreadFinishStrongWeakThenSustain() {
+    const fq = this._spreadRemediatedWeak ? 'weak' : 'strong'
+    this.registry.set('fireQuality', fq)
+    if (import.meta.env.DEV) assertStackRegistryShape(this.registry, '_spreadFinish')
+    this._enterStep('sustain')
+  }
+
+  _runSpreadCleanVisualSequence(opts = {}) {
+    if (!opts.preserveWeak) this._spreadRemediatedWeak = false
+    this._applySpreadPlaceholder('spread1')
+    this._spreadClearSymptom()
+
+    this._spreadRenSeq(
+      [
+        'Flame is moving up to the kindling.',
+        'The spacing is letting it breathe.',
+      ],
+      () => {
+        this._spreadSchedule(480, () => {
+          this._applySpreadPlaceholder('spread2')
+          this._spreadRenSeq(['Fuel is catching.', 'That is a fire.'], () => {
+            this._spreadSchedule(520, () => {
+              this._applySpreadPlaceholder('spread3')
+              this._spreadRenSeq(
+                [
+                  'Tinder catches the spark, kindling spreads it, fuel keeps it alive.',
+                  'Skip a step and it falls apart.',
+                ],
+                () => this._spreadFinishStrongWeakThenSustain(),
+              )
+            })
+          })
+        })
+      },
+    )
+  }
+
+  _runSpreadWeakBypassVisual() {
+    this._spreadAwaitingRemediation = false
+    this._spreadRemediationZone = null
+    this._spreadPromptTxt?.setText('')
+    if (this._spreadRingPulseTween) {
+      this._spreadRingPulseTween.stop()
+      this._spreadRingPulseTween = null
+    }
+    this._spreadDisableSortedDragAll()
+    this._spreadClearSymptom()
+    this._spreadRemediatedWeak = true
+
+    this._applySpreadPlaceholder('spread2')
+    this._spreadSchedule(420, () => {
+      this._applySpreadPlaceholder('spread3')
+      this._spreadSchedule(620, () => this._spreadFinishStrongWeakThenSustain())
+    })
+  }
+
+  _runSpreadStuckKindling() {
+    this._applySpreadPlaceholder('stuck1')
+    this._spreadDrawSymptom('bottom')
+
+    const openRemediationOrPenalty = () => {
+      if (this._spreadReserveHasKindling()) {
+        if (!this._spreadRenEnabled())
+          this._spreadPromptTxt?.setText(
+            '[Placeholder] Drag spare KINDLING to the middle pit band.',
+          )
+        else
+          this._spreadPromptTxt?.setText(
+            'Drag one spare kindling onto the middle ring.',
+          )
+        this._spreadAwaitingRemediation = true
+        this._spreadRemediationZone = 'kindling'
+        this._spreadPulseRemediationPrompt()
+        this._spreadSyncRemediationDrag()
+        return
+      }
+      const stamina = this.registry.get('stamina')
+      const alive = stamina?.deduct(1) ?? true
+      if (!alive) {
+        this.time.delayedCall(400, () => this._emitDayFail('fire_campsite'))
+        return
+      }
+      if (this._spreadRenEnabled())
+        this._spreadRenSeq(
+          [
+            'No spare kindling in reach. Push through — it will be a thin fire.',
+          ],
+          () => this._runSpreadWeakBypassVisual(),
+        )
+      else this._runSpreadWeakBypassVisual()
+    }
+
+    this._spreadRenSeq(
+      [
+        'Flame is stuck at the bottom.',
+        'Not enough kindling up there — the fire has nothing to grab onto.',
+      ],
+      openRemediationOrPenalty,
+    )
+  }
+
+  _runSpreadStuckFuel() {
+    this._applySpreadPlaceholder('stuck2')
+    this._spreadDrawSymptom('middle')
+
+    const openRemediationOrPenalty = () => {
+      if (this._spreadReserveHasFuel()) {
+        if (!this._spreadRenEnabled())
+          this._spreadPromptTxt?.setText(
+            '[Placeholder] Drag spare FUEL to the top pit band.',
+          )
+        else
+          this._spreadPromptTxt?.setText(
+            'Drag one spare fuel piece onto the top ring.',
+          )
+        this._spreadAwaitingRemediation = true
+        this._spreadRemediationZone = 'fuel_wood'
+        this._spreadPulseRemediationPrompt()
+        this._spreadSyncRemediationDrag()
+        return
+      }
+      const stamina = this.registry.get('stamina')
+      const alive = stamina?.deduct(1) ?? true
+      if (!alive) {
+        this.time.delayedCall(400, () => this._emitDayFail('fire_campsite'))
+        return
+      }
+      if (this._spreadRenEnabled())
+        this._spreadRenSeq(
+          [
+            'No spare fuel here. We nurse what we have — thin flame into the night.',
+          ],
+          () => this._runSpreadWeakBypassVisual(),
+        )
+      else this._runSpreadWeakBypassVisual()
+    }
+
+    this._spreadRenSeq(
+      [
+        'Kindling is burning but the fuel is not catching.',
+        'It might be too wet, or too heavy for what is below it.',
+      ],
+      openRemediationOrPenalty,
+    )
+  }
+
+  _onSpreadDragEnd(state, dropX, dropY) {
+    if (!this._spreadAwaitingRemediation || this.step !== 'spread') {
+      this._bounceToStackOrHome(state)
+      return
+    }
+    const need = this._spreadRemediationZone
+    if (state.phase !== 'sorted' || !state.isSortable || state.quality === 'BAD') {
+      this._bounceToStackOrHome(state)
+      return
+    }
+    if (correctSortZoneForMatId(state.id) !== need) {
+      this._bounceToStackOrHome(state)
+      return
+    }
+
+    let targetZone = null
+    if (this._pitStackDropContains(dropX, dropY))
+      targetZone = this._stackZoneIdAtPitWorldPos(dropX, dropY)
+    if (!targetZone) {
+      const csBounds = this._stackCrossSectionWorldBounds()
+      if (csBounds?.contains(dropX, dropY))
+        targetZone = this._stackZoneIdAtCrossSectionWorldPos(dropX, dropY)
+    }
+
+    if (targetZone !== need) {
+      this._bounceToStackOrHome(state)
+      const hint =
+        need === 'kindling'
+          ? ['Aim for the middle band — kindling catches above the tinder.']
+          : ['Top band — fuel waits until the ladder is burning.']
+      if (this._spreadRenEnabled()) this._spreadRenSeq(hint, () => {})
+      return
+    }
+
+    this._dialogue.hide()
+    this._clearSpreadTimers()
+    this._spreadAwaitingRemediation = false
+    this._spreadRemediationZone = null
+    this._spreadPromptTxt?.setText('')
+    if (this._spreadRingPulseTween) {
+      this._spreadRingPulseTween.stop()
+      this._spreadRingPulseTween = null
+    }
+
+    this._spreadRemediatedWeak = true
+    this._stackFreePlace(state, need, { skipStackTutorial: true })
+    this._syncStackLayRegistry()
+    this._spreadClearSymptom()
+    this._spreadDisableSortedDragAll()
+
+    const branch = this._evaluateSpreadBranches(this.registry.get('stackData'))
+    if (branch.mode === 'clean')
+      this._runSpreadCleanVisualSequence({ preserveWeak: true })
+    else if (branch.mode === 'stuckFuel') this._runSpreadStuckFuel()
+    else if (branch.mode === 'stuckKindling') this._runSpreadStuckKindling()
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
   // SUSTAIN STEP
   // ════════════════════════════════════════════════════════════════════════════
+
+  /** §4.7 — All three pit bands read as burning (spread3-style), vigor scales with flame strength. */
+  _refreshSustainPitLayGlow() {
+    if (this.step !== 'sustain' || this._floodLocked) return
+    if (!this._sustainPitGlowGfx || !this._sustainPitGlowGfx.scene) {
+      this._sustainPitGlowGfx = this.add.graphics().setDepth(7)
+    }
+    const g = this._sustainPitGlowGfx
+    g.clear()
+    const px = this._pitX
+    const py = this._pitY
+    const cap = Math.max(1, this._strengthCeiling)
+    const vig = Phaser.Math.Clamp(this._fireStrength / cap, 0.22, 1)
+    const rings = [STACK_BOTTOM_R, STACK_MIDDLE_R, STACK_TOP_R]
+    for (const r of rings) {
+      g.lineStyle(14, 0xff5200, (0.14 + 0.12 * vig) * vig)
+      g.strokeCircle(px, py, r)
+      g.lineStyle(6, 0xff9933, (0.55 + 0.22 * vig) * vig)
+      g.strokeCircle(px, py, r)
+      g.lineStyle(2, 0xffcc66, (0.82 + 0.12 * vig) * vig)
+      g.strokeCircle(px, py, r)
+    }
+  }
+
+  _destroySustainPitGlowGfx() {
+    this._sustainPitGlowGfx?.destroy()
+    this._sustainPitGlowGfx = null
+  }
 
   _enterSustain() {
     const W = this.scale.width
@@ -4473,20 +6027,23 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     this._strengthCeiling = Math.max(1, SEGMENT_COUNT - ceilingPenalty)
     this._fireStrength = this._strengthCeiling
+    if (this.registry.get('fireQuality') === 'weak')
+      this._fireStrength = Math.min(this._fireStrength, 3)
     this._nightElapsed = 0
     this._nightComplete = false
     this._nightBarProgressFloor = 0
 
-    const baseSec = this._computeSustainBaseNightDurationSec()
-    this._nightTotalMs = baseSec * 1000
+    this._nightTotalMs = SUSTAIN_NIGHT_TOTAL_MS
     this._sustainTinderBurdenUntil = 0
     this._sustainFuelSlowUntil = 0
+    this._sustainFuelUsedCount = 0
+    this._sustainRenHintThreeShown = false
+    this._sustainRenFloodIntroShown = false
 
     this._rebuildSustainBackupKeysFromSorted()
-    this._setSortedPileSpritesHiddenForSustain(true)
-    this._createSustainBackupUi(W, H)
+    this._applySustainReserveSpritePresentation()
 
-    this._fireIcon.setAlpha(1)
+    this._fireIcon.setAlpha(1).setDepth(32)
     this._tinderSprite.setAlpha(0)
 
     this._setStrengthBarVisible(true)
@@ -4494,8 +6051,21 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._setNightBarVisible(true)
     this._refreshNightBar()
 
-    this._setFlintActive(false)
+    this._hideFlintUiCompletely()
+
+    this._stackGraphics?.setAlpha(0)
+    this._stackLabelTexts?.forEach((t) => {
+      t.setAlpha(0.78)
+      t.setStyle({ fill: '#e8c898', fontFamily: 'Georgia, serif', fontSize: '10px' })
+    })
+
     this._refreshBackground()
+
+    if (this.day >= 3) {
+      this._stepProposalShown.sustain = true
+      this._beginSustain()
+      return
+    }
 
     if (this._stepProposalShown.sustain) {
       this._beginSustain()
@@ -4505,7 +6075,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     this._dialogue.showSequence([
       { speaker: 'Ren', text: 'Fire is up. Now we keep it alive through the night.' },
-      { speaker: 'Ren', text: 'When it gets low, add fuel.' },
+      { speaker: 'Ren', text: 'When it gets low, drag spare wood into the fire.' },
       { speaker: 'Ren', text: 'But not too early — we do not have wood to waste.' },
     ], () => {
       this._dialogue.showChoices([
@@ -4535,15 +6105,38 @@ export class FireBuildingMinigame extends Phaser.Scene {
   }
 
   _beginSustain() {
-    this._startDrainTimer()
-    this._startNightTimer()
-    if (this._campsiteQuality === 'poor') this._startFloodTimer()
+    const W = this.scale.width
+    const H = this.scale.height
+
+    const beginTimers = () => {
+      this._startDrainTimer()
+      this._startNightTimer()
+      if (this._campsiteQuality === 'poor') this._startFloodTimer()
+    }
+
+    if (this._sustainBackupUi) {
+      beginTimers()
+      return
+    }
+
+    this._hideSortZonesUnderSustainReservePanels(true)
+    this._createSustainBackupUi(W, H, {
+      onFlyComplete: beginTimers,
+    })
   }
 
   _exitSustain() {
     this._stopSustainTimers()
     this._destroySustainBackupUi()
-    this._setSortedPileSpritesHiddenForSustain(false)
+    this._hideSortZonesUnderSustainReservePanels(false)
+    this._destroySustainPitGlowGfx()
+    this._fireIcon.setDepth(2)
+    this._stackGraphics?.setAlpha(0.3)
+    this._stackLabelTexts?.forEach((t) => {
+      t.setAlpha(0.3)
+      t.setStyle({ fill: '#7a6040', fontFamily: 'Georgia, serif', fontSize: '10px' })
+    })
+    this._restoreSortedPilePresentationAfterSustain()
     this._setStrengthBarVisible(false)
     this._setNightBarVisible(false)
   }
@@ -4578,11 +6171,31 @@ export class FireBuildingMinigame extends Phaser.Scene {
   }
 
   _adjustStrength(delta) {
+    const prev = this._fireStrength
     this._fireStrength = Phaser.Math.Clamp(
       this._fireStrength + delta, 0, this._strengthCeiling
     )
     this._refreshStrengthBar()
     this._refreshBackground()
+
+    if (
+      delta < 0 &&
+      this.step === 'sustain' &&
+      !this._nightComplete &&
+      this.day < 3 &&
+      prev > 3 &&
+      this._fireStrength === 3 &&
+      !this._sustainRenHintThreeShown
+    ) {
+      this._sustainRenHintThreeShown = true
+      this.time.delayedCall(420, () => {
+        if (this.step !== 'sustain' || this._nightComplete) return
+        this._dialogue.showSequence(
+          [{ speaker: 'Ren', text: 'Now. Add one.' }],
+          () => this._dialogue.hide(),
+        )
+      })
+    }
 
     if (this._fireStrength === 0) this._onFireOut()
   }
@@ -4596,6 +6209,17 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
   _applyFloodEvent() {
     if (this._nightComplete) return
+
+    if (this.day < 3 && !this._sustainRenFloodIntroShown) {
+      this._sustainRenFloodIntroShown = true
+      this._dialogue.showSequence(
+        [
+          { speaker: 'Ren', text: 'Water getting in.' },
+          { speaker: 'Ren', text: 'Low ground — nothing we can do about it now.' },
+        ],
+        () => this._dialogue.hide(),
+      )
+    }
 
     this._floodLocked = true
     this._bgRect.setFillStyle(BG_FLOOD)
@@ -4612,6 +6236,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
   _onFireOut() {
     this._stopSustainTimers()
+
+    this._sustainFireOutCount++
 
     const stamina = this.registry.get('stamina')
 
@@ -4631,24 +6257,33 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
 
     if (this._sustainBackupRemainingCount() > 0) {
-      this._dialogue.showSequence(
-        [{ speaker: 'Ren', text: 'It is out. Should have added sooner.' }],
-        () => {
-          this._dialogue.hide()
-          goRelightFromBackup()
-        },
-      )
+      if (this.day < 3) {
+        this._dialogue.showSequence(
+          [{ speaker: 'Ren', text: 'It is out. Should have added sooner.' }],
+          () => {
+            this._dialogue.hide()
+            goRelightFromBackup()
+          },
+        )
+      } else {
+        goRelightFromBackup()
+      }
       return
     }
 
-    this._dialogue.showSequence(
-      [{ speaker: 'Ren', text: 'No fuel, no fire. That is it.' }],
-      () => {
-        this._dialogue.hide()
-        stamina?.deduct(2)
-        this.time.delayedCall(1000, () => this._emitDayFail('fire_campsite'))
-      },
-    )
+    if (this.day < 3) {
+      this._dialogue.showSequence(
+        [{ speaker: 'Ren', text: 'No fuel, no fire. That is it.' }],
+        () => {
+          this._dialogue.hide()
+          stamina?.deduct(2)
+          this.time.delayedCall(1000, () => this._emitDayFail('fire_campsite'))
+        },
+      )
+    } else {
+      stamina?.deduct(2)
+      this.time.delayedCall(1000, () => this._emitDayFail('fire_campsite'))
+    }
   }
 
   _onNightComplete() {
@@ -4659,13 +6294,36 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     const fireQuality = this._fireStrength >= 3 ? 'strong' : 'weak'
 
-    this.game.events.emit(GameEvents.MINIGAME_COMPLETE, {
-      id:      'fire_campsite',
-      success: true,
-      score:   fireQuality,
-    })
+    const finishOutcome = () => {
+      this.registry.set('sustainResult', {
+        success: true,
+        score: fireQuality,
+        fuelUsed: this._sustainFuelUsedCount,
+        fireOutCount: this._sustainFireOutCount,
+      })
+      this.game.events.emit(GameEvents.MINIGAME_COMPLETE, {
+        id: 'fire_campsite',
+        success: true,
+        score: fireQuality,
+      })
+      this.scene.stop()
+    }
 
-    this.scene.stop()
+    if (this.day < 3) {
+      this._dialogue.showSequence(
+        [
+          { speaker: 'Ren', text: 'That is it. Fire made it through the night.' },
+          { speaker: 'Ren', text: 'Rain is slowing down too.' },
+        ],
+        () => {
+          this._dialogue.hide()
+          finishOutcome()
+        },
+      )
+      return
+    }
+
+    finishOutcome()
   }
 
   _stopSustainTimers() {
@@ -4677,6 +6335,14 @@ export class FireBuildingMinigame extends Phaser.Scene {
   // ── Day fail ──────────────────────────────────────────────────────────────────
 
   _emitDayFail(id) {
+    if (this.step === 'sustain') {
+      this.registry.set('sustainResult', {
+        success: false,
+        score: null,
+        fuelUsed: this._sustainFuelUsedCount,
+        fireOutCount: this._sustainFireOutCount,
+      })
+    }
     this.game.events.emit(GameEvents.MINIGAME_COMPLETE, {
       id,
       success:         false,

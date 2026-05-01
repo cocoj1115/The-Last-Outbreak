@@ -359,6 +359,11 @@ export class DialogueBox {
     })
   }
 
+  /** True while the parchment dialogue box is visible (story text or choice buttons). */
+  isBlocking() {
+    return this._box?.visible === true
+  }
+
   /** Hide the dialogue box and all associated elements. */
   hide() {
     this.hidePortraitChoices()

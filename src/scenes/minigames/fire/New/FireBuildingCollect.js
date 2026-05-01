@@ -138,7 +138,13 @@ function buildCollectCounts(items) {
 }
 
 /** Day 2 forest targets (day2_firemaking_dev_spec §4.2). */
-const COLLECT_TARGETS = { tinder: 3, kindling: 3, fuel: 2 }
+export const COLLECT_TARGETS = { tinder: 3, kindling: 3, fuel: 2 }
+
+/**
+ * Scene data `collectSessionKind` — mid-campsite return from FireBuildingMinigame (stack / ignite).
+ * Skips §4.2 camp tutorial; Head Back resumes campsite stack (via registry.fireCampsiteStackResume).
+ */
+export const COLLECT_SESSION_RESUME_CAMPSITE = 'resume_campsite'
 
 /** §4.2 HUD toast duration / imbalance intervention (once per session). */
 const COLLECT_TOAST_MS = 1400
@@ -180,6 +186,11 @@ export class FireBuildingCollect extends Phaser.Scene {
 
   init(data) {
     this.day        = data?.day ?? 2
+    /** `'resume_campsite'` when returning from campsite mid-flow; set via scene.start or inferred from snapshot. */
+    this._collectSessionKind =
+      data?.collectSessionKind ??
+      (this.registry.get('fireCampsiteStackResume') ? COLLECT_SESSION_RESUME_CAMPSITE : null)
+    this._isResumeCampsiteSession = this._collectSessionKind === COLLECT_SESSION_RESUME_CAMPSITE
     this._isPoor    = false
 
     // Material pool (shuffled). Consumed one entry per spawn.
@@ -231,6 +242,11 @@ export class FireBuildingCollect extends Phaser.Scene {
 
     // Pack list row texts (rebuilt on add/eject)
     this._packListRows = []
+
+    /** Clone of registry.fireCampsiteStackResume — survives accidental registry clears during Collect. */
+    this._resumeSnapBackupCopy = null
+    /** Per-session HUD quotas (`resume` subtracts campsite baseline from §4.2 totals). */
+    this._sessionTargets = { ...COLLECT_TARGETS }
   }
 
   preload() {
@@ -249,7 +265,24 @@ export class FireBuildingCollect extends Phaser.Scene {
     const inkBridge = this.registry.get('inkBridge')
     this._isPoor = inkBridge?.getVariable('campsite_quality') === 'poor'
 
+    const resumeSnapRegistry = this.registry.get('fireCampsiteStackResume')
+    if (this._isResumeCampsiteSession && resumeSnapRegistry) {
+      try {
+        this._resumeSnapBackupCopy = structuredClone(resumeSnapRegistry)
+      } catch (_) {
+        this._resumeSnapBackupCopy = JSON.parse(JSON.stringify(resumeSnapRegistry))
+      }
+    }
+
+    this._sessionTargets = this._resolveSessionCollectTargets()
+
     this._pool = Phaser.Utils.Array.Shuffle(buildMaterialPoolDeck())
+
+    if (this._isResumeCampsiteSession) {
+      this._tutorialTinderShown = true
+      this._tutorialKindlingShown = true
+      this._tutorialFuelShown = true
+    }
 
     this._buildBackground(W, H)
     this._buildBackpackPanel(W, H)
@@ -279,11 +312,54 @@ export class FireBuildingCollect extends Phaser.Scene {
     this._runCollectEntryFlow()
   }
 
+  /** §4.2 totals minus materials already carried at campsite (resume trips only). */
+  _resolveSessionCollectTargets() {
+    if (!this._isResumeCampsiteSession) return { ...COLLECT_TARGETS }
+
+    const minsRaw = this.registry.get('collectForestMinimumAdds')
+    if (minsRaw) this.registry.remove('collectForestMinimumAdds')
+
+    const raw = this.registry.get('collectedMaterials')
+    const items = Array.isArray(raw) ? raw : (raw?.items ?? [])
+    const normalized = items.map((m) => ({
+      id: m?.id,
+      quality: m?.quality ?? 'GOOD',
+    }))
+    const baseline = buildCollectCounts(normalized)
+
+    let session = {
+      tinder: Math.max(0, COLLECT_TARGETS.tinder - baseline.tinder),
+      kindling: Math.max(0, COLLECT_TARGETS.kindling - baseline.kindling),
+      fuel: Math.max(0, COLLECT_TARGETS.fuel - baseline.fuel),
+    }
+
+    if (minsRaw) {
+      session = {
+        tinder: Math.max(session.tinder, minsRaw.tinder ?? 0),
+        kindling: Math.max(session.kindling, minsRaw.kindling ?? 0),
+        fuel: Math.max(session.fuel, minsRaw.fuel ?? 0),
+      }
+    }
+
+    return session
+  }
+
+  _sessionForestQuotaTotal() {
+    const s = this._sessionTargets
+    return s.tinder + s.kindling + s.fuel
+  }
+
   /**
    * §4.2: camp Ren proposal + paths when booting straight to Collect; forest mechanism lines; then spawn.
    * Skipped when flag set from FireBuildingMinigame clear handoff (`fireCollectCampProposalDone`).
+   * Skipped when `collectSessionKind === resume_campsite` (forest run from stack / ignite).
    */
   _runCollectEntryFlow() {
+    if (this._isResumeCampsiteSession) {
+      this._runResumeForestEntryBriefing()
+      return
+    }
+
     if (this.registry.get('fireCollectCampProposalDone')) {
       this._startForestMechanismIntro()
       return
@@ -337,6 +413,27 @@ export class FireBuildingCollect extends Phaser.Scene {
         ])
       },
     )
+  }
+
+  /** Short briefing when re-entering forest from campsite (no three-type tutorial / choices). */
+  _runResumeForestEntryBriefing() {
+    const tgt = this._sessionTargets
+    const parts = []
+    if (tgt.tinder > 0) parts.push(`${tgt.tinder} tinder`)
+    if (tgt.kindling > 0) parts.push(`${tgt.kindling} kindling`)
+    if (tgt.fuel > 0) parts.push(`${tgt.fuel} fuel`)
+
+    const quotaLine =
+      parts.length > 0
+        ? `From here we still need ${parts.join(', ')} — whatever is already dry at camp counts toward that stack.`
+        : 'Camp load already hits the usual mix — grab only if something spoiled in the rain.'
+
+    const lines = [
+      'Back into the rain — grab what we are short on.',
+      quotaLine,
+      'Dry tinder catches the spark first when we are thin there. Move fast — leave the soaked junk.',
+    ]
+    this._showRenDialogueSequence(lines, () => this._trySpawn())
   }
 
   /** §4.2 forest mechanism lines (after camp proposal or when resuming collect). */
@@ -413,9 +510,14 @@ export class FireBuildingCollect extends Phaser.Scene {
 
   _refreshCategoryDisplay() {
     const c = this._categoryCounts
-    const t = COLLECT_TARGETS
+    const t = this._sessionTargets
+    const fmt = (label, key) => {
+      const cap = t[key]
+      if (cap <= 0) return `${label}: ✓`
+      return `${label}: ${c[key]}/${cap}`
+    }
     this._counterBlockText.setText(
-      `Tinder: ${c.tinder}/${t.tinder}  |  Kindling: ${c.kindling}/${t.kindling}  |  Fuel: ${c.fuel}/${t.fuel}  |  Unusable: ${c.unusable}`,
+      `${fmt('Tinder', 'tinder')}  |  ${fmt('Kindling', 'kindling')}  |  ${fmt('Fuel', 'fuel')}  |  Unusable: ${c.unusable}`,
     )
   }
 
@@ -452,11 +554,12 @@ export class FireBuildingCollect extends Phaser.Scene {
     if (this._lifetimeCollectCount < COLLECT_IMBALANCE_MIN_PICKUPS) return
 
     const c = this._categoryCounts
+    const st = this._sessionTargets
     const looksWrong =
       c.unusable >= 4 ||
-      (c.fuel >= 2 && c.tinder === 0 && c.kindling === 0) ||
-      (c.tinder >= 5 && c.kindling === 0) ||
-      (c.kindling >= 5 && c.tinder === 0)
+      (st.fuel > 0 && c.fuel >= 2 && c.tinder === 0 && c.kindling === 0) ||
+      (st.tinder > 0 && c.tinder >= 5 && c.kindling === 0) ||
+      (st.kindling > 0 && c.kindling >= 5 && c.tinder === 0)
 
     if (!looksWrong) return
 
@@ -512,18 +615,22 @@ export class FireBuildingCollect extends Phaser.Scene {
   // ── Head Back button ─────────────────────────────────────────────────────────
 
   _buildHeadBackButton(W, H) {
+    /** Above materials / rings; below DialogueBox (≈4500) so clicks register after dialogue closes. */
+    const hbDepth = 4400
+
     this._headBackBtn = this.add
-      .rectangle(W - 110, H - 38, 180, 44, 0x2a3018)
+      .rectangle(W - 110, H - 52, 200, 48, 0x2a3018)
       .setStrokeStyle(2, 0x7a9050)
       .setInteractive({ useHandCursor: true })
       .setVisible(true)
-      .setDepth(15)
+      .setScrollFactor(0)
+      .setDepth(hbDepth)
 
-    this._headBackBtnText = this.add.text(W - 110, H - 38, 'Head Back →', {
+    this._headBackBtnText = this.add.text(W - 110, H - 52, 'Head Back →', {
       fontSize: '16px',
       fontFamily: 'Georgia, serif',
       fill: '#c8e0a0',
-    }).setOrigin(0.5).setVisible(true).setDepth(15)
+    }).setOrigin(0.5).setVisible(true).setScrollFactor(0).setDepth(hbDepth)
 
     this._headBackBtn.on('pointerover', () => this._headBackBtn.setFillStyle(0x3a4028))
     this._headBackBtn.on('pointerout',  () => this._headBackBtn.setFillStyle(0x2a3018))
@@ -768,26 +875,21 @@ export class FireBuildingCollect extends Phaser.Scene {
 
     const maybeShowTargetsMet = () => {
       if (this._targetsMetDialogueShown) return
+      if (this._sessionForestQuotaTotal() <= 0) return
       const { tinder, kindling, fuel } = this._categoryCounts
-      const tgt = COLLECT_TARGETS
+      const tgt = this._sessionTargets
       if (tinder >= tgt.tinder && kindling >= tgt.kindling && fuel >= tgt.fuel) {
         this._targetsMetDialogueShown = true
         this._headBackGoodFeedbackShown = true
-        this._showRenDialogueSequence(
-          [
-            'That should do it. Let us head back and get this fire built.',
-            'Before the rain gets any worse.',
-          ],
-          () => {
-            this._showRenDialogueSequence(
-              [
-                'I could carry more, but we are already loaded and the rain is not letting up.',
-                'More trips means more weight on your legs — something to think about next time.',
-              ],
-              null,
-            )
-          },
-        )
+        const quotaLines = this._isResumeCampsiteSession
+          ? [
+              {
+                speaker: 'Aiden',
+                text: 'These should be enough. Better head back before this gets heavier.',
+              },
+            ]
+          : [{ speaker: 'Aiden', text: 'These should be enough.' }]
+        this._showDialogueSequence(quotaLines, null)
       }
     }
 
@@ -878,7 +980,7 @@ export class FireBuildingCollect extends Phaser.Scene {
     })
   }
 
-  // ── Dialogue (Ren only — day2_firemaking_dev_spec §4.2) ───────────────────────
+  // ── Dialogue (Ren tutorials + protagonist beats — collect §4.2) ─────────────────
 
   _pauseForestSimulationForDialogue() {
     if (this._forestSimPauseDepth === 0) {
@@ -906,6 +1008,25 @@ export class FireBuildingCollect extends Phaser.Scene {
   }
 
   /**
+   * Click-through dialogue; locks pickup until finished.
+   * @param {{ speaker: string, text: string }[]} entries
+   */
+  _showDialogueSequence(entries, onComplete = null) {
+    if (!entries?.length) {
+      onComplete?.()
+      return
+    }
+    this._collectInputLocked = true
+    this._pauseForestSimulationForDialogue()
+    this._dialogue.showSequence(entries, () => {
+      this._dialogue.hide()
+      this._collectInputLocked = false
+      this._resumeForestSimulationAfterDialogue()
+      onComplete?.()
+    })
+  }
+
+  /**
    * Click-through Ren lines; locks material pickup until finished.
    * Pauses spawning + wet progression while the box is up.
    * @param {string[]} lines
@@ -916,14 +1037,35 @@ export class FireBuildingCollect extends Phaser.Scene {
       onComplete?.()
       return
     }
-    this._collectInputLocked = true
-    this._pauseForestSimulationForDialogue()
-    const seq = lines.map((text) => ({ speaker: 'Ren', text }))
-    this._dialogue.showSequence(seq, () => {
-      this._dialogue.hide()
-      this._collectInputLocked = false
-      this._resumeForestSimulationAfterDialogue()
-      onComplete?.()
+    this._showDialogueSequence(lines.map((text) => ({ speaker: 'Ren', text })), onComplete)
+  }
+
+  /**
+   * Deferred handoff avoids pointer/update edge cases when transitioning from Collect.
+   * @param {boolean} resumeStackAfterCollect
+   */
+  _deferSwitchToFireBuildingMinigame(resumeStackAfterCollect) {
+    let startStep = 'stack'
+    if (resumeStackAfterCollect) {
+      const snap =
+        this.registry.get('fireCampsiteStackResume') ?? this._resumeSnapBackupCopy ?? {}
+      startStep = snap.resumeCampsiteStep === 'ignite' ? 'ignite' : 'stack'
+    }
+    this.time.delayedCall(0, () => {
+      this.scene.stop('FireBuildingCollect')
+      this.scene.start('FireBuildingMinigame', {
+        day: this.day,
+        startStep,
+        resumeStackAfterCollect,
+      })
+    })
+  }
+
+  /** Dev chains — full payload for FireBuildingMinigame `init`. */
+  _deferSwitchToFireBuildingMinigameRaw(payload) {
+    this.time.delayedCall(0, () => {
+      this.scene.stop('FireBuildingCollect')
+      this.scene.start('FireBuildingMinigame', payload)
     })
   }
 
@@ -937,9 +1079,13 @@ export class FireBuildingCollect extends Phaser.Scene {
     }))
 
     const count = buildCollectCounts(items)
-    const tgt = COLLECT_TARGETS
+    const tgt = this._sessionTargets
+    const quotaAny = this._sessionForestQuotaTotal() > 0
     const meetsTargets =
-      count.tinder >= tgt.tinder && count.kindling >= tgt.kindling && count.fuel >= tgt.fuel
+      quotaAny &&
+      count.tinder >= tgt.tinder &&
+      count.kindling >= tgt.kindling &&
+      count.fuel >= tgt.fuel
 
     const difficulty = computeDifficulty(items)
 
@@ -954,44 +1100,57 @@ export class FireBuildingCollect extends Phaser.Scene {
       this.registry.set('fuelStock', 5)
       console.log('collected:', this.registry.get('collectedMaterials'))
 
+      const resumeSnapRaw =
+        this.registry.get('fireCampsiteStackResume') ?? this._resumeSnapBackupCopy
+      const resumeSnapPresent = !!resumeSnapRaw
+
+      if (!this.registry.get('fireCampsiteStackResume') && resumeSnapRaw) {
+        this.registry.set('fireCampsiteStackResume', resumeSnapRaw)
+      }
+
+      if (resumeSnapPresent) {
+        this._deferSwitchToFireBuildingMinigame(true)
+        return
+      }
+
+      if (this._isResumeCampsiteSession) {
+        if (import.meta.env.DEV) {
+          console.warn(
+            '[FireBuildingCollect] resume_campsite session had no snapshot — returning without stack restore',
+          )
+        }
+        this._deferSwitchToFireBuildingMinigame(false)
+        return
+      }
+
       this.game.events.emit(GameEvents.MINIGAME_COMPLETE, {
         id: 'fire_collect',
         success: true,
         score: difficulty,  // InkBridge writes this to mg_fire_collect_score in Ink
       })
 
-      if (this.registry.get('fireCampsiteStackResume')) {
-        this.scene.stop('FireBuildingCollect')
-        this.scene.start('FireBuildingMinigame', {
-          day: this.day,
-          startStep: 'stack',
-          resumeStackAfterCollect: true,
-        })
-        return
-      }
-
       if (this.registry.get('devQuickFireChain')) {
-        this.scene.stop('FireBuildingCollect')
-        this.scene.start('FireBuildingMinigame', { day: this.day, startStep: 'ignite' })
+        this._deferSwitchToFireBuildingMinigameRaw({ day: this.day, startStep: 'ignite' })
         return
       }
 
       if (this.registry.get('devFireBuildChain')) {
-        this.scene.stop('FireBuildingCollect')
-        this.scene.start('FireBuildingMinigame', { day: this.day, startStep: 'sort' })
+        this._deferSwitchToFireBuildingMinigameRaw({ day: this.day, startStep: 'sort' })
         return
       }
 
-      this.scene.stop()
+      this.time.delayedCall(0, () => this.scene.stop('FireBuildingCollect'))
     }
 
     // §259–265 — good load heading back (skip if quota dialogue already praised).
     if (meetsTargets && count.unusable <= 1 && !this._headBackGoodFeedbackShown) {
       this._headBackGoodFeedbackShown = true
-      this._showRenDialogueSequence(
+      this._showDialogueSequence(
         [
-          'Not bad. You have got tinder to catch the spark, kindling to grow it, fuel wood to keep it going.',
-          'Enough of each — we will not be scrambling in the dark later. Good.',
+          {
+            speaker: 'Aiden',
+            text: 'Solid haul — spark stuff, sticks to grow it, wood that will last. Back we go.',
+          },
         ],
         proceedToCampsite,
       )
