@@ -14,8 +14,8 @@
 export const CANVAS = {
   WIDTH:  1280,
   HEIGHT: 720,
-  BG:     0x1a1008,    // letterbox colour (Phaser int)
-  BG_CSS: '#1a1008',   // same, CSS string
+  BG:     0x000000,    // letterbox colour (Phaser int)
+  BG_CSS: '#000000',   // same, CSS string
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

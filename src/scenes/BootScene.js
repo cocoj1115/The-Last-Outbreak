@@ -94,7 +94,8 @@ export class BootScene extends Phaser.Scene {
     this.load.image('portrait_finn',  'assets/NPC_Finn.webp')
     this.load.image('portrait_isla',  'assets/NPC_Isla.webp')
     this.load.image('portrait_petra', 'assets/NPC_Petra2.webp')
-    this.load.image('portrait_aiden', 'assets/main character-thinking.webp')
+    this.load.image('portrait_aiden',       'assets/main character-thinking.webp')
+    this.load.image('portrait_aiden_happy', 'assets/main-character-happy.webp')
 
     this.load.json('story', 'assets/story/main.ink.json')
 

@@ -2,7 +2,8 @@
 
 === good_ending ===
 # scene:ending_good
-# portrait:aiden
+# hide_character
+# portrait:aiden_happy
 # speaker:Aiden
 Two herbs. Five days. I actually did it!
 
@@ -20,6 +21,7 @@ Every thing is finally back to normal.
 
 === worst_ending ===
 # scene:ending_bad
+# hide_character
 # portrait:none
 # speaker:Aiden
 I ran out of time.
