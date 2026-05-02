@@ -3,7 +3,6 @@
 
 === day2_transition ===
 # day_advance
-# scene:map
 # portrait:aiden
 # speaker:Aiden
 Half a day's walk to the forest. Isla said the Shimmerleaf grows there.
