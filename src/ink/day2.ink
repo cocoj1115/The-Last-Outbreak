@@ -3,10 +3,10 @@
 
 === day2_transition ===
 # day_advance
-# scene:village_day1
+# scene:map
 # portrait:aiden
 # speaker:Aiden
-It's another day. Half day's walk to the forest. I need to move now.
+Half a day's walk to the forest. Isla said the Shimmerleaf grows there.
 * [Head out] -> day2_forest
 
 === day2_forest ===
@@ -14,6 +14,7 @@ It's another day. Half day's walk to the forest. I need to move now.
 # portrait:aiden
 # speaker:Aiden
 Rain is coming. I can feel it in the air.
+
 I need to make camp now — and be ready to search the moment it stops.
 -> day2_campsite
 
@@ -34,13 +35,11 @@ I need to make camp now — and be ready to search the moment it stops.
         -> day2_fire_collect
 }
 
-// Unified campsite — `# minigame:fire_campsite` → FireCampsiteMinigame (collect is internal, no Ink tag).
-// Do not tag # minigame:fire_collect here — that would skip clear/sort entry and duplicate Ren §4.2 lines.
 === day2_fire_collect ===
 # scene:path_to_forest
 # portrait:aiden
 # speaker:Aiden
-It's becoming colder. I need to gather wood to make fire. Move fast.
+It is getting colder. I need to gather wood and get a fire going before dark.
 -> day2_fire
 
 === day2_fire ===
@@ -52,24 +51,26 @@ It's becoming colder. I need to gather wood to make fire. Move fast.
 }
 
 { mg_fire_campsite_success:
-    - true:  -> day2_rain_stops
+    - true:  -> day2_search_window
     - false:
         ~ fail_reason = "fire"
         -> day2_buffer
 }
 
-=== day2_rain_stops ===
+=== day2_search_window ===
 { campsite_quality == "good":
-    -> day2_search_good
+    -> day2_search_a
     - else:
-    -> day2_search_poor
+    -> day2_search_b
 }
 
-=== day2_search_good ===
-# scene:forest_dawn_wet
+=== day2_search_a ===
+# scene:d2_bg_search
 # portrait:aiden
 # speaker:Aiden
-There — at the edge of the tree line. A pale green glow.
+The rain stopped.
+
+This is the window. Thirty minutes.
 # minigame:search day:2 difficulty:easy
 + [Continue]
 - { mg_search_success:
@@ -77,19 +78,19 @@ There — at the edge of the tree line. A pale green glow.
         # speaker:Aiden
         Shimmerleaf. The rain woke it up. And I was here to see it.
         ~ herb_count = herb_count + 1
-        -> day2_morning_good
+        -> day2_morning_a
     - false:
         ~ fail_reason = "missed_herb"
-        # speaker:Aiden
-        I was too slow. The glow faded before I could reach it.
         -> day2_buffer
 }
 
-=== day2_search_poor ===
-# scene:forest_dawn_wet
+=== day2_search_b ===
+# scene:d2_bg_search
 # portrait:aiden
 # speaker:Aiden
-The rain stopped. But this ground — I can barely move without sinking.
+The rain stopped.
+
+But this ground — I can barely move without sinking.
 
 The window is open. I cannot waste it.
 # minigame:search day:2 difficulty:hard
@@ -97,30 +98,33 @@ The window is open. I cannot waste it.
 - { mg_search_success:
     - true:
         # speaker:Aiden
+        I can see something — at the edge of the light.
+
         Got it. But this ground nearly cost me everything.
         ~ herb_count = herb_count + 1
         ~ next_day_stamina_max = 4
-        -> day2_morning_good
+        -> day2_morning_b
     - false:
         ~ fail_reason = "missed_herb"
-        # speaker:Aiden
-        I could see the glow — just out of reach. The mud held me back.
         -> day2_buffer
 }
 
-=== day2_morning_good ===
+=== day2_morning_a ===
 # scene:forest_morning
 # portrait:aiden
 # speaker:Aiden
-{ campsite_quality == "good":
-    Found it.
+One herb down.
 
-    Isla was right. Be there before the storm. Not after.
-    - else:
-    Found it. But I chose wrong last night.
+The rain did exactly what that villager said it would.
+-> day3_transition
 
-    Higher ground. I will not forget that again.
-}
+=== day2_morning_b ===
+# scene:forest_morning
+# portrait:aiden
+# speaker:Aiden
+I found it. But I chose wrong last night.
+
+Higher ground. I will not forget that again.
 -> day3_transition
 
 === day2_buffer ===
@@ -175,7 +179,7 @@ You are back. I can see it on your face.
     -> day2_buffer_leave
 
 === day2_buffer_leave ===
-# scene:forest_day2
+# scene:path_to_forest
 # portrait:aiden
 # speaker:Aiden
 One more night. Same forest, same herb.

@@ -34,9 +34,11 @@ export class InkBridge {
     })
 
     // Listen for minigame results
-    this.events.on(GameEvents.MINIGAME_COMPLETE, ({ id, success, score, staminaDepleted }) => {
+    this.events.on(GameEvents.MINIGAME_COMPLETE, (data) => {
+      const { id, success, score, staminaDepleted } = data
+      console.log('[InkBridge] MINIGAME_COMPLETE received:', data)
       this.story.variablesState[`mg_${id}_success`] = success
-      this.story.variablesState[`mg_${id}_score`] = score ?? 0
+      if (score !== undefined) this.story.variablesState[`mg_${id}_score`] = score
       if (staminaDepleted) this.story.variablesState['stamina_depleted'] = true
       this.tick()
     })

@@ -118,6 +118,16 @@ export class NarrativeScene extends Phaser.Scene {
       this.scene.launch('FireCollectMinigame', { day: 2 })
     })
 
+    // ── Dev shortcuts: [ = day2_search_a (easy), ] = day2_search_b (hard) ──
+    this.input.keyboard.on('keydown-OPEN_BRACKET', () => {
+      console.log('[DEV] [ pressed — jumping to day2_search_a')
+      if (this._bridge) this._bridge.jumpTo('day2_search_a')
+    })
+    this.input.keyboard.on('keydown-CLOSED_BRACKET', () => {
+      console.log('[DEV] ] pressed — jumping to day2_search_b')
+      if (this._bridge) this._bridge.jumpTo('day2_search_b')
+    })
+
     // ── Start Ink story ──────────────────────────────────────────────────
     const storyJson = this.cache.json.get('story')
     if (storyJson) {
@@ -409,6 +419,19 @@ export class NarrativeScene extends Phaser.Scene {
     if (key === 'village_hub' || key === 'map') return
 
     // Fallback map for keys that don't yet have a dedicated texture
+    // Values that already include the full texture key (no bg_ prefix needed)
+    const RAW_TEXTURE = {
+      d2_bg_search: 'd2_bg_search',
+    }
+    if (RAW_TEXTURE[key]) {
+      const textureKey = RAW_TEXTURE[key]
+      if (!this.textures.exists(textureKey)) return
+      const W = this.scale.width
+      const H = this.scale.height
+      this._bg.setTexture(textureKey).setDisplaySize(W, H)
+      return
+    }
+
     const FALLBACK = {
       forest_dawn_wet:  'forest_day2',
       forest_morning:   'forest_day2',
@@ -435,6 +458,7 @@ export class NarrativeScene extends Phaser.Scene {
   _launchMinigame(id, day, difficulty) {
     const sceneMap = {
       campsite:       'CampsiteMinigame',
+      search:         'SearchMinigame',
       fire:           'FireCampsiteMinigame',
       fire_collect:   'FireBuildingCollect',
       fire_campsite:  'FireCampsiteMinigame',

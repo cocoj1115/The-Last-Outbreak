@@ -8,6 +8,7 @@ import { CampsiteMinigame } from './scenes/minigames/campsite/CampsiteMinigame.j
 /** Scene key `FireCampsiteMinigame` — Ink `# minigame:fire_campsite`. */
 import { FireBuildingMinigame } from './scenes/minigames/fire/New/FireBuildingMinigame.js'
 import { FireBuildingCollect } from './scenes/minigames/fire/New/FireBuildingCollect.js'
+import { SearchMinigame } from './scenes/minigames/search/SearchMinigame.js'
 import { HUDScene } from './scenes/HUDScene.js'
 import { DebugScene } from './scenes/DebugScene.js'
 
@@ -34,6 +35,7 @@ const config = {
   scene: [
     BootScene, OnboardingScene, NarrativeScene, VillageScene, MapScene,
     CampsiteMinigame,
+    SearchMinigame,
     FireBuildingMinigame,
     FireBuildingCollect,
     HUDScene, DebugScene,

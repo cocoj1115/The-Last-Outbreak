@@ -88,7 +88,65 @@ export class DebugScene extends Phaser.Scene {
       this._dataVisible = !this._dataVisible
       this._dataPanelGfx.setVisible(this._dataVisible)
       this._dataPanelText.setVisible(this._dataVisible)
+      this._launchLinks.forEach(({ text }) => text.setVisible(this._dataVisible))
     })
+
+    // ── Dev launch links (shown with D panel) ────────────────────────────
+    this._launchLinks = []
+    const linkStyle = {
+      fontFamily: 'monospace',
+      fontSize: `${11 * dpr}px`,
+      color: '#88ffcc',
+      lineSpacing: 3 * dpr,
+    }
+    const makeLink = (label, yOffset, callback) => {
+      const link = this.add.text(0, 0, label, linkStyle)
+        .setInteractive({ useHandCursor: true })
+        .setVisible(false)
+        .setDepth(9999)
+      link.on('pointerover', () => link.setColor('#ffffff'))
+      link.on('pointerout',  () => link.setColor('#88ffcc'))
+      link.on('pointerup',   () => callback())
+      this._launchLinks.push({ text: link, yOffset })
+      return link
+    }
+    // Jump straight to minigame (bypasses dialogue)
+    makeLink('▶ Search easy  [', 0, () => {
+      const narrative = this.scene.get('NarrativeScene')
+      if (narrative && !this.scene.isSleeping('NarrativeScene')) {
+        narrative._mainCharacter?.setVisible(false)
+        this.scene.sleep('NarrativeScene')
+      }
+      if (!this.scene.isActive('SearchMinigame')) {
+        this.scene.launch('SearchMinigame', { day: 2, difficulty: 'easy' })
+      }
+    })
+    makeLink('▶ Search hard  ]', 1, () => {
+      const narrative = this.scene.get('NarrativeScene')
+      if (narrative && !this.scene.isSleeping('NarrativeScene')) {
+        narrative._mainCharacter?.setVisible(false)
+        this.scene.sleep('NarrativeScene')
+      }
+      if (!this.scene.isActive('SearchMinigame')) {
+        this.scene.launch('SearchMinigame', { day: 2, difficulty: 'hard' })
+      }
+    })
+
+    // Jump to Ink knot — dialogue plays through NarrativeScene then triggers minigame
+    const jumpTo = (knot) => {
+      if (this.scene.isActive('SearchMinigame')) this.scene.stop('SearchMinigame')
+      const narrative = this.scene.get('NarrativeScene')
+      if (!narrative) { console.warn('[DEV] NarrativeScene not found'); return }
+      if (this.scene.isSleeping('NarrativeScene')) this.scene.wake('NarrativeScene')
+      try {
+        narrative._bridge?.jumpTo(knot)
+      } catch (e) {
+        console.error(`[DEV] jumpTo('${knot}') failed — has the Ink been recompiled?`, e)
+      }
+    }
+    makeLink('▷ Dialogue A (easy)',  2, () => jumpTo('day2_search_a'))
+    makeLink('▷ Dialogue B (hard)',  3, () => jumpTo('day2_search_b'))
+    makeLink('▷ Dialogue C (no fire)', 4, () => jumpTo('day2_search_c'))
 
 
     // ── Apply initial visibility (starts hidden) ──────────────────────────
@@ -148,7 +206,7 @@ export class DebugScene extends Phaser.Scene {
       `Y  ${Math.round(y).toString().padStart(4)}   H × ${yR}`,
       '',
       status,
-      'O  hide    G  grid',
+      'O  hide    G  grid    D  data',
     ])
     this._readout.setColor(this._locked ? '#80e0ff' : '#f0d890')
 
@@ -245,6 +303,12 @@ export class DebugScene extends Phaser.Scene {
     this._dataPanelGfx.strokeRoundedRect(px, py, panW, panH, 5 * dpr)
 
     this._dataPanelText.setPosition(px + padX, py + padY)
+
+    // Position launch links stacked below the panel
+    const linkLineH = (11 * dpr + 3 * dpr + 4 * dpr)
+    this._launchLinks.forEach(({ text, yOffset }) => {
+      text.setPosition(px + padX, py + panH + 6 * dpr + yOffset * linkLineH)
+    })
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────

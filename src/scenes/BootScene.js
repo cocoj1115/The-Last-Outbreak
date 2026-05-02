@@ -97,6 +97,10 @@ export class BootScene extends Phaser.Scene {
     this.load.image('portrait_aiden',       'assets/main character-thinking.webp')
     this.load.image('portrait_aiden_happy', 'assets/main-character-happy.webp')
 
+    this.load.image('d2_bg_search',           'assets/d2_bg_search.webp')
+    this.load.image('d2_shimmerleaf_center',  'assets/d2_asset_shimmerleaf_center.webp')
+    this.load.image('d2_shimmerleaf_edge',    'assets/d2_asset_shimmerleaf_edge.webp')
+
     this.load.json('story', 'assets/story/main.ink.json')
 
     this._createPlaceholderTextures()

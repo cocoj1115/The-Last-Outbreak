@@ -10,7 +10,7 @@
 # scene:path_petra
 # portrait:aiden
 # speaker:Aiden
-Two down. The Glaceweed is deeper in.
+One down. The Glaceweed is deeper in.
 
 Further from any village. Further from anything familiar.
 * [Continue] -> petra_encounter
