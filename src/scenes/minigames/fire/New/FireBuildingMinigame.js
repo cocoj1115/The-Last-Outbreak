@@ -4386,7 +4386,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     this._effectiveDecayMs = effectiveDecayMs
     if (this.day <= 2) {
-      this._effectiveDecayMs = Math.max(800, this._effectiveDecayMs)
+      this._effectiveDecayMs = Math.max(1200, this._effectiveDecayMs)
     }
     this._igniteDecayPerTick = this._igniteDifficulty.decayPerTick
 
@@ -4395,7 +4395,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
       this._stackDropCount.tinder || 0,
     )
     if (this.day <= 2) {
-      this._igniteSmokeThresholdPct = tinderN >= 3 ? 35 : tinderN === 2 ? 50 : 65
+      this._igniteSmokeThresholdPct = tinderN >= 3 ? 25 : tinderN === 2 ? 40 : 55
     } else {
       this._igniteSmokeThresholdPct = tinderN >= 3 ? 40 : tinderN === 2 ? 55 : 70
     }
@@ -4404,10 +4404,14 @@ export class FireBuildingMinigame extends Phaser.Scene {
       this._stackPlacedCountInLayer('middle'),
       this._stackDropCount.kindling || 0,
     )
-    this._igniteBlowGain = kindN >= 3 ? 18 : kindN === 2 ? 14 : 10
+    if (this.day <= 2) {
+      this._igniteBlowGain = kindN >= 3 ? 22 : kindN === 2 ? 18 : 14
+    } else {
+      this._igniteBlowGain = kindN >= 3 ? 18 : kindN === 2 ? 14 : 10
+    }
     /** Blow mistake penalty — fewer kindling → larger dip (§4.5). */
     if (this.day <= 2) {
-      this._igniteBlowPenalty = kindN >= 3 ? 7 : kindN === 2 ? 10 : 14
+      this._igniteBlowPenalty = kindN >= 3 ? 5 : kindN === 2 ? 7 : 10
     } else {
       this._igniteBlowPenalty = kindN >= 3 ? 5 : kindN === 2 ? 8 : 12
     }
@@ -5605,7 +5609,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     let amt = this._igniteDecayPerTick
     if (this._igniteMechanicsPhase === 'blow') {
-      amt *= this.day <= 2 ? 0.4 : 0.5
+      amt *= this.day <= 2 ? 0.25 : 0.5
     }
 
     this._igniteProgress = Math.max(0, this._igniteProgress - amt)
