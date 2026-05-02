@@ -149,7 +149,7 @@ Two spots. One under a big oak — sheltered. One in a clearing — open sky but
     { not has_rope:
         ~ has_rope = true
         # item:rope
-        Here. Useful for securing things.
+        Here. It will boost your energy.
     }
     -> finn_questions
 

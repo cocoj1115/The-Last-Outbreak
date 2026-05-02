@@ -468,11 +468,17 @@ export class NarrativeScene extends Phaser.Scene {
         alpha: 0, duration: 0.3,
         onComplete: () => this._portraitAiden.setVisible(false),
       })
-    } else if (key === 'aiden') {
+    } else if (key === 'aiden' || key === 'aiden_happy') {
       gsap.killTweensOf(this._portrait)
       gsap.killTweensOf(this._portraitAiden)
       this._portrait.setVisible(false)
       this._portrait.setAlpha(0)
+      const aidTexture = key === 'aiden_happy' ? 'portrait_aiden_happy' : 'portrait_aiden'
+      this._portraitAiden.setTexture(aidTexture)
+      const dpr = window.devicePixelRatio || 1
+      const scaleW = (1280 * 0.686 * dpr * 0.9) / this._portraitAiden.width
+      const scaleH = (720  * 0.806 * dpr * 0.9) / this._portraitAiden.height
+      this._portraitAiden.setScale(Math.min(scaleW, scaleH))
       this._portraitAiden.setVisible(true)
       gsap.to(this._portraitAiden, { alpha: 1, duration: 0.3 })
     } else {
@@ -527,7 +533,7 @@ export class NarrativeScene extends Phaser.Scene {
 
     // — Phase 2: Spin + zoom ——————————————————————————————————————
     this.tweens.add({
-      targets: cam, rotation: Phaser.Math.DegToRad(90),
+      targets: cam, rotation: Phaser.Math.DegToRad(45),
       duration: 3300, ease: 'Expo.easeIn',
     })
     cam.zoomTo(4.0, 3300, 'Expo.easeIn')

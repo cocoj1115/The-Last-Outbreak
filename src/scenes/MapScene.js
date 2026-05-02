@@ -49,7 +49,7 @@ export class MapScene extends Phaser.Scene {
     const w   = 180 * dpr
     const h   = 52 * dpr
 
-    this._labelBg = this.add.rectangle(0, 0, w, h, 0x1a1008, 0.92)
+    this._labelBg = this.add.rectangle(0, 0, w, h, 0x000000, 0.92)
       .setOrigin(0, 0).setDepth(1000).setVisible(false)
     this._labelEdge = this.add.rectangle(0, 0, w, 3 * dpr, 0xc49850)
       .setOrigin(0, 0).setDepth(1001).setVisible(false)
