@@ -6669,10 +6669,12 @@ export class FireBuildingMinigame extends Phaser.Scene {
         fuelUsed: this._sustainFuelUsedCount,
         fireOutCount: this._sustainFireOutCount,
       })
+    console.log('[FireCampsite] emitting MINIGAME_COMPLETE', true)
     this.game.events.emit(GameEvents.MINIGAME_COMPLETE, {
         id: 'fire_campsite',
       success: true,
         score: fireQuality,
+      staminaDepleted: false,
     })
     this.scene.stop()
     }
@@ -6711,6 +6713,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
         fireOutCount: this._sustainFireOutCount,
       })
     }
+    console.log('[FireCampsite] emitting MINIGAME_COMPLETE', false)
     this.game.events.emit(GameEvents.MINIGAME_COMPLETE, {
       id,
       success:         false,

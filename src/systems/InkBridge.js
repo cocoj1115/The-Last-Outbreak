@@ -38,6 +38,7 @@ export class InkBridge {
       const { id, success, score, staminaDepleted } = data
       console.log('[InkBridge] MINIGAME_COMPLETE received:', data)
       this.story.variablesState[`mg_${id}_success`] = success
+      if (id === 'fire_campsite') console.log('[InkBridge] mg_fire_campsite_success set to:', success)
       if (score !== undefined) this.story.variablesState[`mg_${id}_score`] = score
       if (staminaDepleted) this.story.variablesState['stamina_depleted'] = true
       this.tick()
