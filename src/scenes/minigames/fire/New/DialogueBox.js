@@ -6,8 +6,8 @@
  * Does NOT talk to InkBridge — callers own all narrative logic.
  *
  * API:
- *   show({ speaker, text, onComplete })
- *   showSequence([{ speaker, text }, ...], onComplete)
+ *   show({ speaker, text, onComplete, modal? })
+ *   showSequence([{ speaker, text }, ...], onComplete?, { modal?: boolean })
  *   showChoices([{ text, onSelect }, ...])
  *   showPortraitChoices({ entries, onPick, footer?, backgroundKey? })
  *   hidePortraitChoices()
@@ -80,6 +80,10 @@ export class DialogueBox {
     this._dpr = dpr
     this._W   = W
     this._H   = H
+
+    /** When false, dialogue shows but does not capture pointers (`isBlocking()` false). */
+    this._blocksPointerCapture = true
+    this._nonModalDismissTimer = null
 
     // Start hidden
     this._setVisible(false)
@@ -248,10 +252,15 @@ export class DialogueBox {
    * Show a single line with typewriter effect.
    * First click on the box skips to full text; second click fires onComplete.
    */
-  show({ speaker = '', text = '', onComplete = null } = {}) {
+  show({ speaker = '', text = '', onComplete = null, modal = true } = {}) {
     this._resetState()
+    this._blocksPointerCapture = modal !== false
     this._choiceContainer.setVisible(true)
-    this._box.setInteractive()
+    if (this._blocksPointerCapture) {
+      this._box.setInteractive()
+    } else {
+      this._box.disableInteractive()
+    }
     this._setVisible(true)
     this._onComplete = onComplete
     this._fullText   = text
@@ -260,13 +269,34 @@ export class DialogueBox {
     this._text.setText('')
     this._stopArrow()
 
+    const nonModal = !this._blocksPointerCapture
     let i = 0
+    const advanceDone = () => {
+      if (nonModal) {
+        const dwell = Math.min(12000, 1400 + text.length * 40)
+        this._nonModalDismissTimer = this._scene.time.delayedCall(dwell, () => {
+          this._nonModalDismissTimer = null
+          const cb = this._onComplete
+          this._onComplete = null
+          this.hide()
+          cb?.()
+        })
+      } else {
+        this._startArrow()
+      }
+    }
+
+    if (!text.length) {
+      advanceDone()
+      return
+    }
+
     this._currentTimer = this._scene.time.addEvent({
       delay:    30,
       repeat:   text.length - 1,
       callback: () => {
         this._text.setText(text.slice(0, ++i))
-        if (i >= text.length) this._startArrow()
+        if (i >= text.length) advanceDone()
       },
     })
   }
@@ -274,17 +304,23 @@ export class DialogueBox {
   /**
    * Play an array of { speaker, text } lines in sequence.
    * onComplete fires after the last line is advanced past.
+   * @param {{ modal?: boolean }} [opts] — pass `{ modal: false }` so gameplay input continues during lines.
    */
-  showSequence(lines = [], onComplete = null) {
+  showSequence(lines = [], onComplete = null, opts = {}) {
     if (lines.length === 0) {
       if (onComplete) onComplete()
       return
     }
+    const modal = opts.modal !== false
     const [first, ...rest] = lines
     this.show({
       speaker:    first.speaker ?? '',
       text:       first.text    ?? '',
-      onComplete: () => this.showSequence(rest, onComplete),
+      modal,
+      onComplete:
+        rest.length > 0
+          ? () => this.showSequence(rest, onComplete, opts)
+          : onComplete,
     })
   }
 
@@ -295,6 +331,7 @@ export class DialogueBox {
   showChoices(choices = []) {
     this._clearChoices()
     this._stopArrow()
+    this._blocksPointerCapture = true
     this._choiceContainer.setVisible(true)
     this._setVisible(true)
     this._box.setInteractive()
@@ -359,15 +396,23 @@ export class DialogueBox {
     })
   }
 
-  /** True while the parchment dialogue box is visible (story text or choice buttons). */
+  /** True while modal dialogue is visible (story text or choice buttons). */
   isBlocking() {
-    return this._box?.visible === true
+    return (
+      this._box?.visible === true &&
+      this._blocksPointerCapture !== false
+    )
   }
 
   /** Hide the dialogue box and all associated elements. */
   hide() {
+    if (this._nonModalDismissTimer) {
+      this._nonModalDismissTimer.remove(false)
+      this._nonModalDismissTimer = null
+    }
     this.hidePortraitChoices()
     this._resetState()
+    this._blocksPointerCapture = true
     this._box.disableInteractive()
     this._choiceContainer.setVisible(false)
     this._setVisible(false)
@@ -429,6 +474,10 @@ export class DialogueBox {
   }
 
   _resetState() {
+    if (this._nonModalDismissTimer) {
+      this._nonModalDismissTimer.remove(false)
+      this._nonModalDismissTimer = null
+    }
     if (this._currentTimer) {
       this._currentTimer.remove()
       this._currentTimer = null

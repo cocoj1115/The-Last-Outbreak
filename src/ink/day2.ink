@@ -34,18 +34,13 @@ I need to make camp now — and be ready to search the moment it stops.
         -> day2_fire_collect
 }
 
+// Unified campsite — `# minigame:fire_campsite` → FireCampsiteMinigame (collect is internal, no Ink tag).
+// Do not tag # minigame:fire_collect here — that would skip clear/sort entry and duplicate Ren §4.2 lines.
 === day2_fire_collect ===
 # scene:path_to_forest
 # portrait:aiden
 # speaker:Aiden
 It's becoming colder. I need to gather wood to make fire. Move fast.
-# minigame:fire_collect day:2
-+ [Continue]
-- { stamina_depleted:
-    ~ fail_reason = "fire"
-    -> day2_buffer
-}
-
 -> day2_fire
 
 === day2_fire ===

@@ -3,7 +3,7 @@
  *
  * Usage:
  *   1. Set DEV_MOCK_FIRE_BUILDING = false before committing.
- *   2. Set MOCK_CONFIG.startStep — collect launches FireBuildingCollect; others → FireBuildingMinigame.
+ *   2. Set MOCK_CONFIG.startStep — collect launches FireBuildingCollect; others → FireCampsiteMinigame.
  *   3. Use mockPreset `'ideal' | 'mixed' | 'bad'` for quantity‑consistent stacks / reserves / qualities.
  *
  * Data flow (registry): Collect → collectedMaterials → Sort → sortedMaterials → Stack → stackData +
@@ -14,6 +14,7 @@
 export const DEV_MOCK_FIRE_BUILDING = false
 
 const STEP_ORDER = ['ren_intro', 'clear', 'collect', 'sort', 'stack', 'ignite', 'spread', 'sustain']
+// Ink day2/day3: `# minigame:fire_campsite` → ren_intro → clear; collect only inside campsite (`devFireBuildChain`), not an Ink minigame tag.
 
 /** Lay + reserve payloads keyed by QA preset — counts always sum to collectedMaterials.items.length (8). */
 export const MOCK_PRESETS = {
@@ -178,7 +179,7 @@ export const MOCK_PRESETS = {
 }
 
 export const MOCK_CONFIG = {
-  startStep: 'spread',
+  startStep: 'ignite',
   /** `'ideal'` | `'mixed'` | `'bad'` — drives collected / sorted / stack / reserve coherence. */
   mockPreset: 'ideal',
   campsiteQuality: 'good',

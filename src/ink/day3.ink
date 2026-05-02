@@ -91,13 +91,8 @@ I need to make camp before it gets dark.
 // MINIGAME 2 — MATERIAL COLLECTION
 // ═════════════════════════════════════════════════════════════════════════════
 
+// Unified campsite — `# minigame:fire_campsite` → FireCampsiteMinigame (see day2.ink).
 === day3_fire_collect ===
-# minigame:fire_collect day:3
-+ [Continue]
-- { stamina_depleted:
-    ~ fail_reason = "stamina"
-    -> day3_buffer
-}
 -> day3_fire
 
 

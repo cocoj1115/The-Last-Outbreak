@@ -11,6 +11,7 @@ import {
   seedFireBuildingMockRegistry,
   getFireBuildingMockPayload,
 } from './minigames/fire/New/day2FireBuildingMock.js'
+import { FIRE_CAMPSITE_SCENE_KEY } from './minigames/fire/New/fireSceneKeys.js'
 import { StaminaSystem } from '../systems/StaminaSystem.js'
 import { DaySystem } from '../systems/DaySystem.js'
 
@@ -136,12 +137,12 @@ export class BootScene extends Phaser.Scene {
       seedFireBuildingMockRegistry(this.registry)
       this.scene.launch('HUDScene')
       const payload = getFireBuildingMockPayload()
-      // `collect` lives in FireBuildingCollect — FireBuildingMinigame has no collect step handler.
+      // `collect` lives in FireBuildingCollect — campsite flow scene key is FireCampsiteMinigame.
       if (payload.startStep === 'collect') {
         this.registry.set('devFireBuildChain', true)
         this.scene.start('FireBuildingCollect', { day: payload.day })
       } else {
-        this.scene.start('FireBuildingMinigame', payload)
+        this.scene.start(FIRE_CAMPSITE_SCENE_KEY, payload)
       }
       return
     }

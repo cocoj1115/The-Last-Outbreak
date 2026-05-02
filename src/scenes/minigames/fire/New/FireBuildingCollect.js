@@ -1,6 +1,7 @@
 import Phaser from 'phaser'
 import { GameEvents } from '../../../../systems/GameEvents.js'
 import { DialogueBox } from './DialogueBox.js'
+import { FIRE_CAMPSITE_SCENE_KEY } from './fireSceneKeys.js'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -970,11 +971,17 @@ export class FireBuildingCollect extends Phaser.Scene {
       const alive = stamina?.deduct(1) ?? true
       if (!alive) {
         this._stopCollectTimers()
-        this.game.events.emit(GameEvents.MINIGAME_COMPLETE, {
-          id: 'fire_collect',
-          success: false,
-          staminaDepleted: true,
-        })
+        /** Collect is embedded in unified fire campsite — fail the parent Ink minigame, never `fire_collect`. */
+        const embedded =
+          this.registry.get('devFireBuildChain') === true ||
+          this._isResumeCampsiteSession === true
+        if (embedded) {
+          this.game.events.emit(GameEvents.MINIGAME_COMPLETE, {
+            id: 'fire_campsite',
+            success: false,
+            staminaDepleted: true,
+          })
+        }
         this.scene.stop()
       }
     })
@@ -1043,8 +1050,9 @@ export class FireBuildingCollect extends Phaser.Scene {
   /**
    * Deferred handoff avoids pointer/update edge cases when transitioning from Collect.
    * @param {boolean} resumeStackAfterCollect
+   * @param {{ id: string, quality: string }[] | null} [forestCollectNewItems] — this trip only (merged after campsite snapshot).
    */
-  _deferSwitchToFireBuildingMinigame(resumeStackAfterCollect) {
+  _deferSwitchToFireBuildingMinigame(resumeStackAfterCollect, forestCollectNewItems = null) {
     let startStep = 'stack'
     if (resumeStackAfterCollect) {
       const snap =
@@ -1052,20 +1060,27 @@ export class FireBuildingCollect extends Phaser.Scene {
       startStep = snap.resumeCampsiteStep === 'ignite' ? 'ignite' : 'stack'
     }
     this.time.delayedCall(0, () => {
-      this.scene.stop('FireBuildingCollect')
-      this.scene.start('FireBuildingMinigame', {
+      const payload = {
         day: this.day,
         startStep,
         resumeStackAfterCollect,
-      })
+      }
+      if (
+        resumeStackAfterCollect &&
+        Array.isArray(forestCollectNewItems) &&
+        forestCollectNewItems.length > 0
+      ) {
+        payload.forestCollectNewItems = forestCollectNewItems
+      }
+      // `scene.start` shuts down this scene — do not call `stop('FireBuildingCollect')` first (black frame / stale ScenePlugin edge cases).
+      this.scene.start(FIRE_CAMPSITE_SCENE_KEY, payload)
     })
   }
 
   /** Dev chains — full payload for FireBuildingMinigame `init`. */
   _deferSwitchToFireBuildingMinigameRaw(payload) {
     this.time.delayedCall(0, () => {
-      this.scene.stop('FireBuildingCollect')
-      this.scene.start('FireBuildingMinigame', payload)
+      this.scene.start(FIRE_CAMPSITE_SCENE_KEY, payload)
     })
   }
 
@@ -1091,11 +1106,8 @@ export class FireBuildingCollect extends Phaser.Scene {
 
     const proceedToCampsite = () => {
       const inkBridge = this.registry.get('inkBridge')
-      inkBridge?.setVariable?.('mg_fire_collect_score', difficulty)
+      inkBridge?.setVariable?.('mg_fire_collect_quality', difficulty)
 
-      // Write internal game state to registry for downstream scenes.
-      // Note: ignitionDifficulty is NOT written to registry — it flows
-      // through the Ink story via MINIGAME_COMPLETE score → InkBridge.
       this.registry.set('collectedMaterials', { items, count })
       this.registry.set('fuelStock', 5)
       console.log('collected:', this.registry.get('collectedMaterials'))
@@ -1109,7 +1121,13 @@ export class FireBuildingCollect extends Phaser.Scene {
       }
 
       if (resumeSnapPresent) {
-        this._deferSwitchToFireBuildingMinigame(true)
+        if (import.meta.env.DEV) {
+          console.log('[DEBUG Collect → back to campsite]', {
+            newItems: JSON.stringify(items),
+            reserveBefore: JSON.stringify(this.registry.get('reserveMaterials')),
+          })
+        }
+        this._deferSwitchToFireBuildingMinigame(true, items)
         return
       }
 
@@ -1122,12 +1140,6 @@ export class FireBuildingCollect extends Phaser.Scene {
         this._deferSwitchToFireBuildingMinigame(false)
         return
       }
-
-      this.game.events.emit(GameEvents.MINIGAME_COMPLETE, {
-        id: 'fire_collect',
-        success: true,
-        score: difficulty,  // InkBridge writes this to mg_fire_collect_score in Ink
-      })
 
       if (this.registry.get('devQuickFireChain')) {
         this._deferSwitchToFireBuildingMinigameRaw({ day: this.day, startStep: 'ignite' })
