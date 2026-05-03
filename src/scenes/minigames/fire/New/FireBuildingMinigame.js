@@ -325,6 +325,11 @@ const FLOOD_INTERVAL_CLEARED = 12000
 const FLOOD_INTERVAL_DIRTY   = 10000
 const FLOOD_BG_DURATION      = 1200
 
+/** Day 3 sustain — wind warning cadence (warnings spaced by `interval`; gust fires `DAY3_WIND_WARN_LEAD_MS` later). */
+const DAY3_WIND_WARN_INTERVAL_GOOD_MS = 12000
+const DAY3_WIND_WARN_INTERVAL_POOR_MS = 8000
+const DAY3_WIND_WARN_LEAD_MS = 2000
+
 // ─── Background colours ──────────────────────────────────────────────────────
 
 const BG_NIGHT       = 0x0a0c08
@@ -666,6 +671,16 @@ export class FireBuildingMinigame extends Phaser.Scene {
     /** Full-lay pit ring glow after spread — spread FX is destroyed on exit. */
     this._sustainPitGlowGfx = null
 
+    /** Day 3 sustain wind-event timers (`Phaser.Time.TimerEvent`) */
+    this._day3WindWarnTimer = null
+    this._day3WindPostGustTimer = null
+    /** Day 3 sustain wind FX — treeline decorations + flash overlay */
+    this._day3SustainWindTreeSprites = []
+    this._day3SustainWindFlashRect = null
+    this._day3SustainWindWarnIntroShown = false
+    this._day3SustainWindGustHitShown = false
+    this._day3SustainFuelWasteEarlyShown = false
+
     // Inputs
     this._campsiteQuality = 'good'
     this._groundCleared   = false
@@ -769,11 +784,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._stepProposalShown = {}
 
     let stackResumeHandled = false
-    let resumeCampsiteStepFromSnap = null
+    let resumeCampsiteStep = null
     if (this._resumeStackAfterCollect) {
       const snap = this.registry.get('fireCampsiteStackResume')
       if (snap) {
-        resumeCampsiteStepFromSnap = snap.resumeCampsiteStep ?? null
+        resumeCampsiteStep = snap.resumeCampsiteStep ?? null
         this._igniteResumeFromForest = snap.igniteResume ?? null
         this._applyStackResumeFromCollect(snap)
         this._syncSortedMaterialsRegistryLive()
@@ -796,18 +811,39 @@ export class FireBuildingMinigame extends Phaser.Scene {
       this._resumeStackAfterCollect = false
     }
 
-    // Day 3 — open campsite; forest resume may return to ignite; mock may cold-start at ignite.
+    // Day 3 — forest resume routing; mock/spread/sustain cold-start needs registry → _matStates hydrate.
     if (this.day >= 3) {
-      if (stackResumeHandled && resumeCampsiteStepFromSnap === 'ignite') {
-        this._enterStep('ignite')
-      } else if (!stackResumeHandled && this._startStep === 'ignite') {
-        this._hydratePlacedStackFromRegistryIfNeeded()
-        this._hydrateSortedMaterialsFromRegistryIfNeeded('ignite')
-        this._ensureSortedMaterialsZoneLayout()
-        this._enterStep('ignite')
-      } else {
-        this._enterStep('campsite_open')
+      if (stackResumeHandled) {
+        const targetStep = resumeCampsiteStep === 'ignite' ? 'ignite' : 'campsite_open'
+        if (targetStep === 'ignite') {
+          // Collect → campsite payload omits windDirection; re-hydrate from registry before FX.
+          // _startDay3WindFx is idempotent (skips if _windLeafTimer already set).
+          this._ensureDay3WindDirection()
+          if (!this._windSlotCenters) this._buildDay3WindSlots()
+          this._restoreDay3WindShieldFromRegistry()
+          this._recomputeWindShield()
+          this._startDay3WindFx()
+          // _applyStackResumeFromCollect already rebuilt _matStates — no hydrate here.
+          this._enterStep('ignite')
+        } else {
+          this._enterStep('campsite_open')
+        }
+        this._scheduleTraceReserveForestFlowF()
+        return
       }
+
+      const entry = this._startStep
+      if (entry === 'ignite' || entry === 'spread' || entry === 'sustain') {
+        this._hydratePlacedStackFromRegistryIfNeeded()
+        this._hydrateSortedMaterialsFromRegistryIfNeeded(entry)
+        this._ensureSortedMaterialsZoneLayout()
+        this._enterStep(entry)
+        this._scheduleTraceReserveForestFlowF()
+        return
+      }
+
+      this._enterStep('campsite_open')
+      this._scheduleTraceReserveForestFlowF()
       return
     }
 
@@ -838,6 +874,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
 
     this._enterStep(entry)
+    this._scheduleTraceReserveForestFlowF()
   }
 
   /** HUDScene runs parallel to minigames; paths that skip NarrativeScene must still show stamina. */
@@ -855,6 +892,45 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _safeSetDraggable(sprite, enabled = false) {
     if (!sprite?.input) return
     this.input.setDraggable(sprite, enabled)
+  }
+
+  /** DEV-only: forest resume / reserve visibility investigation ([trace step A–F]). */
+  _traceReserveForestFlow(stepTag, extra = {}) {
+    if (!import.meta.env.DEV) return
+    const pileKeys = Object.keys(this._matStates || {})
+      .filter((k) => k.startsWith('pile_'))
+      .sort((a, b) => Number(a.slice(5)) - Number(b.slice(5)))
+    const piles = pileKeys.map((key) => {
+      const st = this._matStates[key]
+      return {
+        key,
+        id: st?.id,
+        phase: st?.phase,
+        sortZoneId: st?.sortZoneId ?? null,
+        hasPitPos: !!(st?.pitPos && typeof st.pitPos.x === 'number'),
+        spriteAlpha: st?.sprite?.alpha,
+        spriteVisible: st?.sprite?.visible,
+        labelAlpha: st?.label?.alpha ?? null,
+      }
+    })
+    const rm = this.registry.get('reserveMaterials')
+    console.log(`[trace step ${stepTag}]`, {
+      ...extra,
+      step: stepTag,
+      collectedLen: this._collected?.length ?? 0,
+      collectedIds: this._collected?.map((m) => m?.id),
+      reserveMaterialsLen: Array.isArray(rm) ? rm.length : rm == null ? null : String(rm),
+      reserveMaterials: rm,
+      matStatesPiles: piles,
+    })
+  }
+
+  /** First preupdate after create() (before first render of this scene). */
+  _scheduleTraceReserveForestFlowF() {
+    if (!import.meta.env.DEV) return
+    this.events.once(Phaser.Scenes.Events.PRE_UPDATE, () => {
+      this._traceReserveForestFlow('F')
+    })
   }
 
   _readInputs() {
@@ -891,9 +967,18 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
     this._groundCleared   = this.registry.get('groundCleared') ?? false
 
+    if (this.day >= 3) {
+      const ws = this.registry.get('windShield')
+      if (ws === 'good' || ws === 'partial' || ws === 'none') this._windShield = ws
+    }
+
     const badCount = this._collected.filter(m => m.quality === 'BAD').length
     this._strengthCeiling = Math.max(1, SEGMENT_COUNT - badCount)
     this._fireStrength    = this._strengthCeiling
+    this._traceReserveForestFlow('B', {
+      resumeStackAfterCollect: !!this._resumeStackAfterCollect,
+      hadStackResumeSnap: !!stackResumeSnap,
+    })
   }
 
   _buildStackResumePayload() {
@@ -1035,6 +1120,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
 
     this._sortedCount = this._sortableIds.length
+    this._traceReserveForestFlow('C', { matSnapshotLen: nOld, collectedLenAfter: this._collected?.length })
   }
 
   /**
@@ -5735,6 +5821,17 @@ export class FireBuildingMinigame extends Phaser.Scene {
       return
     }
 
+    if (this.day >= 3 && before >= 4) {
+      if (!this._day3SustainFuelWasteEarlyShown) {
+        this._day3SustainFuelWasteEarlyShown = true
+        this._dialogue.showSequence(
+          [{ speaker: 'Aiden', text: 'Too early. I know better than that.' }],
+          () => this._dialogue.hide(),
+        )
+      }
+      return
+    }
+
     let gain = zoneId === 'tinder' ? 1 : 2
     const now = this.time.now
     if (zoneId === 'tinder') {
@@ -5765,6 +5862,10 @@ export class FireBuildingMinigame extends Phaser.Scene {
     if (now < this._sustainTinderBurdenUntil) d *= 0.5
     if (now < this._sustainFuelSlowUntil) d *= 1.25
     if (this.registry.get('fireQuality') === 'weak') d *= 0.88
+    if (this.day >= 3) {
+      if (this._windShield === 'good') d *= 1 / 0.8
+      else if (this._windShield === 'none') d *= 1 / 1.3
+    }
     return Math.max(250, Math.floor(d))
   }
 
@@ -6331,6 +6432,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
       })
     }
 
+    this._traceReserveForestFlow('A', { fromStep: this.step })
     this.registry.set('fireCampsiteStackResume', this._buildStackResumePayload())
     this.scene.stop(this.scene.key)
     this.scene.start('FireBuildingCollect', {
@@ -7758,7 +7860,9 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     this._refreshFireLaySpritePresentation()
     this._syncSortZoneHudSortedSpriteVisibility()
+    this._traceReserveForestFlow('D', { forestResume: !!forestResume })
     this._syncStackSortedDraggability()
+    this._traceReserveForestFlow('E', { forestResume: !!forestResume })
 
     const skipRenIntro =
       this._stepProposalShown.ignite ||
@@ -8876,6 +8980,159 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._sustainPitGlowGfx = null
   }
 
+  _day3SustainWindWarnIntervalMs() {
+    return this._campsiteQuality === 'poor'
+      ? DAY3_WIND_WARN_INTERVAL_POOR_MS
+      : DAY3_WIND_WARN_INTERVAL_GOOD_MS
+  }
+
+  _cancelDay3SustainWindTimers() {
+    if (this._day3WindWarnTimer) {
+      this._day3WindWarnTimer.remove(false)
+      this._day3WindWarnTimer = null
+    }
+    if (this._day3WindPostGustTimer) {
+      this._day3WindPostGustTimer.remove(false)
+      this._day3WindPostGustTimer = null
+    }
+  }
+
+  _destroyDay3SustainWindFx() {
+    for (const spr of this._day3SustainWindTreeSprites) {
+      if (spr?.scene) gsap.killTweensOf(spr)
+      spr?.destroy()
+    }
+    this._day3SustainWindTreeSprites = []
+    if (this._day3SustainWindFlashRect?.scene) {
+      gsap.killTweensOf(this._day3SustainWindFlashRect)
+      this._day3SustainWindFlashRect.destroy()
+    }
+    this._day3SustainWindFlashRect = null
+    if (this._fireIcon?.scene) gsap.killTweensOf(this._fireIcon)
+  }
+
+  _ensureDay3SustainWindFxNodes() {
+    const W = this.scale.width
+    const H = this.scale.height
+    if (!this._day3SustainWindFlashRect?.scene) {
+      this._day3SustainWindFlashRect = this.add
+        .rectangle(W / 2, H / 2, W + 8, H + 8, 0xffffff, 0)
+        .setStrokeStyle(0)
+        .setDepth(4000)
+        .setAlpha(0)
+    }
+    if (this._day3SustainWindTreeSprites.length > 0) return
+    const y = H * 0.12
+    for (let i = 0; i < 5; i++) {
+      const x = W * (0.12 + i * 0.19)
+      const t = this.add.text(x, y, '🌲', { fontSize: '38px' }).setOrigin(0.5).setDepth(4001)
+      this._day3SustainWindTreeSprites.push(t)
+    }
+  }
+
+  _startDay3WindEventSchedule() {
+    if (this.day < 3 || this.step !== 'sustain') return
+    this._cancelDay3SustainWindTimers()
+    const iv = this._day3SustainWindWarnIntervalMs()
+    this._day3WindWarnTimer = this.time.delayedCall(iv, () => {
+      this._day3WindWarnTimer = null
+      this._runDay3WindWarningPhase()
+    })
+  }
+
+  _runDay3WindWarningPhase() {
+    if (this.day < 3 || this.step !== 'sustain' || this._nightComplete) return
+
+    this._ensureDay3SustainWindFxNodes()
+
+    if (!this._day3SustainWindWarnIntroShown) {
+      this._day3SustainWindWarnIntroShown = true
+      this._dialogue.showSequence(
+        [
+          {
+            speaker: 'Aiden',
+            text: 'Wind is building. I can see the trees. It is about to hit.',
+          },
+        ],
+        () => this._dialogue.hide(),
+      )
+    }
+
+    for (const spr of this._day3SustainWindTreeSprites) {
+      if (!spr?.scene) continue
+      gsap.killTweensOf(spr)
+      spr.angle = 0
+      gsap.to(spr, {
+        angle: 3,
+        duration: 0.3,
+        repeat: 6,
+        yoyo: true,
+        ease: 'sine.inOut',
+      })
+    }
+
+    const flash = this._day3SustainWindFlashRect
+    if (flash?.scene) {
+      gsap.killTweensOf(flash)
+      flash.setAlpha(0)
+      gsap
+        .timeline()
+        .to(flash, { alpha: 0.15, duration: 0.25 })
+        .to(flash, { alpha: 0, duration: 0.25 })
+        .to(flash, { alpha: 0.15, duration: 0.25 })
+        .to(flash, { alpha: 0, duration: 0.25 })
+    }
+
+    if (this._day3WindPostGustTimer) {
+      this._day3WindPostGustTimer.remove(false)
+      this._day3WindPostGustTimer = null
+    }
+    this._day3WindPostGustTimer = this.time.delayedCall(DAY3_WIND_WARN_LEAD_MS, () => {
+      this._day3WindPostGustTimer = null
+      this._applyDay3WindGust()
+    })
+  }
+
+  _applyDay3WindGust() {
+    if (this.day < 3 || this.step !== 'sustain' || this._nightComplete) return
+
+    const ws = this.registry.get('windShield')
+    if (ws === 'good' || ws === 'partial' || ws === 'none') this._windShield = ws
+
+    const delta =
+      this._windShield === 'good' ? -1 : this._windShield === 'partial' ? -2 : -3
+
+    this._adjustStrength(delta)
+
+    if (this._fireStrength === 0 || this._nightComplete) return
+
+    if (this._fireIcon?.scene) {
+      gsap.killTweensOf(this._fireIcon)
+      this._fireIcon.setScale(1)
+      gsap
+        .timeline()
+        .to(this._fireIcon, { scale: 1.18, duration: 0.06 })
+        .to(this._fireIcon, { scale: 1, duration: 0.12, ease: 'power2.out' })
+    }
+
+    if (!this._day3SustainWindGustHitShown) {
+      this._day3SustainWindGustHitShown = true
+      this._dialogue.showSequence(
+        [{ speaker: 'Aiden', text: 'Should have added fuel before that gust.' }],
+        () => this._dialogue.hide(),
+      )
+    }
+
+    if (this._nightComplete || this.step !== 'sustain') return
+
+    const iv = this._day3SustainWindWarnIntervalMs()
+    const delayNext = Math.max(400, iv - DAY3_WIND_WARN_LEAD_MS)
+    this._day3WindWarnTimer = this.time.delayedCall(delayNext, () => {
+      this._day3WindWarnTimer = null
+      this._runDay3WindWarningPhase()
+    })
+  }
+
   _enterSustain() {
     if (this.day >= 3) {
       this._stopDay3WindFx()
@@ -8909,6 +9166,9 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._sustainFuelUsedCount = 0
     this._sustainRenHintThreeShown = false
     this._sustainRenFloodIntroShown = false
+    this._day3SustainWindWarnIntroShown = false
+    this._day3SustainWindGustHitShown = false
+    this._day3SustainFuelWasteEarlyShown = false
 
     this._syncStackLayRegistry()
     this._rebuildSustainBackupKeysFromSortedMatStates()
@@ -8979,12 +9239,18 @@ export class FireBuildingMinigame extends Phaser.Scene {
     const W = this.scale.width
     const H = this.scale.height
 
+    if (this.day >= 3) {
+      const ws = this.registry.get('windShield')
+      if (ws === 'good' || ws === 'partial' || ws === 'none') this._windShield = ws
+    }
+
     const beginTimers = () => {
       if (this._sustainTimersStarted) return
       this._sustainTimersStarted = true
       this._startDrainTimer()
       this._startNightTimer()
-      if (this._campsiteQuality === 'poor') this._startFloodTimer()
+      if (this.day < 3 && this._campsiteQuality === 'poor') this._startFloodTimer()
+      if (this.day >= 3) this._startDay3WindEventSchedule()
     }
 
     this._hideSortZonesUnderSustainReservePanels(false)
@@ -8998,6 +9264,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _exitSustain() {
     this._stopSustainTimers()
     this._sustainTimersStarted = false
+    this._destroyDay3SustainWindFx()
     this._destroySustainBackupUi()
     this._hideSortZonesUnderSustainReservePanels(false)
     this._destroySustainPitGlowGfx()
@@ -9079,6 +9346,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
   }
 
   _applyFloodEvent() {
+    if (this.day >= 3) return
     if (this._nightComplete) return
 
     if (this.day < 3 && !this._sustainRenFloodIntroShown) {
@@ -9166,20 +9434,21 @@ export class FireBuildingMinigame extends Phaser.Scene {
     const fireQuality = this._fireStrength >= 3 ? 'strong' : 'weak'
 
     const finishOutcome = () => {
+      this.registry.set('fireQuality', fireQuality)
       this.registry.set('sustainResult', {
         success: true,
         score: fireQuality,
         fuelUsed: this._sustainFuelUsedCount,
         fireOutCount: this._sustainFireOutCount,
       })
-    console.log('[FireCampsite] emitting MINIGAME_COMPLETE', true)
-    this.game.events.emit(GameEvents.MINIGAME_COMPLETE, {
+      console.log('[FireCampsite] emitting MINIGAME_COMPLETE', true)
+      this.game.events.emit(GameEvents.MINIGAME_COMPLETE, {
         id: 'fire_campsite',
-      success: true,
+        success: true,
         score: fireQuality,
-      staminaDepleted: false,
-    })
-    this.scene.stop()
+        staminaDepleted: false,
+      })
+      this.scene.stop()
     }
 
     if (this.day < 3) {
@@ -9196,6 +9465,20 @@ export class FireBuildingMinigame extends Phaser.Scene {
       return
     }
 
+    this.todoState.survive = true
+    this.updateTodoList()
+
+    if (fireQuality === 'strong') {
+      this._dialogue.showSequence(
+        [{ speaker: 'Aiden', text: 'Made it through. The fire held.' }],
+        () => {
+          this._dialogue.hide()
+          finishOutcome()
+        },
+      )
+      return
+    }
+
     finishOutcome()
   }
 
@@ -9203,9 +9486,20 @@ export class FireBuildingMinigame extends Phaser.Scene {
     if (this._drainTimer) { this._drainTimer.remove(); this._drainTimer = null }
     if (this._nightTimer) { this._nightTimer.remove(); this._nightTimer = null }
     if (this._floodTimer) { this._floodTimer.remove(); this._floodTimer = null }
+    this._cancelDay3SustainWindTimers()
+    if (this.day >= 3) {
+      for (const spr of this._day3SustainWindTreeSprites) {
+        if (spr?.scene) gsap.killTweensOf(spr)
+      }
+      if (this._day3SustainWindFlashRect?.scene)
+        gsap.killTweensOf(this._day3SustainWindFlashRect)
+      if (this._fireIcon?.scene) gsap.killTweensOf(this._fireIcon)
+    }
   }
 
   shutdown() {
+    this._cancelDay3SustainWindTimers()
+    this._destroyDay3SustainWindFx()
     this._cleanupDay3WindStripAnimations(true)
     this._stopDay3WindFx()
   }

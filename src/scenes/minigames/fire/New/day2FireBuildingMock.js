@@ -180,7 +180,9 @@ export const MOCK_PRESETS = {
 }
 
 export const MOCK_CONFIG = {
-  startStep: 'ignite',
+  /** `2` | `3` — set to 3 to run Day 3 flow. */
+  day: 3,
+  startStep: 'stack',
   /** `'ideal'` | `'mixed'` | `'bad'` — drives collected / sorted / stack / reserve coherence. */
   mockPreset: 'ideal',
   campsiteQuality: 'good',
@@ -194,6 +196,8 @@ export const MOCK_CONFIG = {
   // Day 3 fields (only used when day === 3)
   /** `'north'` | `'south'` | `'east'` | `'west'` | null (random) */
   windDirection: null,
+  /** Dev-only sustain tests: freeze windShield outcome (`'good'` | `'partial'` | `'none'`). */
+  mockWindShield: null,
 }
 
 // ── Registry seeding ──────────────────────────────────────────────────────────
@@ -210,6 +214,11 @@ export function seedFireBuildingMockRegistry(registry) {
   const preset = MOCK_PRESETS[presetKey] ?? MOCK_PRESETS.ideal
 
   registry.set('campsiteQuality', cfg.campsiteQuality)
+
+  const day = cfg.day ?? 2
+  if (day >= 3 && cfg.mockWindShield && ['good', 'partial', 'none'].includes(cfg.mockWindShield)) {
+    registry.set('windShield', cfg.mockWindShield)
+  }
 
   if (cfg.startStep === 'clear') {
     registry.set('groundCleared', false)
@@ -270,6 +279,7 @@ export function getFireBuildingMockPayload() {
     spreadDevScenario: MOCK_CONFIG.spreadDevScenario ?? null,
     mockPreset:        MOCK_CONFIG.mockPreset ?? 'ideal',
     windDirection:     (MOCK_CONFIG.day ?? 2) >= 3 ? windDirection : undefined,
+    mockWindShield:    (MOCK_CONFIG.day ?? 2) >= 3 ? MOCK_CONFIG.mockWindShield : undefined,
   }
 }
 

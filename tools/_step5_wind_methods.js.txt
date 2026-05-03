@@ -1,0 +1,353 @@
+  // ── Day 3 wind-shield stones (four rects; snap + wind FX — Step 5) ──
+
+  _buildDay3Rocks() {
+    if (this.day < 3) return
+
+    const cx = this._pitX
+    const cy = this._pitY
+    const positions = [
+      { x: cx - 280, y: cy + 160 },
+      { x: cx - 120, y: cy + 210 },
+      { x: cx + 140, y: cy + 170 },
+      { x: cx + 300, y: cy + 200 },
+    ]
+
+    positions.forEach((pos, index) => {
+      const rock = this.add
+        .rectangle(pos.x, pos.y, DAY3_WIND_ROCK_W, DAY3_WIND_ROCK_H, 0x6a5c4a)
+        .setStrokeStyle(2, 0x3a3028)
+        .setDepth(DAY3_WIND_ROCK_DEPTH)
+        .setAlpha(0)
+      rock.setInteractive({ useHandCursor: true, draggable: true })
+      this.input.setDraggable(rock)
+      this._day3Rocks.push({
+        sprite: rock,
+        index,
+        homeX: pos.x,
+        homeY: pos.y,
+        slotId: null,
+      })
+    })
+  }
+
+  _ensureDay3WindDirection() {
+    if (this.day < 3) return
+    const valid = (d) => typeof d === 'string' && DAY3_WIND_CARDINALS.includes(d)
+    if (valid(this._windDirection)) {
+      this.registry.set('day3WindDirection', this._windDirection)
+      return
+    }
+    const saved = this.registry.get('day3WindDirection')
+    if (valid(saved)) {
+      this._windDirection = saved
+      return
+    }
+    const pick = DAY3_WIND_CARDINALS[Math.floor(Math.random() * 4)]
+    this._windDirection = pick
+    this.registry.set('day3WindDirection', pick)
+  }
+
+  _buildDay3WindSlots() {
+    if (this.day < 3) return
+    for (const g of this._windSlotDebugRects) g?.destroy()
+    this._windSlotDebugRects = []
+
+    const cx = this._pitX
+    const cy = this._pitY
+    const ox = WIND_SHIELD_SLOT_OFFSET
+    const hw = WIND_SHIELD_HIT_W / 2
+    const hh = WIND_SHIELD_HIT_H / 2
+    const centers = {
+      north: { x: cx, y: cy - ox },
+      south: { x: cx, y: cy + ox },
+      east: { x: cx + ox, y: cy },
+      west: { x: cx - ox, y: cy },
+    }
+    this._windSlotCenters = centers
+    this._windSlotBounds = {}
+    for (const id of DAY3_WIND_CARDINALS) {
+      const c = centers[id]
+      this._windSlotBounds[id] = new Phaser.Geom.Rectangle(
+        c.x - hw,
+        c.y - hh,
+        WIND_SHIELD_HIT_W,
+        WIND_SHIELD_HIT_H,
+      )
+      if (import.meta.env.DEV) {
+        const dbg = this.add
+          .rectangle(c.x, c.y, WIND_SHIELD_HIT_W, WIND_SHIELD_HIT_H, 0x88ccff, 0.12)
+          .setStrokeStyle(1, 0x4488aa, 0.35)
+          .setDepth(4)
+        this._windSlotDebugRects.push(dbg)
+      }
+    }
+  }
+
+  _restoreDay3WindShieldFromRegistry() {
+    if (this.day < 3) return
+    const snap = this.registry.get('day3WindShieldSlots')
+    if (!snap || typeof snap !== 'object') return
+    for (const id of DAY3_WIND_CARDINALS) {
+      const ix = snap[id]
+      if (typeof ix !== 'number' || ix < 0 || ix >= this._day3Rocks.length) continue
+      const c = this._windSlotCenters[id]
+      if (!c) continue
+      const rock = this._day3Rocks[ix]
+      if (!rock?.sprite) continue
+      rock.sprite.setPosition(c.x, c.y)
+      rock.slotId = id
+      this._windSlotRockIndex[id] = ix
+    }
+  }
+
+  _syncDay3WindShieldSlotsRegistry() {
+    if (this.day < 3) return
+    const o = {}
+    for (const id of DAY3_WIND_CARDINALS) {
+      const ix = this._windSlotRockIndex[id]
+      o[id] = typeof ix === 'number' ? ix : null
+    }
+    this.registry.set('day3WindShieldSlots', o)
+  }
+
+  /**
+   * Reachable spec (one rock per windward slot):
+   * - good: windward >= 1 AND side >= 1
+   * - partial: (windward >= 1 AND side === 0) OR (windward === 0 AND side >= 2)
+   * - none: else
+   */
+  _recomputeWindShield() {
+    if (this.day < 3 || !this._windDirection) {
+      this._windShield = 'none'
+      this.registry.set('windShield', 'none')
+      return
+    }
+    const { windward, sideA, sideB } = _day3WindSlotRoles(this._windDirection)
+    let windwardN = 0
+    let sideN = 0
+    for (const id of DAY3_WIND_CARDINALS) {
+      const ix = this._windSlotRockIndex[id]
+      if (ix == null) continue
+      if (id === windward) windwardN++
+      else if (id === sideA || id === sideB) sideN++
+    }
+    let next = 'none'
+    if (windwardN >= 1 && sideN >= 1) next = 'good'
+    else if ((windwardN >= 1 && sideN === 0) || (windwardN === 0 && sideN >= 2)) next = 'partial'
+    this._windShield = next
+    this.registry.set('windShield', next)
+  }
+
+  _day3WindPickSlotAt(wx, wy) {
+    if (!this._windSlotBounds) return null
+    const cand = []
+    for (const id of DAY3_WIND_CARDINALS) {
+      const b = this._windSlotBounds[id]
+      if (b.contains(wx, wy)) {
+        const c = this._windSlotCenters[id]
+        const d = Phaser.Math.Distance.Between(wx, wy, c.x, c.y)
+        cand.push({ id, d })
+      }
+    }
+    if (!cand.length) return null
+    cand.sort((a, b) => a.d - b.d)
+    return cand[0].id
+  }
+
+  /** @returns {typeof this._day3Rocks[0] | null} */
+  _day3WindRockForSprite(sprite) {
+    for (const r of this._day3Rocks) {
+      if (r.sprite === sprite) return r
+    }
+    return null
+  }
+
+  _enableDay3WindRocks() {
+    if (this.day < 3) return
+    this._day3Rocks.forEach(({ sprite }) => {
+      if (!sprite?.scene) return
+      sprite.setInteractive({ useHandCursor: true, draggable: true })
+      this.input.setDraggable(sprite, true)
+    })
+  }
+
+  _disableDay3WindRocks() {
+    if (this.day < 3) return
+    this._day3Rocks.forEach(({ sprite }) => {
+      if (!sprite?.scene) return
+      this.input.setDraggable(sprite, false)
+      sprite.disableInteractive()
+    })
+  }
+
+  _startDay3WindFx() {
+    if (this.day < 3 || !this._windDirection) return
+    this._stopDay3WindFx()
+    this._spawnDay3WindLeafBatch()
+    this._windLeafTimer = this.time.addEvent({
+      delay: WIND_LEAF_BATCH_INTERVAL_MS,
+      loop: true,
+      callback: () => this._spawnDay3WindLeafBatch(),
+    })
+  }
+
+  _stopDay3WindFx() {
+    if (this._windLeafTimer) {
+      this._windLeafTimer.remove(false)
+      this._windLeafTimer = null
+    }
+  }
+
+  _spawnDay3WindLeafBatch() {
+    if (this.day < 3 || !this._windDirection || this.step !== 'campsite_open') return
+    const W = this.scale.width
+    const H = this.scale.height
+    const n = Phaser.Math.Between(WIND_LEAF_COUNT_MIN, WIND_LEAF_COUNT_MAX)
+    const texOk = this.textures.exists('d2_shimmerleaf_center')
+    const dir = this._windDirection
+    const pad = 28
+    for (let i = 0; i < n; i++) {
+      let leaf
+      if (texOk) {
+        leaf = this.add.image(0, 0, 'd2_shimmerleaf_center').setDepth(6).setScale(0.12)
+      } else {
+        leaf = this.add.rectangle(0, 0, 8, 14, Phaser.Math.RND.pick([0x4a6b3a, 0x5a4a30])).setDepth(6)
+      }
+      const dur = Phaser.Math.FloatBetween(WIND_LEAF_DURATION_MIN, WIND_LEAF_DURATION_MAX)
+      let x0
+      let y0
+      let x1
+      let y1
+      if (dir === 'north') {
+        x0 = Phaser.Math.Between(pad, W - pad)
+        y0 = -Phaser.Math.Between(16, 48)
+        x1 = x0 + Phaser.Math.Between(-50, 50)
+        y1 = H + Phaser.Math.Between(24, 90)
+      } else if (dir === 'south') {
+        x0 = Phaser.Math.Between(pad, W - pad)
+        y0 = H + Phaser.Math.Between(16, 48)
+        x1 = x0 + Phaser.Math.Between(-50, 50)
+        y1 = -Phaser.Math.Between(24, 90)
+      } else if (dir === 'east') {
+        x0 = W + Phaser.Math.Between(16, 48)
+        y0 = Phaser.Math.Between(pad, H - pad)
+        x1 = -Phaser.Math.Between(24, 90)
+        y1 = y0 + Phaser.Math.Between(-40, 40)
+      } else {
+        x0 = -Phaser.Math.Between(16, 48)
+        y0 = Phaser.Math.Between(pad, H - pad)
+        x1 = W + Phaser.Math.Between(24, 90)
+        y1 = y0 + Phaser.Math.Between(-40, 40)
+      }
+      leaf.setPosition(x0, y0)
+      const jitterX = Phaser.Math.FloatBetween(4, 9)
+      const jitterY = Phaser.Math.FloatBetween(4, 10)
+      const prog = { v: 0 }
+      gsap.to(prog, {
+        v: 1,
+        duration: dur,
+        ease: 'none',
+        onUpdate: () => {
+          if (!leaf.scene) return
+          const t = prog.v
+          const wx = Math.sin(t * Math.PI * 6) * jitterX
+          const wy = Math.cos(t * Math.PI * 5) * jitterY
+          leaf.x = x0 + (x1 - x0) * t + wx
+          leaf.y = y0 + (y1 - y0) * t + wy
+        },
+        onComplete: () => {
+          gsap.killTweensOf(leaf)
+          leaf.destroy()
+        },
+      })
+      gsap.to(leaf, {
+        rotation: leaf.rotation + Phaser.Math.FloatBetween(0.5, 1.1) * Phaser.Math.RND.pick([1, -1]),
+        duration: dur * 0.55,
+        yoyo: true,
+        repeat: 1,
+        ease: 'sine.inOut',
+      })
+    }
+  }
+
+  _bounceWindRockHome(rock) {
+    const sx = rock.homeX
+    const sy = rock.homeY
+    this.tweens.add({ targets: rock.sprite, x: sx, y: sy, duration: 280, ease: 'Back.Out' })
+  }
+
+  _maybeDay3WindShieldCoverageMonologue() {
+    if (this.registry.get('day3WindShieldCoverageDone')) return
+    if (!this._windDirection) return
+    const { windward, sideA, sideB } = _day3WindSlotRoles(this._windDirection)
+    let n = 0
+    for (const id of [windward, sideA, sideB]) {
+      if (this._windSlotRockIndex[id] != null) n++
+    }
+    if (n < 2) return
+    this.registry.set('day3WindShieldCoverageDone', true)
+    this._dialogue.show({
+      speaker: 'Aiden',
+      text: 'Not perfect, but it will help. The wind cannot cut straight through now.',
+      onComplete: () => this._dialogue.hide(),
+    })
+  }
+
+  _onDay3WindRockDragEnd(rock, wx, wy) {
+    const slot = this._day3WindPickSlotAt(wx, wy)
+    const roles = _day3WindSlotRoles(this._windDirection)
+
+    if (!slot) {
+      this._bounceWindRockHome(rock)
+      this._recomputeWindShield()
+      this._syncDay3WindShieldSlotsRegistry()
+      return
+    }
+
+    if (slot === roles.leeward) {
+      if (!this.registry.get('day3WindShieldLeewardWrongDone')) {
+        this.registry.set('day3WindShieldLeewardWrongDone', true)
+        this._dialogue.show({
+          speaker: 'Aiden',
+          text: 'Wind is not coming from here. Wrong side.',
+          onComplete: () => this._dialogue.hide(),
+        })
+      }
+      this._bounceWindRockHome(rock)
+      this._recomputeWindShield()
+      this._syncDay3WindShieldSlotsRegistry()
+      return
+    }
+
+    const occupant = this._windSlotRockIndex[slot]
+    if (occupant != null && occupant !== rock.index) {
+      this._bounceWindRockHome(rock)
+      return
+    }
+
+    const c = this._windSlotCenters[slot]
+    rock.sprite.setPosition(c.x, c.y)
+    rock.slotId = slot
+    this._windSlotRockIndex[slot] = rock.index
+
+    if (slot === roles.windward && !this.registry.get('day3WindShieldWindwardFirstDone')) {
+      this.registry.set('day3WindShieldWindwardFirstDone', true)
+      this._dialogue.show({
+        speaker: 'Aiden',
+        text: 'That side takes the wind. Good.',
+        onComplete: () => this._dialogue.hide(),
+      })
+    }
+
+    if (!this.todoState.shield) {
+      this.todoState.shield = true
+      const todo = { ...(this.registry.get('day3TodoState') ?? {}), shield: true }
+      this.registry.set('day3TodoState', todo)
+      this.updateTodoList()
+    }
+
+    this._maybeDay3WindShieldCoverageMonologue()
+    this._recomputeWindShield()
+    this._syncDay3WindShieldSlotsRegistry()
+  }
+
