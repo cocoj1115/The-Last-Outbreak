@@ -8251,6 +8251,21 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     if (this.day >= 3) {
       afterFail()
+
+      const staminaState = stamina?.getState?.() ?? {}
+      const hasBottomTinderAfterFail = this._stackPlacedCountInLayer('bottom') > 0
+
+      let text = 'Not yet. Try again.'
+      if (staminaState.current === 1) {
+        text = 'One more like that and I am done for the night.'
+      } else if (!hasBottomTinderAfterFail && !hasReserveTinder) {
+        text =
+          'That was my last dry tinder. I have to go back and find more.'
+      } else if (hasReserveTinder) {
+        text = 'The wind got it. I need to try again.'
+      }
+
+      this._dialogue.showSequence([{ speaker: 'Aiden', text }], () => this._dialogue.hide())
       return
     }
 
