@@ -8231,6 +8231,9 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._configureIgniteDifficultyParams()
     this._relayoutIgniteHeatBarHud()
     this._igniteClickBudget = this._computeIgniteClickBudget()
+
+    this._igniteTotalClicks = 0
+
     this._igniteSnapToSparkWhenNoBottomTinder()
 
     this._setIgniteMechanicsHudVisible(true)
