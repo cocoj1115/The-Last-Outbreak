@@ -794,9 +794,56 @@ export class FireBuildingMinigame extends Phaser.Scene {
       this._resumeStackAfterCollect = false
     }
 
-    // Day 3 always opens with the free-roam campsite state, bypassing Day 2's linear machine.
+    // Day 3 — open-ended campsite; honors init `startStep` and forest-return resume merge (matSnapshot).
     if (this.day >= 3) {
-      this._enterStep('campsite_open')
+      const entryRaw = this._startStep
+      const entry =
+        typeof entryRaw === 'string' && entryRaw.length > 0 ? entryRaw : 'campsite_open'
+
+      if (stackResumeHandled) {
+        this._applyDay3CampsiteResumeExtras()
+      }
+
+      if (
+        entry !== 'ren_intro' &&
+        entry !== 'clear' &&
+        !stackResumeHandled
+      ) {
+        if (entry === 'ignite' || entry === 'spread' || entry === 'sustain') {
+          this._hydratePlacedStackFromRegistryIfNeeded()
+          this._hydrateSortedMaterialsFromRegistryIfNeeded(entry)
+        } else if (entry === 'stack') {
+          this._hydrateSortedMaterialsFromRegistryIfNeeded(entry)
+          this._hydratePlacedStackFromRegistryIfNeeded()
+        }
+        if (
+          entry === 'stack' ||
+          entry === 'ignite' ||
+          entry === 'spread' ||
+          entry === 'sustain'
+        ) {
+          this._ensureSortedMaterialsZoneLayout()
+        }
+      }
+
+      if (entry === 'stack') {
+        this._stepProposalShown.stack = true
+        this._stackDevJumpSkipPitPrompt = true
+      }
+
+      if (entry === 'spread') {
+        this.registry.set('ignitionSuccess', true)
+        this._tinderSprite?.setAlpha(0)
+        this._fireIcon?.setAlpha(1)
+      }
+
+      this._enterStep(entry)
+
+      if (stackResumeHandled) {
+        this._refreshDay3WindRockInput()
+        this._syncStackSortedDraggability()
+        this._refreshIgniteStrikeAvailability()
+      }
       return
     }
 
@@ -903,9 +950,13 @@ export class FireBuildingMinigame extends Phaser.Scene {
       })
       .filter(Boolean)
 
+    let resumeCampsiteStep = 'stack'
+    if (this.step === 'ignite') resumeCampsiteStep = 'ignite'
+    else if (this.day >= 3 && this.step === 'campsite_open') resumeCampsiteStep = 'campsite_open'
+
     return {
       matSnapshot,
-      resumeCampsiteStep: this.step === 'ignite' ? 'ignite' : 'stack',
+      resumeCampsiteStep,
       igniteResume: this.step === 'ignite' ? this._buildIgniteResumeSnapshot() : undefined,
       stackDropCount:       { ...this._stackDropCount },
       stackUnitIndexInZone: { ...this._stackUnitIndexInZone },
@@ -1024,6 +1075,16 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
 
     this._sortedCount = this._sortableIds.length
+  }
+
+  /** Day 3 — restore wind slots / shield geometry after `_applyStackResumeFromCollect` (registry rocks). */
+  _applyDay3CampsiteResumeExtras() {
+    if (this.day < 3) return
+    this._ensureDay3WindDirection()
+    if (!this._windSlotCenters) this._buildDay3WindSlots()
+    this._restoreDay3WindShieldFromRegistry()
+    this._recomputeWindShield()
+    this._day3RebuildWindBlockRects()
   }
 
   /**
@@ -3078,9 +3139,14 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _onForestHotspotClick() {
     // Day 3: no step gate, no debris-clearing gate — forest is always accessible
     if (this.day >= 3) {
+      this._syncDay3WindShieldSlotsRegistry()
+      this.registry.set('fireCampsiteStackResume', this._buildStackResumePayload())
       this.registry.set('devFireBuildChain', true)
       this.scene.stop(this.scene.key)
-      this.scene.start('FireBuildingCollect', { day: this.day })
+      this.scene.start('FireBuildingCollect', {
+        day: this.day,
+        collectSessionKind: COLLECT_SESSION_RESUME_CAMPSITE,
+      })
       return
     }
 
@@ -6319,6 +6385,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
         fuel: 0,
       })
     }
+
+    if (this.day >= 3) this._syncDay3WindShieldSlotsRegistry()
 
     this.registry.set('fireCampsiteStackResume', this._buildStackResumePayload())
     this.scene.stop(this.scene.key)

@@ -1,4 +1,5 @@
 import Phaser from 'phaser'
+import { gsap } from 'gsap'
 import { GameEvents } from '../../../../systems/GameEvents.js'
 import { DialogueBox } from './DialogueBox.js'
 import { FIRE_CAMPSITE_SCENE_KEY } from './fireSceneKeys.js'
@@ -87,6 +88,39 @@ const MATERIAL_DEF_BY_ID = {
   },
 }
 
+// ─── Day 3 material definitions ──────────────────────────────────────────────
+
+// windAmplitude: Day 3 “lightness” — higher = faster legs & more gusts (targets are full-screen random).
+const MATERIAL_DEF_DAY3 = {
+  dry_leaves:   { id: 'dry_leaves',   label: 'Dry Leaves',   startQuality: 'GOOD', poorStartQuality: 'MID',  wetDuration: 0, windAmplitude: 72 },
+  dry_grass:    { id: 'dry_grass',    label: 'Dry Grass',    startQuality: 'BAD',  poorStartQuality: 'BAD',  wetDuration: 0, windAmplitude: 96 },
+  dry_twigs:    { id: 'dry_twigs',    label: 'Dry Twigs',    startQuality: 'GOOD', poorStartQuality: 'GOOD', wetDuration: 0, windAmplitude: 38 },
+  thick_bark:   { id: 'thick_bark',   label: 'Thick Bark',   startQuality: 'GOOD', poorStartQuality: 'GOOD', wetDuration: 0, windAmplitude: 18 },
+  wet_moss:     { id: 'wet_moss',     label: 'Wet Moss',     startQuality: 'BAD',  poorStartQuality: 'BAD',  wetDuration: 0, windAmplitude: 0  },
+  pine_cone:    { id: 'pine_cone',    label: 'Pine Cone',    startQuality: 'MID',  poorStartQuality: 'MID',  wetDuration: 0, windAmplitude: 28 },
+  thick_branch: { id: 'thick_branch', label: 'Thick Branch', startQuality: 'GOOD', poorStartQuality: 'GOOD', wetDuration: 0, windAmplitude: 0  },
+}
+
+const MATERIAL_POOL_ROWS_DAY3 = [
+  ['dry_leaves',   2],
+  ['dry_grass',    2],
+  ['dry_twigs',    3],
+  ['thick_bark',   2],
+  ['pine_cone',    2],
+  ['wet_moss',     1],
+  ['thick_branch', 2],
+]
+
+function buildDay3MaterialPoolDeck() {
+  const expanded = []
+  for (const [id, count] of MATERIAL_POOL_ROWS_DAY3) {
+    const def = MATERIAL_DEF_DAY3[id]
+    if (!def) continue
+    for (let i = 0; i < count; i++) expanded.push({ ...def })
+  }
+  return expanded
+}
+
 /** 15 cards total; when empty, deck reshuffles (FireCollect continuous spawn). */
 const MATERIAL_POOL_ROWS = [
   ['dry_leaves', 2],
@@ -124,7 +158,7 @@ function computeDifficulty(collectedMaterials) {
 
 /** Category counts for registry (FireCampsite reads after collect). */
 function collectCategoryForMatId(id) {
-  if (id === 'dry_leaves' || id === 'dry_grass') return 'tinder'
+  if (id === 'dry_leaves' || id === 'dry_grass' || id === 'thick_bark') return 'tinder'
   if (id === 'dry_twigs') return 'kindling'
   if (id === 'pine_cone' || id === 'thick_branch') return 'fuel'
   return 'unusable'
@@ -211,6 +245,12 @@ export class FireBuildingCollect extends Phaser.Scene {
     this._lifetimeCollectCount = 0
     this._staminaPenaltyTiersApplied = 0
 
+    // Day 3 monologue / stamina flags
+    this._day3FirstLightPickupDone = false
+    this._day3FirstHeavyPickupDone = false
+    this._day3StaminaWarningShown = false
+    this._day3StaminaFirstPenaltyLineDone = false
+
     // First BAD / wet material added to pack → Ren tutorial (spec §4.2).
     this._renBadPickupTutorialShown = false
 
@@ -277,7 +317,11 @@ export class FireBuildingCollect extends Phaser.Scene {
 
     this._sessionTargets = this._resolveSessionCollectTargets()
 
-    this._pool = Phaser.Utils.Array.Shuffle(buildMaterialPoolDeck())
+    this._hydrateDay3ForestCollectLifetime()
+
+    this._pool = Phaser.Utils.Array.Shuffle(
+      this.day >= 3 ? buildDay3MaterialPoolDeck() : buildMaterialPoolDeck(),
+    )
 
     if (this._isResumeCampsiteSession) {
       this._tutorialTinderShown = true
@@ -313,8 +357,37 @@ export class FireBuildingCollect extends Phaser.Scene {
     this._runCollectEntryFlow()
   }
 
+  _hydrateDay3ForestCollectLifetime() {
+    if (this.day < 3) return
+    const lf = this.registry.get('day3ForestCollectLifetime')
+    if (!lf || typeof lf !== 'object') return
+    if (typeof lf.lifetimeCollectCount === 'number') this._lifetimeCollectCount = lf.lifetimeCollectCount
+    if (typeof lf.staminaPenaltyTiersApplied === 'number') {
+      this._staminaPenaltyTiersApplied = lf.staminaPenaltyTiersApplied
+    }
+    if (typeof lf.day3StaminaWarningShown === 'boolean') this._day3StaminaWarningShown = lf.day3StaminaWarningShown
+    if (typeof lf.day3FirstLightPickupDone === 'boolean') this._day3FirstLightPickupDone = lf.day3FirstLightPickupDone
+    if (typeof lf.day3FirstHeavyPickupDone === 'boolean') this._day3FirstHeavyPickupDone = lf.day3FirstHeavyPickupDone
+    if (typeof lf.day3StaminaFirstPenaltyLineDone === 'boolean') {
+      this._day3StaminaFirstPenaltyLineDone = lf.day3StaminaFirstPenaltyLineDone
+    }
+  }
+
+  _persistDay3ForestCollectLifetime() {
+    if (this.day < 3) return
+    this.registry.set('day3ForestCollectLifetime', {
+      lifetimeCollectCount: this._lifetimeCollectCount,
+      staminaPenaltyTiersApplied: this._staminaPenaltyTiersApplied,
+      day3StaminaWarningShown: this._day3StaminaWarningShown,
+      day3FirstLightPickupDone: this._day3FirstLightPickupDone,
+      day3FirstHeavyPickupDone: this._day3FirstHeavyPickupDone,
+      day3StaminaFirstPenaltyLineDone: this._day3StaminaFirstPenaltyLineDone,
+    })
+  }
+
   /** §4.2 totals minus materials already carried at campsite (resume trips only). */
   _resolveSessionCollectTargets() {
+    if (this.day >= 3) return { tinder: 0, kindling: 0, fuel: 0 }
     if (!this._isResumeCampsiteSession) return { ...COLLECT_TARGETS }
 
     const minsRaw = this.registry.get('collectForestMinimumAdds')
@@ -356,6 +429,11 @@ export class FireBuildingCollect extends Phaser.Scene {
    * Skipped when `collectSessionKind === resume_campsite` (forest run from stack / ignite).
    */
   _runCollectEntryFlow() {
+    if (this.day >= 3) {
+      this._runDay3CollectEntry()
+      return
+    }
+
     if (this._isResumeCampsiteSession) {
       this._runResumeForestEntryBriefing()
       return
@@ -416,6 +494,30 @@ export class FireBuildingCollect extends Phaser.Scene {
     )
   }
 
+  /** Day 3 forest entry: stamina cost on re-entry, one-time Aiden intro monologue. */
+  _runDay3CollectEntry() {
+    const visited = this.registry.get('day3ForestVisited')
+    if (visited) {
+      const stamina = this.registry.get('stamina')
+      stamina?.deduct(1)
+    }
+    this.registry.set('day3ForestVisited', true)
+
+    if (this.registry.get('day3IntroMonologueDone')) {
+      this._trySpawn()
+      return
+    }
+    this.registry.set('day3IntroMonologueDone', true)
+
+    this._showDialogueSequence(
+      [
+        { speaker: 'Aiden', text: 'Wind is stronger out here. Need to grab what I can before it all blows away.' },
+        { speaker: 'Aiden', text: 'Light stuff first — dry leaves, anything that will catch. Then the heavier pieces.' },
+      ],
+      () => this._trySpawn(),
+    )
+  }
+
   /** Short briefing when re-entering forest from campsite (no three-type tutorial / choices). */
   _runResumeForestEntryBriefing() {
     const tgt = this._sessionTargets
@@ -456,7 +558,8 @@ export class FireBuildingCollect extends Phaser.Scene {
     // Placeholder until BG-FOREST-RAIN art is ready.
     this.add.rectangle(W / 2, H / 2, W, H, 0x0d1208)
 
-    this.add.text(W / 2, 60 * (window.devicePixelRatio || 1), 'Collect materials for the fire.', {
+    const titleText = this.day >= 3 ? 'Gather materials.' : 'Collect materials for the fire.'
+    this.add.text(W / 2, 60 * (window.devicePixelRatio || 1), titleText, {
       fontSize: '20px',
       fontFamily: 'Georgia, serif',
       fill: '#f0e6c8',
@@ -510,6 +613,10 @@ export class FireBuildingCollect extends Phaser.Scene {
   }
 
   _refreshCategoryDisplay() {
+    if (this.day >= 3) {
+      this._counterBlockText.setText(`Collected: ${this._packedOrder.length}`)
+      return
+    }
     const c = this._categoryCounts
     const t = this._sessionTargets
     const fmt = (label, key) => {
@@ -549,8 +656,9 @@ export class FireBuildingCollect extends Phaser.Scene {
     })
   }
 
-  /** §247–257 — rough mix / too much wet junk; once per run. */
+  /** §247–257 — rough mix / too much wet junk; once per run. Day 3 skips (no Ren). */
   _maybeCollectImbalanceRen() {
+    if (this.day >= 3) return
     if (this._collectImbalanceRenShown || this._collectInputLocked) return
     if (this._lifetimeCollectCount < COLLECT_IMBALANCE_MIN_PICKUPS) return
 
@@ -644,7 +752,9 @@ export class FireBuildingCollect extends Phaser.Scene {
     if (this._forestSimPauseDepth > 0) return
 
     if (this._pool.length === 0) {
-      this._pool = Phaser.Utils.Array.Shuffle(buildMaterialPoolDeck())
+      this._pool = Phaser.Utils.Array.Shuffle(
+        this.day >= 3 ? buildDay3MaterialPoolDeck() : buildMaterialPoolDeck(),
+      )
     }
     const matDef = this._pool.shift()
     if (!matDef) return
@@ -693,15 +803,21 @@ export class FireBuildingCollect extends Phaser.Scene {
       dryColor,
       wetTween:         null,
       wetTweenStarted:  false,
+      driftTween:       null,
       inPack:           false,
       onScreen:         true,
       sprite,
       label,
     }
 
-    // Materials that start already degraded get the wet appearance immediately.
-    if (matDef.wetDuration === null) {
+    // Materials that start already degraded get the wet appearance immediately (Day 2 only).
+    if (this.day < 3 && matDef.wetDuration === null) {
       sprite.setFillStyle(WET_TINT).setAlpha(QUALITY_ALPHA[startQuality])
+    }
+
+    // Day 3: wind drift (GSAP) for lightweight materials.
+    if (this.day >= 3 && (matDef.windAmplitude ?? 0) > 0) {
+      this._startMaterialWindDrift(state)
     }
 
     sprite.on('pointerover', () => {
@@ -711,6 +827,135 @@ export class FireBuildingCollect extends Phaser.Scene {
     sprite.on('pointerup', () => this._onMaterialClick(instanceId))
 
     this._onScreen[instanceId] = state
+  }
+
+  /**
+   * Day 3 wind targets. Leaves / grass may leave the viewport; others stay in the collect band.
+   */
+  _getMaterialWindDriftBounds(matDef) {
+    const W = this.scale.width
+    const H = this.scale.height
+    const id = matDef?.id
+
+    if (id === 'dry_leaves' || id === 'dry_grass') {
+      const ox = Math.max(160, Math.round(W * 0.14))
+      const oy = Math.max(130, Math.round(H * 0.15))
+      return {
+        minX: -ox,
+        maxX: W + ox,
+        minY: -Math.round(oy * 0.85),
+        maxY: H + oy,
+      }
+    }
+
+    const padX = Math.max(44, Math.round(W * 0.035))
+    const padTop = Math.max(72, Math.round(H * 0.09))
+    const maxY = Math.min(H * 0.69, H - Math.max(130, Math.round(H * 0.22)))
+    return {
+      minX: padX,
+      maxX: Math.max(padX + 8, W - padX),
+      minY: padTop,
+      maxY: Math.max(padTop + 40, maxY),
+    }
+  }
+
+  /**
+   * Day 3: wind drift — each leg picks a random point anywhere in collect bounds (not near spawn only).
+   * driftTween is a truthy marker; gsap.killTweensOf(sprite) stops all wind tweens.
+   */
+  _startMaterialWindDrift(state) {
+    const { sprite, label, matDef } = state
+    const amp = matDef.windAmplitude ?? 0
+    if (amp <= 0) return
+
+    gsap.killTweensOf(sprite)
+    sprite.setAngle(0)
+    state.driftTween = true
+
+    const b = this._getMaterialWindDriftBounds(matDef)
+    const id = matDef.id
+    const gusty =
+      id === 'dry_leaves' ||
+      id === 'dry_grass' ||
+      id === 'dry_twigs' ||
+      id === 'pine_cone'
+
+    const wobbleDeg =
+      id === 'dry_leaves' || id === 'dry_grass'
+        ? Phaser.Math.FloatBetween(16, 26)
+        : id === 'dry_twigs' || id === 'pine_cone'
+          ? Phaser.Math.FloatBetween(7, 14)
+          : Phaser.Math.FloatBetween(3, 7)
+
+    const posEasePool = gusty
+      ? ['power2.inOut', 'power1.inOut', 'sine.inOut', 'circ.inOut', 'none', 'power3.out', 'expo.out']
+      : ['sine.inOut', 'power1.inOut', 'power2.inOut']
+
+    const lightness = Phaser.Math.Clamp(amp / 105, 0.14, 1)
+    // px/sec — lower = slower drift across the same random leg
+    const speedLow = 118 + lightness * 265
+    const speedHigh = 158 + lightness * 365
+
+    const randomPointInBounds = () => ({
+      x: Phaser.Math.Between(b.minX, b.maxX),
+      y: Phaser.Math.Between(b.minY, b.maxY),
+    })
+
+    const pickTarget = () => {
+      const p = randomPointInBounds()
+      const dx = p.x - sprite.x
+      const dy = p.y - sprite.y
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1
+
+      if (gusty && Math.random() < 0.15) {
+        return {
+          x: p.x,
+          y: p.y,
+          duration: Phaser.Math.FloatBetween(0.32, 0.72),
+          ease: Phaser.Math.RND.pick(['power2.in', 'power4.out', 'none', 'circ.out']),
+        }
+      }
+
+      const speed = Phaser.Math.FloatBetween(speedLow, speedHigh)
+      let duration = dist / speed
+      duration = Phaser.Math.Clamp(duration, 0.68, 3.65)
+      duration *= Phaser.Math.FloatBetween(1.05, 1.4)
+
+      return {
+        x: p.x,
+        y: p.y,
+        duration,
+        ease: Phaser.Math.RND.pick(posEasePool),
+      }
+    }
+
+    const stepPos = () => {
+      if (!state.driftTween || state.inPack) return
+      const t = pickTarget()
+      gsap.to(sprite, {
+        x: t.x,
+        y: t.y,
+        duration: t.duration,
+        ease: t.ease,
+        onUpdate: () => {
+          if (!state.inPack) label.setPosition(sprite.x, sprite.y + 52)
+        },
+        onComplete: stepPos,
+      })
+    }
+
+    const stepRot = () => {
+      if (!state.driftTween || state.inPack || wobbleDeg <= 0) return
+      gsap.to(sprite, {
+        angle: Phaser.Math.FloatBetween(-wobbleDeg, wobbleDeg),
+        duration: Phaser.Math.FloatBetween(0.38, 0.88),
+        ease: Phaser.Math.RND.pick(['sine.inOut', 'power1.inOut', 'none']),
+        onComplete: stepRot,
+      })
+    }
+
+    stepPos()
+    stepRot()
   }
 
   // ── 100 ms game-state tick ───────────────────────────────────────────────────
@@ -829,6 +1074,12 @@ export class FireBuildingCollect extends Phaser.Scene {
     const state = this._onScreen[instanceId]
     state.inPack = true
 
+    // Day 3: kill wind drift tween when picked up.
+    if (this.day >= 3 && state.driftTween) {
+      gsap.killTweensOf(state.sprite)
+      state.driftTween = null
+    }
+
     // Pause colour tween while sheltered in the pack.
     if (state.wetTween) state.wetTween.pause()
 
@@ -841,34 +1092,6 @@ export class FireBuildingCollect extends Phaser.Scene {
     this._categoryCounts[cat]++
     this._refreshCategoryDisplay()
     this._rebuildPackListRows()
-
-    let tutorialLines = null
-    if (cat === 'unusable' && state.currentQuality === 'BAD' && !this._renBadPickupTutorialShown) {
-      this._renBadPickupTutorialShown = true
-      tutorialLines = [
-        'Feel that? Heavy. Damp inside.',
-        'Wet material will smother a flame, not feed it.',
-        'Leave it.',
-      ]
-    } else if (cat === 'tinder' && !this._tutorialTinderShown) {
-      this._tutorialTinderShown = true
-      tutorialLines = [
-        'That is good tinder. See how it crumbles?',
-        'Dry enough to catch a spark.',
-      ]
-    } else if (cat === 'kindling' && !this._tutorialKindlingShown) {
-      this._tutorialKindlingShown = true
-      tutorialLines = [
-        'Thin and dry, snaps clean.',
-        'Good kindling — it will catch from the tinder and keep the flame growing.',
-      ]
-    } else if (cat === 'fuel' && !this._tutorialFuelShown) {
-      this._tutorialFuelShown = true
-      tutorialLines = [
-        'Solid piece. That is fuel wood.',
-        'Once the fire is going, that is what keeps it alive through the night.',
-      ]
-    }
 
     this._refreshHeadBackButton()
 
@@ -883,12 +1106,7 @@ export class FireBuildingCollect extends Phaser.Scene {
         this._targetsMetDialogueShown = true
         this._headBackGoodFeedbackShown = true
         const quotaLines = this._isResumeCampsiteSession
-          ? [
-              {
-                speaker: 'Aiden',
-                text: 'These should be enough. Better head back before this gets heavier.',
-              },
-            ]
+          ? [{ speaker: 'Aiden', text: 'These should be enough. Better head back before this gets heavier.' }]
           : [{ speaker: 'Aiden', text: 'These should be enough.' }]
         this._showDialogueSequence(quotaLines, null)
       }
@@ -904,17 +1122,92 @@ export class FireBuildingCollect extends Phaser.Scene {
       afterPickup()
     }
 
-    if (tutorialLines?.length) {
-      this._showRenDialogueSequence(tutorialLines, finishPickupFeedback)
-    } else {
-      finishPickupFeedback()
-    }
+    if (this.day >= 3) {
+      // Day 3: Aiden monologues on first light / first heavy pickup; no Ren tutorials.
+      const isLight = cat === 'tinder' || cat === 'kindling'
+      const isHeavy = cat === 'fuel' || cat === 'unusable'
+      let day3Line = null
+      if (isLight && !this._day3FirstLightPickupDone) {
+        this._day3FirstLightPickupDone = true
+        day3Line = [{ speaker: 'Aiden', text: 'Good. Light stuff first. This will catch.' }]
+      } else if (isHeavy && !this._day3FirstHeavyPickupDone) {
+        this._day3FirstHeavyPickupDone = true
+        day3Line = [{ speaker: 'Aiden', text: 'Heavy piece. This keeps the fire going.' }]
+      }
+      if (day3Line) {
+        this._showDialogueSequence(day3Line, finishPickupFeedback)
+      } else {
+        finishPickupFeedback()
+      }
 
-    // Stamina: 12th, 15th, 18th… collect → one penalty each (tiers = floor((n-9)/3) for n≥12).
-    const owedStaminaTiers = Math.max(0, Math.floor((this._lifetimeCollectCount - 9) / 3))
-    if (this._staminaPenaltyTiersApplied < owedStaminaTiers) {
-      this._staminaPenaltyTiersApplied++
-      this._applyStaminaOverburdenPenalty()
+      // Day 3 stamina: free ≤8, warning at #10, -1 at #11/#14/#17…
+      if (this._lifetimeCollectCount === 10 && !this._day3StaminaWarningShown) {
+        this._day3StaminaWarningShown = true
+        this.time.delayedCall(200, () => {
+          this._showDialogueSequence(
+            [{ speaker: 'Aiden', text: 'Arms are getting heavy. A few more then I head back.' }],
+            null,
+          )
+        })
+      }
+      const owedDay3Tiers = Math.max(0, Math.floor((this._lifetimeCollectCount - 8) / 3))
+      if (this._staminaPenaltyTiersApplied < owedDay3Tiers) {
+        this._staminaPenaltyTiersApplied++
+        if (!this._day3StaminaFirstPenaltyLineDone) {
+          this._day3StaminaFirstPenaltyLineDone = true
+          this.time.delayedCall(300, () => {
+            this._showDialogueSequence(
+              [{ speaker: 'Aiden', text: 'That is going to cost me.' }],
+              () => this._applyStaminaOverburdenPenalty(),
+            )
+          })
+        } else {
+          this._applyStaminaOverburdenPenalty()
+        }
+      }
+      this._persistDay3ForestCollectLifetime()
+    } else {
+      // Day 2: Ren tutorials on first tinder / kindling / fuel / bad pickup.
+      let tutorialLines = null
+      if (cat === 'unusable' && state.currentQuality === 'BAD' && !this._renBadPickupTutorialShown) {
+        this._renBadPickupTutorialShown = true
+        tutorialLines = [
+          'Feel that? Heavy. Damp inside.',
+          'Wet material will smother a flame, not feed it.',
+          'Leave it.',
+        ]
+      } else if (cat === 'tinder' && !this._tutorialTinderShown) {
+        this._tutorialTinderShown = true
+        tutorialLines = [
+          'That is good tinder. See how it crumbles?',
+          'Dry enough to catch a spark.',
+        ]
+      } else if (cat === 'kindling' && !this._tutorialKindlingShown) {
+        this._tutorialKindlingShown = true
+        tutorialLines = [
+          'Thin and dry, snaps clean.',
+          'Good kindling — it will catch from the tinder and keep the flame growing.',
+        ]
+      } else if (cat === 'fuel' && !this._tutorialFuelShown) {
+        this._tutorialFuelShown = true
+        tutorialLines = [
+          'Solid piece. That is fuel wood.',
+          'Once the fire is going, that is what keeps it alive through the night.',
+        ]
+      }
+
+      if (tutorialLines?.length) {
+        this._showRenDialogueSequence(tutorialLines, finishPickupFeedback)
+      } else {
+        finishPickupFeedback()
+      }
+
+      // Day 2 stamina: 12th, 15th, 18th… collect → one penalty each.
+      const owedStaminaTiers = Math.max(0, Math.floor((this._lifetimeCollectCount - 9) / 3))
+      if (this._staminaPenaltyTiersApplied < owedStaminaTiers) {
+        this._staminaPenaltyTiersApplied++
+        this._applyStaminaOverburdenPenalty()
+      }
     }
   }
 
@@ -938,6 +1231,11 @@ export class FireBuildingCollect extends Phaser.Scene {
     const { x, y } = state.spawnPos
     state.sprite.setPosition(x, y).setVisible(true)
     state.label.setPosition(x, y + 52).setVisible(true)
+
+    // Day 3: restart wind drift on ejection.
+    if (this.day >= 3 && (state.matDef.windAmplitude ?? 0) > 0) {
+      this._startMaterialWindDrift(state)
+    }
 
     this._refreshCategoryDisplay()
     this._rebuildPackListRows()
@@ -1057,7 +1355,13 @@ export class FireBuildingCollect extends Phaser.Scene {
     if (resumeStackAfterCollect) {
       const snap =
         this.registry.get('fireCampsiteStackResume') ?? this._resumeSnapBackupCopy ?? {}
-      startStep = snap.resumeCampsiteStep === 'ignite' ? 'ignite' : 'stack'
+      const rs = snap.resumeCampsiteStep
+      startStep =
+        rs === 'ignite'
+          ? 'ignite'
+          : this.day >= 3 && rs === 'campsite_open'
+            ? 'campsite_open'
+            : 'stack'
     }
     this.time.delayedCall(0, () => {
       const payload = {
@@ -1105,6 +1409,25 @@ export class FireBuildingCollect extends Phaser.Scene {
     const difficulty = computeDifficulty(items)
 
     const proceedToCampsite = () => {
+      if (this.day >= 3) {
+        const inkBridge = this.registry.get('inkBridge')
+        inkBridge?.setVariable?.('mg_fire_collect_quality', difficulty)
+        this.registry.set('collectedMaterials', { items, count })
+        // Tick 'gather' todo so campsite can restore it on re-entry.
+        const todoState = this.registry.get('day3TodoState') ?? {}
+        todoState.gather = true
+        this.registry.set('day3TodoState', todoState)
+
+        const resumeSnapRaw =
+          this.registry.get('fireCampsiteStackResume') ?? this._resumeSnapBackupCopy
+        if (!this.registry.get('fireCampsiteStackResume') && resumeSnapRaw) {
+          this.registry.set('fireCampsiteStackResume', resumeSnapRaw)
+        }
+
+        this._deferSwitchToFireBuildingMinigame(true, items)
+        return
+      }
+
       const inkBridge = this.registry.get('inkBridge')
       inkBridge?.setVariable?.('mg_fire_collect_quality', difficulty)
 
@@ -1154,8 +1477,8 @@ export class FireBuildingCollect extends Phaser.Scene {
       this.time.delayedCall(0, () => this.scene.stop('FireBuildingCollect'))
     }
 
-    // §259–265 — good load heading back (skip if quota dialogue already praised).
-    if (meetsTargets && count.unusable <= 1 && !this._headBackGoodFeedbackShown) {
+    // §259–265 — good load heading back (Day 2 only; Day 3 has no quota target).
+    if (this.day < 3 && meetsTargets && count.unusable <= 1 && !this._headBackGoodFeedbackShown) {
       this._headBackGoodFeedbackShown = true
       this._showDialogueSequence(
         [
