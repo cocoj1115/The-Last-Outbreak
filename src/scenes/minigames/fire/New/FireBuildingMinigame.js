@@ -438,7 +438,7 @@ function day3WindSlotRoles(dir) {
 }
 
 /**
- * Day 3 ignite — strike cardinal vs wind: leeward ×1.0, cross ×1.3, windward ×1.6
+ * Day 3 ignite — strike cardinal vs wind: leeward ×1.0, cross ×1.5, windward ×2.0
  * @param {'north'|'south'|'east'|'west'|null} windDir
  * @param {'north'|'south'|'east'|'west'|null} sparkDir
  */
@@ -453,8 +453,8 @@ function day3SparkStrikeDecayMultiplier(windDir, sparkDir) {
   }
   const { windward, leeward, sideA, sideB } = day3WindSlotRoles(windDir)
   if (sparkDir === leeward) return 1
-  if (sparkDir === windward) return 1.6
-  if (sparkDir === sideA || sparkDir === sideB) return 1.3
+  if (sparkDir === windward) return 2
+  if (sparkDir === sideA || sparkDir === sideB) return 1.5
   return 1
 }
 
@@ -769,9 +769,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._stepProposalShown = {}
 
     let stackResumeHandled = false
+    let resumeCampsiteStepFromSnap = null
     if (this._resumeStackAfterCollect) {
       const snap = this.registry.get('fireCampsiteStackResume')
       if (snap) {
+        resumeCampsiteStepFromSnap = snap.resumeCampsiteStep ?? null
         this._igniteResumeFromForest = snap.igniteResume ?? null
         this._applyStackResumeFromCollect(snap)
         this._syncSortedMaterialsRegistryLive()
@@ -794,55 +796,17 @@ export class FireBuildingMinigame extends Phaser.Scene {
       this._resumeStackAfterCollect = false
     }
 
-    // Day 3 — open-ended campsite; honors init `startStep` and forest-return resume merge (matSnapshot).
+    // Day 3 — open campsite; forest resume may return to ignite; mock may cold-start at ignite.
     if (this.day >= 3) {
-      const entryRaw = this._startStep
-      const entry =
-        typeof entryRaw === 'string' && entryRaw.length > 0 ? entryRaw : 'campsite_open'
-
-      if (stackResumeHandled) {
-        this._applyDay3CampsiteResumeExtras()
-      }
-
-      if (
-        entry !== 'ren_intro' &&
-        entry !== 'clear' &&
-        !stackResumeHandled
-      ) {
-        if (entry === 'ignite' || entry === 'spread' || entry === 'sustain') {
-          this._hydratePlacedStackFromRegistryIfNeeded()
-          this._hydrateSortedMaterialsFromRegistryIfNeeded(entry)
-        } else if (entry === 'stack') {
-          this._hydrateSortedMaterialsFromRegistryIfNeeded(entry)
-          this._hydratePlacedStackFromRegistryIfNeeded()
-        }
-        if (
-          entry === 'stack' ||
-          entry === 'ignite' ||
-          entry === 'spread' ||
-          entry === 'sustain'
-        ) {
-          this._ensureSortedMaterialsZoneLayout()
-        }
-      }
-
-      if (entry === 'stack') {
-        this._stepProposalShown.stack = true
-        this._stackDevJumpSkipPitPrompt = true
-      }
-
-      if (entry === 'spread') {
-        this.registry.set('ignitionSuccess', true)
-        this._tinderSprite?.setAlpha(0)
-        this._fireIcon?.setAlpha(1)
-      }
-
-      this._enterStep(entry)
-
-      if (stackResumeHandled) {
-        this._refreshDay3WindRockInput()
-        this._syncStackSortedDraggability()
-        this._refreshIgniteStrikeAvailability()
+      if (stackResumeHandled && resumeCampsiteStepFromSnap === 'ignite') {
+        this._enterStep('ignite')
+      } else if (!stackResumeHandled && this._startStep === 'ignite') {
+        this._hydratePlacedStackFromRegistryIfNeeded()
+        this._hydrateSortedMaterialsFromRegistryIfNeeded('ignite')
+        this._ensureSortedMaterialsZoneLayout()
+        this._enterStep('ignite')
+      } else {
+        this._enterStep('campsite_open')
       }
       return
     }
@@ -950,13 +914,9 @@ export class FireBuildingMinigame extends Phaser.Scene {
       })
       .filter(Boolean)
 
-    let resumeCampsiteStep = 'stack'
-    if (this.step === 'ignite') resumeCampsiteStep = 'ignite'
-    else if (this.day >= 3 && this.step === 'campsite_open') resumeCampsiteStep = 'campsite_open'
-
     return {
       matSnapshot,
-      resumeCampsiteStep,
+      resumeCampsiteStep: this.step === 'ignite' ? 'ignite' : 'stack',
       igniteResume: this.step === 'ignite' ? this._buildIgniteResumeSnapshot() : undefined,
       stackDropCount:       { ...this._stackDropCount },
       stackUnitIndexInZone: { ...this._stackUnitIndexInZone },
@@ -1075,16 +1035,6 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
 
     this._sortedCount = this._sortableIds.length
-  }
-
-  /** Day 3 — restore wind slots / shield geometry after `_applyStackResumeFromCollect` (registry rocks). */
-  _applyDay3CampsiteResumeExtras() {
-    if (this.day < 3) return
-    this._ensureDay3WindDirection()
-    if (!this._windSlotCenters) this._buildDay3WindSlots()
-    this._restoreDay3WindShieldFromRegistry()
-    this._recomputeWindShield()
-    this._day3RebuildWindBlockRects()
   }
 
   /**
@@ -3139,14 +3089,9 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _onForestHotspotClick() {
     // Day 3: no step gate, no debris-clearing gate — forest is always accessible
     if (this.day >= 3) {
-      this._syncDay3WindShieldSlotsRegistry()
-      this.registry.set('fireCampsiteStackResume', this._buildStackResumePayload())
       this.registry.set('devFireBuildChain', true)
       this.scene.stop(this.scene.key)
-      this.scene.start('FireBuildingCollect', {
-        day: this.day,
-        collectSessionKind: COLLECT_SESSION_RESUME_CAMPSITE,
-      })
+      this.scene.start('FireBuildingCollect', { day: this.day })
       return
     }
 
@@ -6386,8 +6331,6 @@ export class FireBuildingMinigame extends Phaser.Scene {
       })
     }
 
-    if (this.day >= 3) this._syncDay3WindShieldSlotsRegistry()
-
     this.registry.set('fireCampsiteStackResume', this._buildStackResumePayload())
     this.scene.stop(this.scene.key)
     this.scene.start('FireBuildingCollect', {
@@ -6666,8 +6609,6 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._effectiveDecayMs = effectiveDecayMs
     if (this.day <= 2) {
       this._effectiveDecayMs = Math.max(1200, this._effectiveDecayMs)
-    } else if (this.day >= 3) {
-      this._effectiveDecayMs = Math.max(800, this._effectiveDecayMs)
     }
     this._igniteDecayMsBaseForDirection = this._effectiveDecayMs
     this._igniteDecayPerTick = this._igniteDifficulty.decayPerTick
@@ -6695,7 +6636,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     if (this.day <= 2) {
       this._igniteBlowPenalty = kindN >= 3 ? 5 : kindN === 2 ? 7 : 10
     } else {
-      this._igniteBlowPenalty = kindN >= 3 ? 3 : kindN === 2 ? 5 : 8
+      this._igniteBlowPenalty = kindN >= 3 ? 5 : kindN === 2 ? 8 : 12
     }
   }
 
@@ -8298,16 +8239,16 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     this._configureIgniteDifficultyParams()
     this._relayoutIgniteHeatBarHud()
-    this._igniteClickBudget = this._computeIgniteClickBudget()
-
     this._igniteTotalClicks = 0
-
+    this._igniteClickBudget = this._computeIgniteClickBudget()
     this._igniteSnapToSparkWhenNoBottomTinder()
 
     this._setIgniteMechanicsHudVisible(true)
     this._refreshIgniteProgressUi()
 
     const hasReserveTinder = this._igniteHasSortedReserveTinder()
+    /** After deduct(1), StaminaSystem only returns alive if current≥1; current===1 ⇒ next deduct(1) hits dayFail. */
+    const staminaAfterFail = stamina?.getState?.()?.current
 
     const afterFail = () => {
       this._dialogue.hide()
@@ -8318,22 +8259,19 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
 
     if (this.day >= 3) {
-      afterFail()
-
-      const staminaState = stamina?.getState?.() ?? {}
-      const hasBottomTinderAfterFail = this._stackPlacedCountInLayer('bottom') > 0
-
-      let text = 'Not yet. Try again.'
-      if (staminaState.current === 1) {
-        text = 'One more like that and I am done for the night.'
-      } else if (!hasBottomTinderAfterFail && !hasReserveTinder) {
-        text =
-          'That was my last dry tinder. I have to go back and find more.'
+      let aidenText = 'Not yet. Try again.'
+      if (
+        alive &&
+        typeof staminaAfterFail === 'number' &&
+        staminaAfterFail === 1
+      ) {
+        aidenText = 'One more like that and I am done for the night.'
+      } else if (this._stackPlacedCountInLayer('bottom') <= 0 && !hasReserveTinder) {
+        aidenText = 'That was my last dry tinder. I have to go back and find more.'
       } else if (hasReserveTinder) {
-        text = 'The wind got it. I need to try again.'
+        aidenText = 'The wind got it. I need to try again.'
       }
-
-      this._dialogue.showSequence([{ speaker: 'Aiden', text }], () => this._dialogue.hide())
+      this._dialogue.showSequence([{ speaker: 'Aiden', text: aidenText }], afterFail)
       return
     }
 

@@ -1355,13 +1355,11 @@ export class FireBuildingCollect extends Phaser.Scene {
     if (resumeStackAfterCollect) {
       const snap =
         this.registry.get('fireCampsiteStackResume') ?? this._resumeSnapBackupCopy ?? {}
-      const rs = snap.resumeCampsiteStep
-      startStep =
-        rs === 'ignite'
-          ? 'ignite'
-          : this.day >= 3 && rs === 'campsite_open'
-            ? 'campsite_open'
-            : 'stack'
+      if (this.day >= 3) {
+        startStep = snap.resumeCampsiteStep === 'ignite' ? 'ignite' : 'campsite_open'
+      } else {
+        startStep = snap.resumeCampsiteStep === 'ignite' ? 'ignite' : 'stack'
+      }
     }
     this.time.delayedCall(0, () => {
       const payload = {
@@ -1417,13 +1415,6 @@ export class FireBuildingCollect extends Phaser.Scene {
         const todoState = this.registry.get('day3TodoState') ?? {}
         todoState.gather = true
         this.registry.set('day3TodoState', todoState)
-
-        const resumeSnapRaw =
-          this.registry.get('fireCampsiteStackResume') ?? this._resumeSnapBackupCopy
-        if (!this.registry.get('fireCampsiteStackResume') && resumeSnapRaw) {
-          this.registry.set('fireCampsiteStackResume', resumeSnapRaw)
-        }
-
         this._deferSwitchToFireBuildingMinigame(true, items)
         return
       }
