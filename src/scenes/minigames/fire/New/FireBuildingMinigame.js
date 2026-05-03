@@ -1,4 +1,5 @@
 import Phaser from 'phaser'
+import { gsap } from 'gsap'
 import { GameEvents } from '../../../../systems/GameEvents.js'
 import { DialogueBox } from './DialogueBox.js'
 import { COLLECT_SESSION_RESUME_CAMPSITE, COLLECT_TARGETS } from './FireBuildingCollect.js'
@@ -215,6 +216,11 @@ const LAYER_ID_TO_STACK_ZONE = {
   top: 'fuel_wood',
 }
 
+const DAY3_ZERO_FIRE_IDS = new Set(['wet_moss'])
+function isDay3ZeroFireMaterial(id) {
+  return id != null && DAY3_ZERO_FIRE_IDS.has(id)
+}
+
 const STACK_MIN_BOTTOM = 2
 const STACK_MIN_MIDDLE = 1
 const STACK_MIN_TOP    = 1
@@ -234,7 +240,9 @@ const STACK_MAT_VISUAL = {
 // Ring radii for pit guide graphics; also used as stack-step fallback hit targets (maps to Bottom/Middle/Top).
 const STACK_BOTTOM_R = 45
 const STACK_MIDDLE_R = 80
-const STACK_TOP_R    = 115
+const STACK_TOP_R = 115
+/** Whole dark pit fill in `_buildFirePit` (~68px); drops here must count as Bottom, not Middle. */
+const STACK_PIT_DROP_TINDER_R = 68
 /** Blow halo stroke sits just outside the ring for the active spark layer (matches STRIKE burst radius). */
 const IGNITE_HALO_RING_PAD = 12
 
@@ -329,6 +337,11 @@ const BG_FLOOD       = 0x080f18
 const MAT_COLOR     = { GOOD: 0x8a7050, MID: 0x5a4a30, BAD: 0x2a1e10 }
 const ITEM_W        = 72
 const ITEM_H        = 72
+/** Day 3 fire-pit lay — compact placeholder while `placed` in pit (`stack` / `campsite_open` only). */
+const DAY3_PIT_STICK_W = 14
+const DAY3_PIT_STICK_H = 56
+/** Pointer travel below this ⇒ treat pit pickup as tap-to-pop vs drag-after-withdraw (px). */
+const DAY3_PIT_POP_TAP_DRAG_PX = 14
 /** Legacy HUD anchor — kept for any `_sortPackUiNodes` cleanup; scatter uses screen-relative rects. */
 const SORT_PACK_HUD_X              = 52
 const SORT_PACK_HUD_Y_FROM_BOTTOM  = 48
@@ -362,6 +375,92 @@ function campsiteBlowCenterX(pitX) {
 const SEG_COLOR_LIT = 0xe8a020
 const SEG_COLOR_DIM = 0x3a2e18
 
+// ─── Day 3 wind shield (Step 5) ─────────────────────────────────────────────
+
+const DAY3_WIND_CARDINALS = ['north', 'south', 'east', 'west']
+const WIND_SHIELD_SLOT_OFFSET = 100
+const WIND_SHIELD_HIT_W = 96
+const WIND_SHIELD_HIT_H = 80
+const WIND_LEAF_BATCH_INTERVAL_MS = 2000
+const WIND_LEAF_COUNT_MIN = 3
+const WIND_LEAF_COUNT_MAX = 5
+const WIND_LEAF_DURATION_MIN = 3
+const WIND_LEAF_DURATION_MAX = 4
+
+/** Day 3 — no wind shield: each pit-laid tinder may blow away after the wind-strip delay. */
+const WIND_STRIP_DELAY_MIN = 800
+const WIND_STRIP_DELAY_MAX = 2500
+const WIND_STRIP_GUST_LEAD_MS = 300
+const WIND_STRIP_GUST_LEAF_COUNT_MIN = 6
+const WIND_STRIP_GUST_LEAF_COUNT_MAX = 8
+/** Shorten gust-pass leaf travel ~30% vs ambient batch leaves. */
+const WIND_STRIP_GUST_DURATION_MULT = 1 / 1.3
+
+const WIND_STRIP_TINDER_LINE_LEAVES =
+  'Oh no. My dry leaves, blown away by the wind.'
+const WIND_STRIP_TINDER_LINE_GRASS =
+  'Oh no. My grass bundle, blown away by the wind.'
+const WIND_STRIP_TINDER_LINE_FALLBACK =
+  'Oh no. My tinder, blown away by the wind.'
+const WIND_STRIP_TINDER_BLOCK_WIND_HINT =
+  'I should find something to block the wind.'
+
+function windStripTinderShortLineForId(id) {
+  if (!id || typeof id !== 'string') return WIND_STRIP_TINDER_LINE_FALLBACK
+  if (id === 'dry_leaves' || id.startsWith('dry_leaves')) return WIND_STRIP_TINDER_LINE_LEAVES
+  if (id === 'dry_grass' || id.startsWith('dry_grass')) return WIND_STRIP_TINDER_LINE_GRASS
+  return WIND_STRIP_TINDER_LINE_FALLBACK
+}
+
+/** 3×3 grid cells around pit; slot → (row, col), r=0 north, c=0 west (see Day 3 wind-block spec). */
+const WIND_BLOCK_CELL_W = 88
+const WIND_BLOCK_CELL_H = 72
+const DAY3_WIND_SLOT_TO_GRID_CELL = {
+  north: [0, 1],
+  south: [2, 1],
+  west: [1, 0],
+  east: [1, 2],
+}
+
+/** @param {'north'|'south'|'east'|'west'} dir */
+function day3WindSlotRoles(dir) {
+  const windward = dir
+  const opp = { north: 'south', south: 'north', east: 'west', west: 'east' }
+  const leeward = opp[dir]
+  const sides = {
+    north: ['east', 'west'],
+    south: ['east', 'west'],
+    east: ['north', 'south'],
+    west: ['north', 'south'],
+  }
+  const [sideA, sideB] = sides[dir]
+  return { windward, leeward, sideA, sideB }
+}
+
+/**
+ * Day 3 ignite — strike cardinal vs wind: leeward ×1.0, cross ×1.3, windward ×1.6
+ * @param {'north'|'south'|'east'|'west'|null} windDir
+ * @param {'north'|'south'|'east'|'west'|null} sparkDir
+ */
+function day3SparkStrikeDecayMultiplier(windDir, sparkDir) {
+  if (
+    !windDir ||
+    !sparkDir ||
+    !DAY3_WIND_CARDINALS.includes(windDir) ||
+    !DAY3_WIND_CARDINALS.includes(sparkDir)
+  ) {
+    return 1
+  }
+  const { windward, leeward, sideA, sideB } = day3WindSlotRoles(windDir)
+  if (sparkDir === leeward) return 1
+  if (sparkDir === windward) return 1.6
+  if (sparkDir === sideA || sparkDir === sideB) return 1.3
+  return 1
+}
+
+/** Hit radius around each ordinal for Day 3 “where to strike” picker (world px). */
+const DAY3_SPARK_DIRECTION_HOTSPOT_R = 42
+
 // ─── Scene ───────────────────────────────────────────────────────────────────
 
 /** Unified Day 2–3 fire campsite flow; registered under legacy Ink key (see `fireSceneKeys.js`). */
@@ -374,6 +473,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this.day       = data?.day ?? 2
     this.step      = null
     this._startStep = data?.startStep ?? null
+    /** Day 3: wind direction — `'north'` | `'south'` | `'east'` | `'west'`. */
+    this._windDirection = data?.windDirection ?? null
     /** Mock / QA: `'clean'` | `'stuck_kindling'` | `'stuck_fuel'` forces §4.6 branch. */
     this._spreadDevScenario = data?.spreadDevScenario ?? null
     this._resumeStackAfterCollect = data?.resumeStackAfterCollect === true
@@ -436,6 +537,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._stackRenFeedbackLocked = false
     /** §693–703 summary Ren once per lay after FINISH when mins met. */
     this._stackLaySummaryRenShown = false
+    /** Day 3 stack — Aiden one-liner + to-do lay once tinder/kindling/fuel each ≥ 1 on the lay. */
+    this._stackDay3LayAidenDone = false
 
     /** After stack Ren proposal choices: pit tap opens lay UI (`_beginStack`). */
     this._stackAwaitingPitForLay     = false
@@ -515,6 +618,17 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._rainTimer         = null
     this._idleTimer         = null
     this._effectiveDecayMs   = DIFFICULTY_CONFIG.EASY.decayMs
+    /** Day 3: decay interval before multiplying by strike-side vs wind (`_effectiveDecayMs` carries post-mult value). */
+    this._igniteDecayMsBaseForDirection = DIFFICULTY_CONFIG.EASY.decayMs
+    /** Day 3: first STRIKE in spark mechanics opens cardinal picker instead of striking. */
+    this._igniteAwaitDay3DirectionPick = false
+    /** @type {'north'|'south'|'east'|'west'|null} */
+    this._sparkDirection = null
+    /** @type {Phaser.GameObjects.GameObject[]} */
+    this._day3SparkDirPickerObjs = []
+    this._day3SparkDirPromptText = null
+    /** @type {Phaser.GameObjects.Arc[]} */
+    this._day3SparkDirHoverTargets = []
 
     /** §4.6 Spread — flame climb after ignite */
     this._spreadTimers        = []
@@ -565,6 +679,36 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._barMaxW        = 0
 
     this._sortPackUiNodes = []
+
+    // Day 3 rocks (wind-shield stones)
+    this._day3Rocks = []
+    /** `'none'` | `'partial'` | `'good'` */
+    this._windShield = 'none'
+    /** @type {Record<'north'|'south'|'east'|'west', number|null>} rock index 0–7 per slot */
+    this._windSlotRockIndex = { north: null, south: null, east: null, west: null }
+    this._windSlotBounds = null
+    this._windSlotCenters = null
+    this._windSlotDebugRects = []
+    this._windLeafTimer = null
+    /** @type {Phaser.GameObjects.GameObject[]} */
+    this._day3WindActiveLeaves = []
+    /** @type {Phaser.Geom.Rectangle[]} pit-centered wind-block zones for leaf cull */
+    this._day3WindBlockRectsCached = []
+
+    // Day 3 to-do list
+    this.todoState = {
+      clear:   false,
+      gather:  false,
+      sort:    false,
+      shield:  false,
+      lay:     false,
+      light:   false,
+      survive: false,
+    }
+    this._todoListTexts = []
+    this._todoItems = []
+    /** One wind-strip dialogue chain at a time (Day 3). */
+    this._day3WindStripDialogBusy = false
   }
 
   create() {
@@ -584,6 +728,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._buildForestHotspot(W, H)
     this._buildFirePit(W, H)
     this._buildDebris(W, H)
+    this._buildDay3Rocks()
     this._buildClearCounter(W, H)
     this._buildSortZones(W, H)
     this._buildMaterialPile(W, H)
@@ -591,12 +736,14 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._buildStackRings(W, H)
     this._buildFlintButton()
     this._buildStrengthBar(W, H)
+    this._buildTodoList(W, H)
     this._buildNightBar(W, H)
     this._buildMoveOnButton(W, H)
     this._buildDialogueBox(W, H)
     this._setupDragListeners()
 
     this._enterHandlers = {
+      campsite_open: () => this._enterDay3Campsite(),
       ren_intro: () => this._enterRenIntro(),
       clear:     () => this._enterClear(),
       sort:      () => this._enterSort(),
@@ -607,6 +754,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
 
     this._exitHandlers = {
+      campsite_open: () => this._exitDay3Campsite(),
       ren_intro: () => {},
       clear:   () => this._exitClear(),
       sort:    () => this._exitSort(),
@@ -644,6 +792,12 @@ export class FireBuildingMinigame extends Phaser.Scene {
         stackResumeHandled = true
       }
       this._resumeStackAfterCollect = false
+    }
+
+    // Day 3 always opens with the free-roam campsite state, bypassing Day 2's linear machine.
+    if (this.day >= 3) {
+      this._enterStep('campsite_open')
+      return
     }
 
     const entry = this._startStep ?? 'ren_intro'
@@ -1075,6 +1229,476 @@ export class FireBuildingMinigame extends Phaser.Scene {
     })
   }
 
+  // ── Day 3 wind-shield stones (8 placeholders; snap + FX in Step 5) ──
+
+  _buildDay3Rocks() {
+    if (this.day < 3) return
+
+    const cx = this._pitX
+    const cy = this._pitY
+
+    const positions = [
+      { x: cx - 350, y: cy + 158 },
+      { x: cx - 225, y: cy + 212 },
+      { x: cx - 105, y: cy + 170 },
+      { x: cx - 10,  y: cy + 225 },
+      { x: cx + 110, y: cy + 165 },
+      { x: cx + 240, y: cy + 215 },
+      { x: cx + 345, y: cy + 172 },
+      { x: cx + 425, y: cy + 198 },
+    ]
+
+    positions.forEach((pos, index) => {
+      const rock = this.add.text(pos.x, pos.y, '🪨', { fontSize: '34px' })
+        .setOrigin(0.5)
+        .setDepth(5)
+        .setAlpha(0)
+        .setInteractive({ useHandCursor: true })
+      this.input.setDraggable(rock)
+
+      this._day3Rocks.push({
+        sprite: rock,
+        baseX: pos.x,
+        baseY: pos.y,
+        index,
+        slotId: null,
+      })
+    })
+  }
+
+  _ensureDay3WindDirection() {
+    if (this.day < 3) return
+    const valid = (d) => typeof d === 'string' && DAY3_WIND_CARDINALS.includes(d)
+    if (valid(this._windDirection)) {
+      this.registry.set('day3WindDirection', this._windDirection)
+      return
+    }
+    const saved = this.registry.get('day3WindDirection')
+    if (valid(saved)) {
+      this._windDirection = /** @type {'north'|'south'|'east'|'west'} */ (saved)
+      return
+    }
+    const pick = DAY3_WIND_CARDINALS[Math.floor(Math.random() * 4)]
+    this._windDirection = pick
+    this.registry.set('day3WindDirection', pick)
+  }
+
+  _buildDay3WindSlots() {
+    if (this.day < 3) return
+    for (const g of this._windSlotDebugRects) {
+      g?.destroy()
+    }
+    this._windSlotDebugRects = []
+
+    const cx = this._pitX
+    const cy = this._pitY
+    const ox = WIND_SHIELD_SLOT_OFFSET
+    const hw = WIND_SHIELD_HIT_W / 2
+    const hh = WIND_SHIELD_HIT_H / 2
+    const centers = {
+      north: { x: cx, y: cy - ox },
+      south: { x: cx, y: cy + ox },
+      east: { x: cx + ox, y: cy },
+      west: { x: cx - ox, y: cy },
+    }
+    this._windSlotCenters = centers
+    /** @type {Record<string, Phaser.Geom.Rectangle>} */
+    const bounds = {}
+    for (const id of DAY3_WIND_CARDINALS) {
+      const c = centers[id]
+      bounds[id] = new Phaser.Geom.Rectangle(c.x - hw, c.y - hh, WIND_SHIELD_HIT_W, WIND_SHIELD_HIT_H)
+      if (import.meta.env.DEV) {
+        const dbg = this.add
+          .rectangle(c.x, c.y, WIND_SHIELD_HIT_W, WIND_SHIELD_HIT_H, 0x88ccff, 0.12)
+          .setStrokeStyle(1, 0x4488aa, 0.35)
+          .setDepth(4)
+        this._windSlotDebugRects.push(dbg)
+      }
+    }
+    this._windSlotBounds = bounds
+  }
+
+  _day3RebuildWindBlockRects() {
+    if (this.day < 3) {
+      this._day3WindBlockRectsCached = []
+      return
+    }
+    const pitX = this._pitX
+    const pitY = this._pitY
+    const cw = WIND_BLOCK_CELL_W
+    const ch = WIND_BLOCK_CELL_H
+    const seen = new Set()
+    const rects = []
+    for (const id of DAY3_WIND_CARDINALS) {
+      if (this._windSlotRockIndex[id] == null) continue
+      const rc = DAY3_WIND_SLOT_TO_GRID_CELL[id]
+      if (!rc) continue
+      const [r, c] = rc
+      const key = `${r},${c}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      const cx = pitX + (c - 1) * cw
+      const cy = pitY + (r - 1) * ch
+      rects.push(new Phaser.Geom.Rectangle(cx - cw / 2, cy - ch / 2, cw, ch))
+    }
+    this._day3WindBlockRectsCached = rects
+  }
+
+  _day3PointInWindBlockZone(wx, wy) {
+    if (!this._day3WindFxAllowedForStep() || !this._day3WindBlockRectsCached?.length) return false
+    for (const rect of this._day3WindBlockRectsCached) {
+      if (rect.contains(wx, wy)) return true
+    }
+    return false
+  }
+
+  _killDay3WindLeaf(leaf, prog) {
+    if (leaf) gsap.killTweensOf(leaf)
+    if (prog) gsap.killTweensOf(prog)
+    if (leaf) {
+      const ix = this._day3WindActiveLeaves.indexOf(leaf)
+      if (ix >= 0) this._day3WindActiveLeaves.splice(ix, 1)
+      if (leaf.scene) leaf.destroy()
+    }
+  }
+
+  _restoreDay3WindShieldFromRegistry() {
+    if (this.day < 3 || !this._windSlotCenters) return
+    const snap = this.registry.get('day3WindShieldSlots')
+    if (!snap || typeof snap !== 'object') return
+    for (const id of DAY3_WIND_CARDINALS) {
+      const ix = snap[id]
+      if (typeof ix !== 'number' || ix < 0 || ix >= this._day3Rocks.length) continue
+      const c = this._windSlotCenters[id]
+      if (!c) continue
+      const rock = this._day3Rocks[ix]
+      if (!rock?.sprite) continue
+      rock.sprite.setPosition(c.x, c.y)
+      rock.slotId = id
+      this._windSlotRockIndex[id] = ix
+    }
+    this._day3RebuildWindBlockRects()
+  }
+
+  _syncDay3WindShieldSlotsRegistry() {
+    if (this.day < 3) return
+    const o = {}
+    for (const id of DAY3_WIND_CARDINALS) {
+      const ix = this._windSlotRockIndex[id]
+      o[id] = typeof ix === 'number' ? ix : null
+    }
+    this.registry.set('day3WindShieldSlots', o)
+  }
+
+  /**
+   * Reachable spec: good = windward≥1 & side≥1; partial = (windward 1 & side 0) OR (windward 0 & side≥2); else none.
+   */
+  _recomputeWindShield() {
+    if (this.day < 3 || !this._windDirection) {
+      this._windShield = 'none'
+      this.registry.set('windShield', 'none')
+      return
+    }
+    const { windward, sideA, sideB } = day3WindSlotRoles(this._windDirection)
+    let windwardN = 0
+    let sideN = 0
+    for (const id of DAY3_WIND_CARDINALS) {
+      const ix = this._windSlotRockIndex[id]
+      if (ix == null) continue
+      if (id === windward) windwardN++
+      else if (id === sideA || id === sideB) sideN++
+    }
+    let next = 'none'
+    if (windwardN >= 1 && sideN >= 1) next = 'good'
+    else if ((windwardN >= 1 && sideN === 0) || (windwardN === 0 && sideN >= 2)) next = 'partial'
+    this._windShield = next
+    this.registry.set('windShield', next)
+    if (this.day >= 3 && next !== 'none') {
+      this._cancelPendingWindStripsAwaitingShield()
+    }
+  }
+
+  _day3WindPickSlotAt(wx, wy) {
+    if (!this._windSlotBounds) return null
+    const cand = []
+    for (const id of DAY3_WIND_CARDINALS) {
+      const b = this._windSlotBounds[id]
+      if (b.contains(wx, wy)) {
+        const c = this._windSlotCenters[id]
+        const d = Phaser.Math.Distance.Between(wx, wy, c.x, c.y)
+        cand.push({ id, d })
+      }
+    }
+    if (!cand.length) return null
+    cand.sort((a, b) => a.d - b.d)
+    return cand[0].id
+  }
+
+  /** @returns {typeof this._day3Rocks[0] | null} */
+  _day3WindRockForSprite(sprite) {
+    for (const r of this._day3Rocks) {
+      if (r.sprite === sprite) return r
+    }
+    return null
+  }
+
+  _refreshDay3WindRockInput() {
+    if (this.day < 3) return
+    const allow = this.step === 'campsite_open' || this.step === 'stack'
+    for (const r of this._day3Rocks) {
+      const spr = r.sprite
+      if (!spr?.scene) continue
+      if (allow) {
+        spr.setInteractive({ useHandCursor: true })
+        this.input.setDraggable(spr, true)
+      } else {
+        this.input.setDraggable(spr, false)
+        spr.disableInteractive()
+      }
+    }
+  }
+
+  /**
+   * @param {boolean} revertToSlot If true and the rock had been on a slot, snap back there (leeward / occupied target). If false, stay at release (free camp placement).
+   */
+  _bounceWindRockHomeOrRestoreSlot(rock, wx, wy, revertToSlot = false) {
+    const ps = rock._pickupFromSlot
+    rock._pickupFromSlot = undefined
+    const x = wx ?? rock.sprite.x
+    const y = wy ?? rock.sprite.y
+
+    if (
+      revertToSlot &&
+      ps &&
+      this._windSlotCenters?.[ps] &&
+      this._windSlotRockIndex[ps] == null
+    ) {
+      this._windSlotRockIndex[ps] = rock.index
+      rock.slotId = ps
+      const c = this._windSlotCenters[ps]
+      rock.sprite.setPosition(c.x, c.y)
+      this._recomputeWindShield()
+      this._syncDay3WindShieldSlotsRegistry()
+      this._day3RebuildWindBlockRects()
+      return
+    }
+
+    rock.sprite.setPosition(x, y)
+    rock.baseX = x
+    rock.baseY = y
+    rock.slotId = null
+    this._recomputeWindShield()
+    this._syncDay3WindShieldSlotsRegistry()
+    this._day3RebuildWindBlockRects()
+  }
+
+  _maybeDay3WindShieldCoverageMonologue() {
+    if (this.registry.get('day3WindShieldCoverageDone')) return
+    if (!this._windDirection) return
+    const { windward, sideA, sideB } = day3WindSlotRoles(this._windDirection)
+    let n = 0
+    for (const id of [windward, sideA, sideB]) {
+      if (this._windSlotRockIndex[id] != null) n++
+    }
+    if (n < 2) return
+    this.registry.set('day3WindShieldCoverageDone', true)
+    this._dialogue.show({
+      speaker: 'Aiden',
+      text: 'Not perfect, but it will help. The wind cannot cut straight through now.',
+      onComplete: () => this._dialogue.hide(),
+    })
+  }
+
+  _onDay3WindRockDragEnd(rock, wx, wy) {
+    if (!this._windDirection || !this._windSlotCenters) {
+      this._bounceWindRockHomeOrRestoreSlot(rock, wx, wy, false)
+      return
+    }
+
+    const slot = this._day3WindPickSlotAt(wx, wy)
+    const roles = day3WindSlotRoles(this._windDirection)
+
+    if (!slot) {
+      this._bounceWindRockHomeOrRestoreSlot(rock, wx, wy, false)
+      return
+    }
+
+    if (slot === roles.leeward) {
+      if (!this.registry.get('day3WindShieldLeewardWrongDone')) {
+        this.registry.set('day3WindShieldLeewardWrongDone', true)
+        this._dialogue.show({
+          speaker: 'Aiden',
+          text: 'Wind is not coming from here. Wrong side.',
+          onComplete: () => this._dialogue.hide(),
+        })
+      }
+      this._bounceWindRockHomeOrRestoreSlot(rock, wx, wy, true)
+      return
+    }
+
+    const occupant = this._windSlotRockIndex[slot]
+    if (occupant != null && occupant !== rock.index) {
+      this._bounceWindRockHomeOrRestoreSlot(rock, wx, wy, true)
+      return
+    }
+
+    rock._pickupFromSlot = undefined
+    const c = this._windSlotCenters[slot]
+    rock.sprite.setPosition(c.x, c.y)
+    rock.slotId = slot
+    this._windSlotRockIndex[slot] = rock.index
+
+    if (slot === roles.windward && !this.registry.get('day3WindShieldWindwardFirstDone')) {
+      this.registry.set('day3WindShieldWindwardFirstDone', true)
+      this._dialogue.show({
+        speaker: 'Aiden',
+        text: 'That side takes the wind. Good.',
+        onComplete: () => this._dialogue.hide(),
+      })
+    }
+
+    if (!this.todoState.shield) {
+      this.todoState.shield = true
+      const todo = { ...(this.registry.get('day3TodoState') ?? {}), shield: true }
+      this.registry.set('day3TodoState', todo)
+      this.updateTodoList()
+    }
+
+    this._maybeDay3WindShieldCoverageMonologue()
+    this._recomputeWindShield()
+    this._syncDay3WindShieldSlotsRegistry()
+    this._day3RebuildWindBlockRects()
+  }
+
+  _stopDay3WindFx() {
+    if (this._windLeafTimer) {
+      this._windLeafTimer.remove(false)
+      this._windLeafTimer = null
+    }
+    for (const leaf of [...this._day3WindActiveLeaves]) {
+      gsap.killTweensOf(leaf)
+      leaf.destroy?.()
+    }
+    this._day3WindActiveLeaves = []
+  }
+
+  _day3WindFxAllowedForStep() {
+    return (
+      this.day >= 3 &&
+      (this.step === 'campsite_open' ||
+        this.step === 'stack' ||
+        this.step === 'ignite')
+    )
+  }
+
+  _startDay3WindFx() {
+    if (!this._day3WindFxAllowedForStep() || !this._windDirection) return
+    if (this._windLeafTimer) return
+    this._spawnDay3WindLeafBatch()
+    this._windLeafTimer = this.time.addEvent({
+      delay: WIND_LEAF_BATCH_INTERVAL_MS,
+      loop: true,
+      callback: () => this._spawnDay3WindLeafBatch(),
+    })
+  }
+
+  _spawnDay3WindLeafBatch() {
+    if (!this._day3WindFxAllowedForStep() || !this._windDirection) return
+    const nMin = WIND_LEAF_COUNT_MIN
+    const nMax = WIND_LEAF_COUNT_MAX
+    this._spawnDay3WindLeaves({ countMin: nMin, countMax: nMax, durScale: 1 })
+  }
+
+  /** @param {{ countMin: number, countMax: number, durScale?: number }} opts */
+  _spawnDay3WindLeaves(opts) {
+    if (!this._day3WindFxAllowedForStep() || !this._windDirection) return
+    const countMin = opts.countMin ?? WIND_LEAF_COUNT_MIN
+    const countMax = opts.countMax ?? WIND_LEAF_COUNT_MAX
+    const durScale = opts.durScale ?? 1
+    const W = this.scale.width
+    const H = this.scale.height
+    const n = Phaser.Math.Between(countMin, countMax)
+    const dir = this._windDirection
+    const pad = 28
+
+    const spawnLeaf = () => {
+      const leaf = this.add
+        .rectangle(0, 0, 10, 16, Phaser.Math.RND.pick([0x4a6b3a, 0x5a7a40, 0x4a5a38]))
+        .setDepth(6)
+        .setStrokeStyle(1, 0x2a3a28, 0.6)
+      this._day3WindActiveLeaves.push(leaf)
+
+      const dur = Phaser.Math.FloatBetween(WIND_LEAF_DURATION_MIN, WIND_LEAF_DURATION_MAX) * durScale
+      let x0
+      let y0
+      let x1
+      let y1
+      if (dir === 'north') {
+        x0 = Phaser.Math.Between(pad, W - pad)
+        y0 = -Phaser.Math.Between(16, 48)
+        x1 = x0 + Phaser.Math.Between(-50, 50)
+        y1 = H + Phaser.Math.Between(24, 90)
+      } else if (dir === 'south') {
+        x0 = Phaser.Math.Between(pad, W - pad)
+        y0 = H + Phaser.Math.Between(16, 48)
+        x1 = x0 + Phaser.Math.Between(-50, 50)
+        y1 = -Phaser.Math.Between(24, 90)
+      } else if (dir === 'east') {
+        x0 = W + Phaser.Math.Between(16, 48)
+        y0 = Phaser.Math.Between(pad, H - pad)
+        x1 = -Phaser.Math.Between(24, 90)
+        y1 = y0 + Phaser.Math.Between(-40, 40)
+      } else {
+        x0 = -Phaser.Math.Between(16, 48)
+        y0 = Phaser.Math.Between(pad, H - pad)
+        x1 = W + Phaser.Math.Between(24, 90)
+        y1 = y0 + Phaser.Math.Between(-40, 40)
+      }
+      leaf.setPosition(x0, y0)
+      const jitterX = Phaser.Math.FloatBetween(4, 9)
+      const jitterY = Phaser.Math.FloatBetween(4, 10)
+      const prog = { v: 0 }
+      gsap.to(prog, {
+        v: 1,
+        duration: dur,
+        ease: 'none',
+        onUpdate: () => {
+          if (!leaf.scene) return
+          const t = prog.v
+          const jx = Math.sin(t * Math.PI * 6) * jitterX
+          const jy = Math.cos(t * Math.PI * 5) * jitterY
+          leaf.x = x0 + (x1 - x0) * t + jx
+          leaf.y = y0 + (y1 - y0) * t + jy
+          if (this._day3PointInWindBlockZone(leaf.x, leaf.y)) {
+            this._killDay3WindLeaf(leaf, prog)
+          }
+        },
+        onComplete: () => {
+          if (!leaf.scene) return
+          this._killDay3WindLeaf(leaf, prog)
+        },
+      })
+      gsap.to(leaf, {
+        rotation:
+          leaf.rotation + Phaser.Math.FloatBetween(0.5, 1.1) * Phaser.Math.RND.pick([1, -1]),
+        duration: dur * 0.55,
+        yoyo: true,
+        repeat: 1,
+        ease: 'sine.inOut',
+      })
+    }
+
+    for (let i = 0; i < n; i++) spawnLeaf()
+  }
+
+  _spawnDay3WindLeafGustBurst() {
+    if (!this._day3WindFxAllowedForStep() || !this._windDirection) return
+    this._spawnDay3WindLeaves({
+      countMin: WIND_STRIP_GUST_LEAF_COUNT_MIN,
+      countMax: WIND_STRIP_GUST_LEAF_COUNT_MAX,
+      durScale: WIND_STRIP_GUST_DURATION_MULT,
+    })
+  }
   // ── Clear counter ─────────────────────────────────────────────────────────────
 
   _buildClearCounter(W) {
@@ -1191,6 +1815,26 @@ export class FireBuildingMinigame extends Phaser.Scene {
       fuel_wood: { placed: 0, sorted: 0, burned: 0 },
     }
     for (const st of Object.values(this._matStates)) {
+      if (this.day >= 3) {
+        if (st.phase === 'burned' || st.phase === 'ignite_spent') {
+          const zb = st.sortZoneId
+            ? normalizeStackSortZoneId(st.sortZoneId)
+            : correctSortZoneForMatId(st.id)
+          if (zb && counts[zb]) counts[zb].burned++
+        } else if (
+          st.phase === 'placed' &&
+          st.layerId &&
+          !st.day3ZeroFire &&
+          !st._day3WindStripFlying
+        ) {
+          const pz = LAYER_ID_TO_STACK_ZONE[st.layerId]
+          if (pz && counts[pz]) counts[pz].placed++
+        } else if (st.phase === 'sorted' && st.sortZoneId) {
+          const sz = normalizeStackSortZoneId(st.sortZoneId)
+          if (sz && counts[sz]) counts[sz].sorted++
+        }
+        continue
+      }
       const zone = correctSortZoneForMatId(st.id)
       if (!zone || !counts[zone]) continue
       if (st.phase === 'placed') counts[zone].placed++
@@ -1268,6 +1912,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
         sortZoneId: null,
         layerId:    null,
         greyed:     false,
+        day3ZeroFire: false,
       }
     })
   }
@@ -1370,6 +2015,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
   }
 
   _maybeWarnIgniteTinderLow() {
+    if (this.day >= 3) return
     const budget = Math.max(0, this._igniteClickBudget ?? 0)
     const rem = budget - this._igniteTotalClicks
     if (rem > 5 || rem <= 0 || budget <= 0 || this._igniteRenTinderLowShown) return
@@ -1403,6 +2049,18 @@ export class FireBuildingMinigame extends Phaser.Scene {
       return
     }
 
+    if (
+      this.day >= 3 &&
+      this._igniteMechanicsPhase === 'spark' &&
+      this._igniteAwaitDay3DirectionPick
+    ) {
+      if (typeof this._dialogue?.isBlocking === 'function' && this._dialogue.isBlocking())
+        return
+      if (!this._canIgniteSparkStrike()) return
+      this._mountDay3SparkDirectionPicker()
+      return
+    }
+
     if (!this._igniteMechanicsPhase || this._igniteMechanicsPhase !== 'spark') return
 
     this._processIgniteSparkStrikeAtPit()
@@ -1411,6 +2069,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _processIgniteSparkStrikeAtPit() {
     if (this.step !== 'ignite') return
     if (!this._igniteMechanicsPhase || this._igniteMechanicsPhase !== 'spark') return
+    if (this.day >= 3 && this._igniteAwaitDay3DirectionPick) return
     if (typeof this._dialogue?.isBlocking === 'function' && this._dialogue.isBlocking())
       return
 
@@ -1491,6 +2150,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
       this._igniteMechanicsPhase !== 'spark'
     )
       return
+    if (this.day >= 3 && this._igniteAwaitDay3DirectionPick) {
+      if (this._canIgniteSparkStrike()) this._setFlintActive(true)
+      else this._setFlintActive(false)
+      return
+    }
     if (this._canIgniteSparkStrike()) this._setFlintActive(true)
     else this._setFlintActive(false)
   }
@@ -1510,6 +2174,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
       )
       this._tinderSprite?.setAlpha(0.72)
     }
+    if (this.day >= 3) this._resetDay3IgniteStrikeDirectionGate()
     this._refreshIgniteStrikeAvailability()
   }
 
@@ -1564,6 +2229,56 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _refreshStrengthBar() {
     for (let i = 0; i < SEGMENT_COUNT; i++) {
       this._segRects[i].setFillStyle(i < this._fireStrength ? SEG_COLOR_LIT : SEG_COLOR_DIM)
+    }
+  }
+
+  // ── Day 3 To-Do List ─────────────────────────────────────────────────────────
+
+  _buildTodoList() {
+    if (this.day < 3) return
+
+    this._todoItems = [
+      { key: 'clear',   label: 'Clear fire pit' },
+      { key: 'gather',  label: 'Gather materials' },
+      { key: 'sort',    label: 'Sort materials' },
+      { key: 'shield',  label: 'Build wind shield' },
+      { key: 'lay',     label: 'Build fire lay' },
+      { key: 'light',   label: 'Light the fire' },
+      { key: 'survive', label: 'Survive the night' },
+    ]
+
+    const x      = 14
+    const startY = 62   // shifted down so enlarged list doesn't overlap the HUD stamina bar
+    const lineH  = 26   // was 18 — proportionally wider spacing for the larger font
+    const pad    = 10   // left padding inside panel
+
+    // Subtle background panel so text is readable over the dark scene
+    const panW = 192
+    const panH = this._todoItems.length * lineH + 10
+    this.add.rectangle(x + panW / 2, startY + panH / 2, panW, panH, 0x080c06, 0.65)
+      .setDepth(11)
+      .setStrokeStyle(1, 0x3a4a30, 0.5)
+
+    for (let i = 0; i < this._todoItems.length; i++) {
+      const { key, label } = this._todoItems[i]
+      const done = this.todoState[key]
+      const txt = this.add.text(x + pad, startY + 5 + i * lineH, (done ? '✓ ' : '· ') + label, {
+        fontSize: '17px',
+        fontFamily: 'monospace',
+        color: done ? '#6a8a44' : '#b8b898',
+      }).setOrigin(0, 0).setDepth(12)
+      this._todoListTexts.push(txt)
+    }
+  }
+
+  updateTodoList() {
+    if (this.day < 3 || !this._todoListTexts.length) return
+
+    for (let i = 0; i < this._todoItems.length; i++) {
+      const { key, label } = this._todoItems[i]
+      const done = this.todoState[key]
+      this._todoListTexts[i].setText((done ? '✓ ' : '  ') + label)
+      this._todoListTexts[i].setColor(done ? '#666644' : '#aaa890')
     }
   }
 
@@ -1663,10 +2378,64 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
   _setupDragListeners() {
     this.input.on('dragstart', (_, sprite) => {
-      const st = this._spriteToMatState(sprite)
+      const debris = this._day3DebrisEntryForCircleSprite(sprite)
+      if (debris && this.day >= 3) {
+        debris._dragStartX = sprite.x
+        debris._dragStartY = sprite.y
+        sprite.setDepth(22)
+        debris.icon.setDepth(23)
+        return
+      }
+      const windRock =
+        this.day >= 3 && (this.step === 'campsite_open' || this.step === 'stack')
+          ? this._day3WindRockForSprite(sprite)
+          : null
+      if (windRock) {
+        windRock._pickupFromSlot = windRock.slotId
+        if (windRock.slotId && this._windSlotRockIndex[windRock.slotId] === windRock.index) {
+          this._windSlotRockIndex[windRock.slotId] = null
+        }
+        windRock.slotId = null
+        sprite.setDepth(22)
+        if (!this.registry.get('day3WindShieldFirstRockDragDone')) {
+          this.registry.set('day3WindShieldFirstRockDragDone', true)
+          this._dialogue.show({
+            speaker: 'Aiden',
+            text: 'These stones. If I stack them on the side the wind is hitting, they should block the worst of it.',
+            onComplete: () => this._dialogue.hide(),
+          })
+        }
+        this._day3RebuildWindBlockRects()
+        return
+      }
+      let st = this._spriteToMatState(sprite)
+      if (
+        this._day3FireLayUsesPitStickVisual() &&
+        st?.phase === 'placed' &&
+        st.layerId &&
+        !st.day3ZeroFire &&
+        st.isSortable
+      ) {
+        const zz = LAYER_ID_TO_STACK_ZONE[st.layerId]
+        if (zz != null && st.pileKey) {
+          this._recallStackItem(zz, st.pileKey)
+        }
+        sprite.setDepth(STACK_SORTED_PILE_DEPTH + 6)
+        st.label?.setDepth(STACK_SORTED_PILE_DEPTH + 7)
+        return
+      }
       let topD = 20
       if (st?.phase === 'sorted' && this.step === 'sustain')
         topD = SUSTAIN_RESERVE_PILE_DEPTH + 8
+      else if (st?.phase === 'sorted' && this.step === 'campsite_open' && this.day >= 3)
+        topD = STACK_SORTED_PILE_DEPTH + 6
+      else if (
+        st?.phase === 'pile' &&
+        this.step === 'stack' &&
+        this.day >= 3 &&
+        (st.isSortable || isDay3ZeroFireMaterial(st.id))
+      )
+        topD = STACK_SORTED_PILE_DEPTH + 6
       else if (st?.phase === 'sorted' && this.step === 'stack')
         topD = STACK_SORTED_PILE_DEPTH + 6
       else if (
@@ -1689,14 +2458,50 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     this.input.on('drag', (_, sprite, dragX, dragY) => {
       sprite.setPosition(dragX, dragY)
+      const debris = this._day3DebrisEntryForCircleSprite(sprite)
+      if (debris) {
+        debris.icon.setPosition(dragX, dragY)
+        return
+      }
       const state = this._spriteToMatState(sprite)
-      if (state) state.label.setPosition(dragX, dragY + ITEM_H / 2 + 4)
+      if (state?.label) state.label.setPosition(dragX, dragY + ITEM_H / 2 + 4)
     })
 
     this.input.on('dragend', (pointer, sprite) => {
       const state = this._spriteToMatState(sprite)
       const wx = pointer.worldX
       const wy = pointer.worldY
+
+      const debrisEntry = this._day3DebrisEntryForCircleSprite(sprite)
+      if (debrisEntry && this.day >= 3) {
+        const sx = debrisEntry._dragStartX ?? sprite.x
+        const sy = debrisEntry._dragStartY ?? sprite.y
+        const dist = Phaser.Math.Distance.Between(sprite.x, sprite.y, sx, sy)
+        if (dist < 14 && !debrisEntry.removed) {
+          const i = this._debrisObjects.indexOf(debrisEntry)
+          if (i >= 0) this._onDebrisClick(i, debrisEntry.circle, debrisEntry.icon)
+        }
+        debrisEntry._dragStartX = debrisEntry._dragStartY = undefined
+        if (!debrisEntry.removed) {
+          debrisEntry.circle.setDepth(3)
+          debrisEntry.icon.setDepth(4)
+        }
+        return
+      }
+
+      if (this.day >= 3) {
+        const wr = this._day3WindRockForSprite(sprite)
+        if (wr) {
+          const allowRock = this.step === 'campsite_open' || this.step === 'stack'
+          if (allowRock) {
+            this._onDay3WindRockDragEnd(wr, wx, wy)
+          } else {
+            this._bounceWindRockHomeOrRestoreSlot(wr, wx, wy, false)
+          }
+          wr.sprite.setDepth(5)
+          return
+        }
+      }
 
       if (this.step === 'sustain' && state) {
         this._onSustainReserveDragEnd(state, wx, wy)
@@ -1732,6 +2537,13 @@ export class FireBuildingMinigame extends Phaser.Scene {
       if (state?.phase === 'sorted' && this.step === 'stack')
         baseDepth = STACK_SORTED_PILE_DEPTH
       else if (
+        this.day >= 3 &&
+        this.step === 'stack' &&
+        state?.phase === 'pile' &&
+        (state.isSortable || isDay3ZeroFireMaterial(state.id))
+      )
+        baseDepth = STACK_SORTED_PILE_DEPTH
+      else if (
         state?.phase === 'sorted' &&
         this.step === 'spread' &&
         this._spreadAwaitingRemediation
@@ -1742,6 +2554,14 @@ export class FireBuildingMinigame extends Phaser.Scene {
       state?.label?.setDepth(baseDepth + 1)
 
       if (!state) return
+
+      if (this.day >= 3 && this.step === 'campsite_open') {
+        this._onDay3CampsiteMaterialDragEnd(state, wx, wy)
+        const d = state.phase === 'sorted' ? STACK_SORTED_PILE_DEPTH : 5
+        sprite.setDepth(d)
+        state.label?.setDepth(d + 1)
+        return
+      }
 
       if (this.step === 'sort') this._onSortDragEnd(state, wx, wy)
       else if (this.step === 'spread') this._onSpreadDragEnd(state, wx, wy)
@@ -1754,6 +2574,415 @@ export class FireBuildingMinigame extends Phaser.Scene {
       if (state.sprite === sprite) return state
     }
     return null
+  }
+
+  /** Day 3 — ground leaf/debris hit circle (paired 🍂 / 🌿 icon). */
+  _day3DebrisEntryForCircleSprite(sprite) {
+    for (const entry of this._debrisObjects) {
+      if (entry.circle === sprite) return entry
+    }
+    return null
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // ════════════════════════════════════════════════════════════════════════════
+  // DAY 3 — OPEN CAMPSITE
+  // ════════════════════════════════════════════════════════════════════════════
+
+  _enterDay3Campsite() {
+    this._titleText.setText(`Day ${this.day} — Build the fire`)
+
+    this._ensureDay3WindDirection()
+    this._buildDay3WindSlots()
+
+    // Restore todo state from registry (persists across scene restarts / forest trips).
+    const savedTodo = this.registry.get('day3TodoState')
+    if (savedTodo) {
+      Object.assign(this.todoState, savedTodo)
+    }
+
+    // Auto-tick 'gather' if materials were collected this session.
+    const collected = this.registry.get('collectedMaterials')
+    const collectedCount = Array.isArray(collected?.items) ? collected.items.length : 0
+    if (collectedCount > 0 && !this.todoState.gather) {
+      this.todoState.gather = true
+      const todo = this.registry.get('day3TodoState') ?? {}
+      todo.gather = true
+      this.registry.set('day3TodoState', todo)
+    }
+
+    this.updateTodoList()
+
+    this._showSortZonesProminent()
+    this._refreshSortZoneMaterialCounts()
+
+    if (this._collected.length > 0) {
+      const hasPileToReveal = Object.values(this._matStates).some(
+        s => s.phase === 'pile' && s.sprite && s.sprite.alpha < 0.5,
+      )
+      if (hasPileToReveal) {
+        this._scatterMaterialsIntoSortStagingArea('day3')
+      } else {
+        this._ensureSortedMaterialsZoneLayout()
+        this._enableDay3OpenCampsiteMaterialDrag()
+      }
+    }
+
+    // Show all debris immediately, interactive
+    this._debrisObjects.forEach(({ circle, icon }) => {
+      circle.setAlpha(1).setInteractive({ useHandCursor: true })
+      icon.setAlpha(1)
+    })
+    this._enableDay3DebrisFreeDrag()
+
+    // Show rock stones immediately
+    this._day3Rocks.forEach(({ sprite }) => sprite.setAlpha(1))
+
+    this._restoreDay3WindShieldFromRegistry()
+    this._recomputeWindShield()
+    this._startDay3WindFx()
+    this._refreshDay3WindRockInput()
+
+    // Show pit rings at dim opacity (no materials yet, just orientation)
+    this._stackGraphics.setAlpha(0.3)
+    this._stackLabelTexts.forEach(t => t.setAlpha(0.3))
+
+    // Show forest hotspot immediately — no debris-clearing gate
+    if (this._forestHotspot) {
+      this._forestHotspot.setVisible(true).setAlpha(0.55).setInteractive({ useHandCursor: true })
+      if (this._forestPulseTween) {
+        this._forestPulseTween.restart()
+        this._forestPulseTween.resume()
+      }
+    }
+
+    // Flint hidden — appears only when fire lay has materials (future step)
+    this._hideFlintUiCompletely()
+
+    // Aiden opening monologue — only on first entry.
+    if (this.registry.get('day3IntroMonologueDone')) {
+      this._dialogue.hide()
+      return
+    }
+    this.registry.set('day3CampsiteIntroDone', true)
+    this._dialogue.showSequence([
+      { speaker: 'Aiden', text: 'Wind is strong. This is going to be different from last time.' },
+      { speaker: 'Aiden', text: 'I know what to do. Just need to do it right.' },
+    ], () => this._dialogue.hide())
+  }
+
+  _exitDay3Campsite() {
+    if (this._forestPulseTween) this._forestPulseTween.pause()
+    if (this._forestHotspot) {
+      this._forestHotspot.disableInteractive().setVisible(false).setAlpha(0)
+    }
+  }
+
+  /**
+   * Day 3 — loose leaves/debris on the ground: free drag like wind-shield rocks.
+   * Short drag release (tap) still clears a patch via `_onDebrisClick`.
+   */
+  _enableDay3DebrisFreeDrag() {
+    if (this.day < 3) return
+    this._debrisObjects.forEach((obj) => {
+      if (obj.removed) return
+      const { circle } = obj
+      circle.removeInteractive()
+      circle.setInteractive({ useHandCursor: true })
+      this.input.setDraggable(circle, true)
+      circle.on('pointerover', () => circle.setFillStyle(0xb0a070))
+      circle.on('pointerout', () => circle.setFillStyle(obj.baseTint))
+    })
+  }
+
+  _onDay3CampsiteMaterialDragEnd(state, wx, wy) {
+    if (!state?.sprite) return
+    if (state.greyed) {
+      this._bounceDay3OpenCamp(state)
+      return
+    }
+    if (state.phase === 'placed' && !state.day3ZeroFire) {
+      this._bounceDay3OpenCamp(state)
+      return
+    }
+
+    for (const [zoneId, zone] of Object.entries(this._sortZones)) {
+      if (zone.bounds.contains(wx, wy)) {
+        this._day3AcceptSortZoneDrop(state, zoneId)
+        return
+      }
+    }
+
+    if (this._pitStackDropContains(wx, wy)) {
+      this._day3TryPitDrop(state, wx, wy)
+      return
+    }
+
+    this._day3SetMaterialFreeGroundPosition(state, wx, wy)
+  }
+
+  _bounceDay3OpenCamp(state) {
+    if (state.phase === 'placed' && state.day3ZeroFire && state.pitPos) {
+      const { x, y } = state.pitPos
+      this.tweens.add({ targets: state.sprite, x, y, duration: 280, ease: 'Back.Out' })
+      this.tweens.add({
+        targets: state.label,
+        x,
+        y: y + ITEM_H / 2 + 4,
+        duration: 280,
+        ease: 'Back.Out',
+      })
+      return
+    }
+    this._bounceToStackOrHome(state)
+  }
+
+  /** Day 3 — any camp wood may stay anywhere on the ground (not only sort slots / pit band). */
+  _day3SetMaterialFreeGroundPosition(state, wx, wy) {
+    state.homePos = { x: wx, y: wy }
+    if (state.phase === 'sorted') state.zonePos = { x: wx, y: wy }
+    state.sprite.setPosition(wx, wy)
+    state.label?.setPosition(wx, wy + ITEM_H / 2 + 4)
+    this._day3RefreshMaterialInteractionAfterDrop()
+  }
+
+  _day3MaybeFirstSlotMonologueAndTodo() {
+    if (this.registry.get('day3SortStagingMonologueDone')) return
+    this.registry.set('day3SortStagingMonologueDone', true)
+    this._dialogue.show({
+      speaker: 'Aiden',
+      text: 'Tinder, kindling, fuel. Easier to grab what I need this way.',
+      onComplete: () => this._dialogue.hide(),
+    })
+    if (!this.todoState.sort) {
+      this.todoState.sort = true
+      const todo = { ...(this.registry.get('day3TodoState') ?? {}), sort: true }
+      this.registry.set('day3TodoState', todo)
+      this.updateTodoList()
+    }
+  }
+
+  _day3AcceptSortZoneDrop(state, zoneId) {
+    if (state.phase === 'placed' && !state.day3ZeroFire) {
+      this._bounceDay3OpenCamp(state)
+      return
+    }
+    if (state.phase === 'placed' && state.day3ZeroFire) {
+      state.phase = 'sorted'
+      state.layerId = null
+      state.pitPos = null
+      state.day3ZeroFire = false
+      state.sprite.setAlpha(1)
+      state.label?.setAlpha(1)
+    }
+    const badBlock = state.quality === 'BAD' && !isDay3ZeroFireMaterial(state.id)
+    if (badBlock) {
+      this._bounceDay3OpenCamp(state)
+      return
+    }
+
+    this._day3MaybeFirstSlotMonologueAndTodo()
+
+    const normalized = normalizeStackSortZoneId(zoneId)
+    state.phase = 'sorted'
+    state.sortZoneId = normalized
+    state.sprite.disableInteractive()
+    this.input.setDraggable(state.sprite, false)
+
+    const zone = this._sortZones[zoneId]
+    const h = (state.pileKey ?? '').length
+    const offset = (h % 2 === 0) ? -16 : 16
+    const snapX = zone.x + offset
+    const snapY = zone.y - 10
+    state.zonePos = { x: snapX, y: snapY }
+
+    this._refreshSortZoneMaterialCounts()
+
+    this.tweens.add({
+      targets: [state.sprite, state.label],
+      x: snapX,
+      y: snapY,
+      duration: 200,
+      ease: 'Back.Out',
+      onComplete: () => {
+        state.label.setPosition(snapX, snapY + ITEM_H / 2 + 4)
+        this._flashZone(zoneId, 0x44dd44, 520)
+        this._syncSortedMaterialsRegistryLive()
+        this._refreshSortZoneMaterialCounts()
+        this._day3RefreshMaterialInteractionAfterDrop()
+      },
+    })
+  }
+
+  _day3RefreshMaterialInteractionAfterDrop() {
+    if (this.step === 'campsite_open') this._enableDay3OpenCampsiteMaterialDrag()
+    else if (this.step === 'stack') {
+      this._syncStackSortedDraggability()
+      this._enableDay3StackPileDrag()
+    }
+  }
+
+  /** Day 3 — unsorted pieces left in the left band can still go to slots or pit during `stack`. */
+  _enableDay3StackPileDrag() {
+    if (this.day < 3 || this.step !== 'stack' || this._stackRenFeedbackLocked) return
+    for (const state of Object.values(this._matStates)) {
+      if (state.phase !== 'pile' || state.greyed) continue
+      if (!state.isSortable && !isDay3ZeroFireMaterial(state.id)) continue
+      if (!state.sprite?.setInteractive) continue
+      state.sprite.setInteractive({ useHandCursor: true })
+      state.sprite.setDepth(STACK_SORTED_PILE_DEPTH)
+      state.label?.setDepth(STACK_SORTED_PILE_DEPTH + 1)
+      this.input.setDraggable(state.sprite, true)
+    }
+  }
+
+  _day3CountPlacedInZoneForSlotting(zoneId) {
+    let n = 0
+    for (const st of Object.values(this._matStates)) {
+      if (st.phase !== 'placed' || !st.layerId) continue
+      if (LAYER_ID_TO_STACK_ZONE[st.layerId] !== zoneId) continue
+      n++
+    }
+    return n
+  }
+
+  _day3PreparePileAsSortedForPit(state) {
+    if (state.phase !== 'pile') return true
+    const cz = correctSortZoneForMatId(state.id)
+    if (cz == null) return false
+    state.phase = 'sorted'
+    state.sortZoneId = normalizeStackSortZoneId(cz)
+    state.zonePos = { x: state.sprite.x, y: state.sprite.y }
+    return true
+  }
+
+  _day3PlaceZeroFireInPit(state, targetZone) {
+    const idx = this._day3CountPlacedInZoneForSlotting(targetZone)
+    const pit = this._stackPitPlacePos(idx)
+
+    state.phase = 'placed'
+    state.layerId = STACK_ZONE_TO_LAYER[targetZone]
+    state.pitPos = { x: pit.x, y: pit.y }
+    state.day3ZeroFire = true
+    this._safeSetDraggable(state.sprite, false)
+    state.sprite.disableInteractive()
+
+    state.sprite.setPosition(pit.x, pit.y)
+    state.label?.setPosition(pit.x, pit.y + ITEM_H / 2 + 4)
+    this._refreshFireLaySpritePresentation()
+
+    this._flashZone(targetZone, 0x44dd44)
+    this._syncSortedMaterialsRegistryLive()
+    this._syncStackLayRegistry()
+    this._refreshStackCategoryCards()
+    this._day3RefreshMaterialInteractionAfterDrop()
+  }
+
+  _day3TryPitDrop(state, wx, wy) {
+    if (this._pitStackDropContains(wx, wy) && !this._stackCrossSectionCont) {
+      this._ensureStackLayUiBeforePlace()
+    }
+    let targetZone = null
+    let fromPitRadial = false
+    const csBounds = this._stackCrossSectionWorldBounds()
+    if (this._stackCrossSectionCont && csBounds?.contains(wx, wy)) {
+      targetZone = this._stackZoneIdAtCrossSectionWorldPos(wx, wy)
+      fromPitRadial = true
+    } else if (this._pitStackDropContains(wx, wy)) {
+      targetZone = this._stackZoneIdAtPitWorldPos(wx, wy)
+      fromPitRadial = true
+    }
+    if (targetZone == null) {
+      this._day3SetMaterialFreeGroundPosition(state, wx, wy)
+      return
+    }
+
+    if (isDay3ZeroFireMaterial(state.id)) {
+      this._day3PlaceZeroFireInPit(state, targetZone)
+      return
+    }
+
+    if (state.phase === 'pile' && !this._day3PreparePileAsSortedForPit(state)) {
+      this._day3SetMaterialFreeGroundPosition(state, wx, wy)
+      return
+    }
+
+    if (state.phase !== 'sorted') {
+      this._day3SetMaterialFreeGroundPosition(state, wx, wy)
+      return
+    }
+
+    if (state.quality === 'BAD') {
+      this._day3SetMaterialFreeGroundPosition(state, wx, wy)
+      return
+    }
+
+    this._tryStackPlace(state, targetZone, { fromPitDrop: fromPitRadial })
+  }
+
+  _stackDay3EachLayerAtLeastOne() {
+    return (
+      (this._stackDropCount?.tinder ?? 0) >= 1 &&
+      (this._stackDropCount?.kindling ?? 0) >= 1 &&
+      (this._stackDropCount?.fuel_wood ?? 0) >= 1
+    )
+  }
+
+  /** Day 3 — first time each stack zone has ≥1 piece: Aiden, lay to-do, show flint (dim until FINISH LAY). */
+  _maybeDay3StackLayMilestone() {
+    if (this.day < 3 || this.step !== 'stack') return
+    if (!this._stackDay3EachLayerAtLeastOne()) return
+
+    if (!this._stackDay3LayAidenDone) {
+      this._stackDay3LayAidenDone = true
+      this.todoState.lay = true
+      this.updateTodoList()
+      this._dialogue.showSequence(
+        [
+          {
+            speaker: 'Aiden',
+            text: 'Fine at the bottom, heavy on top. I have done this before.',
+          },
+        ],
+        () => {
+          this._dialogue.hide()
+          this._updateStackStrikeGateUi()
+        },
+      )
+      this._updateStackStrikeGateUi()
+    } else {
+      if (!this.todoState.lay) {
+        this.todoState.lay = true
+        this.updateTodoList()
+      }
+      this._updateStackStrikeGateUi()
+    }
+  }
+
+  /** Open-camp → stack lay mode (same flags as post-place tween; also runs before first pit drop via `_ensureStackLayUiBeforePlace`). */
+  _day3PromoteOpenCampToStackForLay() {
+    if (this.day < 3) return
+    if (this.step !== 'campsite_open') return
+    if (!this.registry.get('day3StackUiEntered')) this.registry.set('day3StackUiEntered', true)
+    this._stackReenterPreserveLayout = true
+    this._stepProposalShown.stack = true
+    this._stackDevJumpSkipPitPrompt = true
+    this._enterStep('stack')
+  }
+
+  _maybeDay3TransitionToStackAfterFirstPit() {
+    this._day3PromoteOpenCampToStackForLay()
+  }
+
+  /** Treeline gather hotspot — active Day 3 during stack after open-camp exit hid it. */
+  _showDay3ForestHotspotForStack() {
+    if (this.day < 3 || this.step !== 'stack') return
+    if (!this._forestHotspot) return
+    this._forestHotspot.setVisible(true).setAlpha(0.55).setInteractive({ useHandCursor: true })
+    if (this._forestPulseTween) {
+      this._forestPulseTween.restart()
+      this._forestPulseTween.resume()
+    }
   }
 
   // ════════════════════════════════════════════════════════════════════════════
@@ -1847,6 +3076,14 @@ export class FireBuildingMinigame extends Phaser.Scene {
   }
 
   _onForestHotspotClick() {
+    // Day 3: no step gate, no debris-clearing gate — forest is always accessible
+    if (this.day >= 3) {
+      this.registry.set('devFireBuildChain', true)
+      this.scene.stop(this.scene.key)
+      this.scene.start('FireBuildingCollect', { day: this.day })
+      return
+    }
+
     if (this.step !== 'clear') return
 
     if (this._debrisRemaining > 0) return
@@ -1940,6 +3177,19 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._clearCounterText?.setVisible(false)
     this._clearCheckmark?.setVisible(true)
 
+    if (this.day >= 3) {
+      this._clearCompleteTimer = this.time.delayedCall(300, () => {
+        this._clearCompleteTimer = null
+        this.registry.set('groundCleared', true)
+        this.todoState.clear = true
+        this.updateTodoList()
+        this._dialogue.showSequence([
+          { speaker: 'Aiden', text: 'Clear ground. That part I remember.' },
+        ], () => this._dialogue.hide())
+      })
+      return
+    }
+
     this._clearCompleteTimer = this.time.delayedCall(500, () => {
       this._clearCompleteTimer = null
       this._dialogue.showSequence([
@@ -1985,6 +3235,99 @@ export class FireBuildingMinigame extends Phaser.Scene {
   // ════════════════════════════════════════════════════════════════════════════
   // SORT STEP
   // ════════════════════════════════════════════════════════════════════════════
+
+  _showSortZonesProminent() {
+    Object.values(this._sortZones).forEach(z => {
+      this.tweens.killTweensOf(z.rect)
+      this.tweens.add({ targets: z.rect, alpha: 0.85, duration: 300 })
+    })
+    this._sortZoneParts.forEach((part) => {
+      const tg = this._sortZoneHudLabelTargets(part)
+      this.tweens.killTweensOf(tg)
+      this.tweens.add({ targets: tg, alpha: 1, duration: 300 })
+    })
+  }
+
+  /**
+   * Random scatter for sort staging (left playfield). Only `phase === 'pile'` entries.
+   * @param {'sort'|'day3'} interaction — which drag-enable path runs after.
+   */
+  _scatterMaterialsIntoSortStagingArea(interaction = 'sort') {
+    this._destroySortPackHud()
+
+    const W = this.scale.width
+    const H = this.scale.height
+    const pad = 44
+    const left = pad
+    const right = Math.round(W * 0.38)
+    const top = Math.round(H * 0.14)
+    const bottom = Math.round(H * 0.58)
+
+    let ordered = this._collected
+      .map((_, idx) => this._matStates[`pile_${idx}`])
+      .filter(s => s && s.phase === 'pile')
+    ordered = Phaser.Utils.Array.Shuffle([...ordered])
+
+    const placed = []
+    const minD = 56
+
+    const fits = (x, y) => {
+      for (const p of placed) {
+        const dx = x - p.x
+        const dy = y - p.y
+        if (dx * dx + dy * dy < minD * minD) return false
+      }
+      return true
+    }
+
+    ordered.forEach((state) => {
+      let x = left
+      let y = top
+      let ok = false
+      for (let t = 0; t < 48 && !ok; t++) {
+        x = Phaser.Math.Between(left, right)
+        y = Phaser.Math.Between(top, bottom)
+        ok = fits(x, y)
+      }
+      placed.push({ x, y })
+
+      state.homePos = { x, y }
+      state.sprite.setPosition(x, y).setAlpha(1)
+      state.label.setPosition(x, y + ITEM_H / 2 + 4).setAlpha(1)
+    })
+
+    if (interaction === 'day3') this._enableDay3OpenCampsiteMaterialDrag()
+    else this._enableSortInteractionAfterUnpack()
+  }
+
+  _enableDay3OpenCampsiteMaterialDrag() {
+    if (this.day < 3 || this.step !== 'campsite_open') return
+    for (const state of Object.values(this._matStates)) {
+      if (!state.sprite?.setInteractive) continue
+      state.sprite.off('pointerup')
+      if (state.phase === 'pile' && !state.greyed) {
+        state.sprite.setInteractive({ useHandCursor: true })
+        this.input.setDraggable(state.sprite, true)
+      } else if (
+        state.phase === 'sorted' &&
+        state.sortZoneId &&
+        !state.greyed &&
+        (state.isSortable || isDay3ZeroFireMaterial(state.id))
+      ) {
+        const badBlock = state.quality === 'BAD' && !isDay3ZeroFireMaterial(state.id)
+        if (badBlock) {
+          this.input.setDraggable(state.sprite, false)
+          state.sprite.disableInteractive()
+          continue
+        }
+        state.sprite.setInteractive({ useHandCursor: true })
+        this.input.setDraggable(state.sprite, true)
+      } else {
+        this.input.setDraggable(state.sprite, false)
+        state.sprite.disableInteractive()
+      }
+    }
+  }
 
   _enterSort() {
     this._titleText.setText(`Day ${this.day} — Sort your materials`)
@@ -2034,13 +3377,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     const stashX = W * 0.12
     const stashY = H * 0.34
 
-    Object.values(this._sortZones).forEach(z => {
-      this.tweens.add({ targets: z.rect, alpha: 0.85, duration: 300 })
-    })
-    this._sortZoneParts.forEach((part) => {
-      const tg = this._sortZoneHudLabelTargets(part)
-      this.tweens.add({ targets: tg, alpha: 1, duration: 300 })
-    })
+    this._showSortZonesProminent()
 
     for (const state of Object.values(this._matStates)) {
       if (!state.sprite || !state.label) continue
@@ -2073,50 +3410,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
    * After forest collect: spread pile sprites randomly on the left playfield (no backpack / Take Out).
    */
   _scatterSortMaterialsIntoLeft() {
-    this._destroySortPackHud()
-
-    const W = this.scale.width
-    const H = this.scale.height
-    const pad = 44
-    const left = pad
-    const right = Math.round(W * 0.38)
-    const top = Math.round(H * 0.14)
-    const bottom = Math.round(H * 0.58)
-
-    let ordered = this._collected
-      .map((_, idx) => this._matStates[`pile_${idx}`])
-      .filter(Boolean)
-    ordered = Phaser.Utils.Array.Shuffle([...ordered])
-
-    const placed = []
-    const minD = 56
-
-    const fits = (x, y) => {
-      for (const p of placed) {
-        const dx = x - p.x
-        const dy = y - p.y
-        if (dx * dx + dy * dy < minD * minD) return false
-      }
-      return true
-    }
-
-    ordered.forEach((state) => {
-      let x = left
-      let y = top
-      let ok = false
-      for (let t = 0; t < 48 && !ok; t++) {
-        x = Phaser.Math.Between(left, right)
-        y = Phaser.Math.Between(top, bottom)
-        ok = fits(x, y)
-      }
-      placed.push({ x, y })
-
-      state.homePos = { x, y }
-      state.sprite.setPosition(x, y).setAlpha(1)
-      state.label.setPosition(x, y + ITEM_H / 2 + 4).setAlpha(1)
-    })
-
-      this._enableSortInteractionAfterUnpack()
+    this._scatterMaterialsIntoSortStagingArea('sort')
   }
 
   _enableSortInteractionAfterUnpack() {
@@ -2271,6 +3565,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
   }
 
   _checkSortComplete() {
+    if (this.day >= 3) return
     if (this._sortedCount < this._sortableIds.length) return
 
     const sortedPayload = this._buildSortedMaterialsRegistryPayload()
@@ -2292,7 +3587,9 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _buildSortedMaterialsRegistryPayload() {
     const out = { tinder: [], kindling: [], fuel_wood: [] }
     for (const st of Object.values(this._matStates)) {
-      if (st.phase !== 'sorted' || !st.isSortable || !st.sortZoneId) continue
+      if (st.phase !== 'sorted' || !st.sortZoneId) continue
+      if (isDay3ZeroFireMaterial(st.id)) continue
+      if (this.day < 3 && !st.isSortable) continue
       const z = normalizeStackSortZoneId(st.sortZoneId)
       if (!out[z]) continue
       out[z].push({ id: st.id, quality: st.quality })
@@ -2361,7 +3658,19 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _stackRemainingInPile(zoneCat) {
     let n = 0
     for (const s of Object.values(this._matStates)) {
-      if (s.phase !== 'sorted' || !s.isSortable) continue
+      if (s.phase !== 'sorted') continue
+      if (this.day < 3 && !s.isSortable) continue
+      if (
+        this.day >= 3 &&
+        (!s.sortZoneId || isDay3ZeroFireMaterial(s.id) || s.quality === 'BAD')
+      ) {
+        continue
+      }
+      if (this.day >= 3 && !s.isSortable) {
+        const z = normalizeStackSortZoneId(s.sortZoneId)
+        if (z === zoneCat) n++
+        continue
+      }
       if (s.quality === 'BAD') continue
       if (this._stackSortedCategory(s) === zoneCat) n++
     }
@@ -2372,8 +3681,13 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _stackReserveCountInSortZone(zoneId) {
     let n = 0
     for (const s of Object.values(this._matStates)) {
-      if (s.phase !== 'sorted' || !s.isSortable) continue
-      const z = normalizeStackSortZoneId(s.sortZoneId ?? correctSortZoneForMatId(s.id))
+      if (s.phase !== 'sorted') continue
+      if (isDay3ZeroFireMaterial(s.id) || s.quality === 'BAD') continue
+      if (this.day < 3 && !s.isSortable) continue
+      if (this.day >= 3 && !s.sortZoneId) continue
+      const z = normalizeStackSortZoneId(
+        this.day >= 3 ? s.sortZoneId : (s.sortZoneId ?? correctSortZoneForMatId(s.id)),
+      )
       if (z !== zoneId) continue
       if (
         this.step === 'spread' &&
@@ -2513,22 +3827,48 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _pitStackDropContains(wx, wy) {
     const dx = wx - this._pitX
     const dy = wy - this._pitY
-    const r = STACK_TOP_R + 28
+    const r = STACK_TOP_R + 95
     return dx * dx + dy * dy <= r * r
   }
 
-  /** Approximate layer by vertical offset from pit center (view: higher = more upper / fuel). */
+  /** Map pit drop to tinder / kindling / fuel bands using concentric radii (matches ring labels: inner = Bottom). */
   _stackZoneIdAtPitWorldPos(wx, wy) {
-    const d = wy - this._pitY
-    if (d < -36) return 'fuel_wood'
-    if (d > 36) return 'tinder'
-    return 'kindling'
+    const dx = wx - this._pitX
+    const dy = wy - this._pitY
+    const distSq = dx * dx + dy * dy
+    if (distSq <= STACK_PIT_DROP_TINDER_R * STACK_PIT_DROP_TINDER_R) return 'tinder'
+    if (distSq <= STACK_MIDDLE_R * STACK_MIDDLE_R) return 'kindling'
+    if (distSq <= STACK_TOP_R * STACK_TOP_R) return 'fuel_wood'
+    return 'fuel_wood'
+  }
+
+  /**
+   * Pit ring geometry often maps the visual "center" to Bottom while `need` is Middle/Top after Next layer.
+   * When the dragged piece is the correct category for the active band, treat the pit drop as targeting `need`.
+   */
+  _coerceStackPitTargetToNeedIfMaterialMatches(state, targetZone, need) {
+    if (targetZone === need) return targetZone
+    const matZone = correctSortZoneForMatId(state?.id)
+    if (matZone == null || need == null) return targetZone
+    if (normalizeStackSortZoneId(matZone) !== normalizeStackSortZoneId(need)) return targetZone
+    return need
   }
 
   _onStackDragEnd(state, dropX, dropY) {
-    if (state.phase !== 'sorted' || !state.isSortable) return
-    if (state.quality === 'BAD') return
     if (this.step !== 'stack') return
+
+    if (
+      this.day >= 3 &&
+      state.phase === 'pile' &&
+      !state.greyed &&
+      (state.isSortable || isDay3ZeroFireMaterial(state.id))
+    ) {
+      this._onDay3CampsiteMaterialDragEnd(state, dropX, dropY)
+      return
+    }
+
+    if (state.phase !== 'sorted' || !state.isSortable) return
+    if (state.quality === 'BAD' && this.day < 3) return
 
     if (this._stackLayLockedComplete) {
       this._bounceToStackOrHome(state)
@@ -2536,32 +3876,64 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
 
     let targetZone = null
-    for (const [zoneId, zone] of Object.entries(this._sortZones)) {
-      if (zone.bounds.contains(dropX, dropY)) {
-        targetZone = zoneId
-        break
-      }
-    }
-    if (!targetZone) {
-      const csBounds = this._stackCrossSectionWorldBounds()
-      if (csBounds && csBounds.contains(dropX, dropY)) {
+    let fromPitDrop = false
+    const csBounds = this._stackCrossSectionWorldBounds()
+
+    // Day 3 stack: pit / cross-section wins over sort-zone rects (they can overlap the pit and
+    // would leave fromPitDrop false, so wind-strip never arms).
+    if (this.day >= 3 && this.step === 'stack') {
+      if (this._stackCrossSectionCont && csBounds?.contains(dropX, dropY)) {
         targetZone = this._stackZoneIdAtCrossSectionWorldPos(dropX, dropY)
+        fromPitDrop = true
+      } else if (this._pitStackDropContains(dropX, dropY)) {
+        targetZone = this._stackZoneIdAtPitWorldPos(dropX, dropY)
+        fromPitDrop = true
       }
     }
-    if (!targetZone && this._pitStackDropContains(dropX, dropY)) {
-      targetZone = this._stackZoneIdAtPitWorldPos(dropX, dropY)
+
+    if (!targetZone) {
+      for (const [zoneId, zone] of Object.entries(this._sortZones)) {
+        if (zone.bounds.contains(dropX, dropY)) {
+          targetZone = zoneId
+          break
+        }
+      }
     }
     if (!targetZone) {
+      if (this._stackCrossSectionCont && csBounds?.contains(dropX, dropY)) {
+        targetZone = this._stackZoneIdAtCrossSectionWorldPos(dropX, dropY)
+        fromPitDrop = this.day >= 3
+      } else if (this._pitStackDropContains(dropX, dropY)) {
+        targetZone = this._stackZoneIdAtPitWorldPos(dropX, dropY)
+        fromPitDrop = true
+      }
+    }
+    if (!targetZone) {
+      if (this.day >= 3) {
+        this._day3SetMaterialFreeGroundPosition(state, dropX, dropY)
+        return
+      }
       this._bounceToStackOrHome(state)
       return
     }
 
+    if (
+      fromPitDrop &&
+      !this._stackCrossSectionCont &&
+      this._pitStackDropContains(dropX, dropY)
+    ) {
+      this._ensureStackLayUiBeforePlace()
+    }
+
     const need = STACK_LAYER_ORDER[this._stackActiveLayerIndex] ?? 'tinder'
-    if (targetZone !== need) {
+    if (this.day < 3 && fromPitDrop) {
+      targetZone = this._coerceStackPitTargetToNeedIfMaterialMatches(state, targetZone, need)
+    }
+    if (this.day < 3 && targetZone !== need) {
       this._stackHadError = true
+      this._bounceToStackOrHome(state)
       this._disableStackSortedDragForRen()
       const renLines = stackWrongLayerRenLines(need, targetZone)
-      this._bounceToStackOrHome(state)
       if (!renLines.length) {
         this._restoreStackSortedDragAfterRen()
         return
@@ -2576,13 +3948,16 @@ export class FireBuildingMinigame extends Phaser.Scene {
       return
     }
 
-    this._tryStackPlace(state, targetZone)
+    this._tryStackPlace(state, targetZone, { fromPitDrop })
   }
 
   /** Places sorted sprites over sort zones (visible). Needed when skipping sort via dev/mock jump. */
   _ensureSortedMaterialsZoneLayout() {
     for (const state of Object.values(this._matStates)) {
-      if (state.phase !== 'sorted' || !state.isSortable || !state.sortZoneId || !state.sprite) continue
+      if (state.phase !== 'sorted' || !state.sortZoneId || !state.sprite) continue
+      const okSorted =
+        state.isSortable || (this.day >= 3 && isDay3ZeroFireMaterial(state.id))
+      if (!okSorted) continue
       const zone = this._sortZones[state.sortZoneId]
       if (!zone) continue
       if (!state.zonePos) {
@@ -2603,9 +3978,131 @@ export class FireBuildingMinigame extends Phaser.Scene {
   /**
    * Pit `placed` sprites visible on ignite/spread/sustain; stack keeps them alpha-0 (cross-section markers).
    */
+  _day3FireLayUsesPitStickVisual() {
+    return this.day >= 3 && (this.step === 'stack' || this.step === 'campsite_open')
+  }
+
+  /**
+   * Day 3 compact stick rendering in `_refreshFireLaySpritePresentation` only (not pickup).
+   * Includes `ignite` so pit lay matches stack; excludes `spread` / `sustain` (distinct burn visuals).
+   */
+  _day3UsesCompactStickPitRender() {
+    if (this.day < 3) return false
+    const s = this.step
+    return s === 'stack' || s === 'campsite_open' || s === 'ignite'
+  }
+
+  _day3StickSeedFromKey(key) {
+    const s = String(key ?? '')
+    let h = 2166136261
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i)
+      h = Math.imul(h, 16777619)
+    }
+    return h >>> 0
+  }
+
+  /**
+   * @param {boolean} compact — thin rotated stick vs full lay rect.
+   * @param {{ skipRepos?: boolean }} opts — when withdrawing onto sort pile, sizing only (`_recallStackItem`).
+   */
+  _applyDay3PitLayStickVisual(state, compact, opts = {}) {
+    const spr = state?.sprite
+    if (!spr || typeof spr.setSize !== 'function') return
+
+    const ax =
+      opts.anchorX ??
+      state.pitPos?.x ??
+      spr.x
+    const ay =
+      opts.anchorY ??
+      state.pitPos?.y ??
+      spr.y
+    const skipRepos = !!opts.skipRepos
+
+    if (compact) {
+      const seed = this._day3StickSeedFromKey(state.pileKey)
+      const rot = (((seed >>> 3) % 31) / 31) * (Math.PI / 9) - Math.PI / 18
+      const jx = ((seed >>> 8) % 7) - 3
+      const jy = ((seed >>> 16) % 5) - 2
+      spr.setSize(DAY3_PIT_STICK_W, DAY3_PIT_STICK_H)
+      spr.setRotation(rot)
+      if (!skipRepos) spr.setPosition(ax + jx, ay + jy)
+      state.label?.setVisible(false)
+    } else {
+      spr.setSize(ITEM_W, ITEM_H)
+      spr.setRotation(0)
+      if (!skipRepos) {
+        spr.setPosition(ax, ay)
+        state.label?.setPosition(ax, ay + ITEM_H / 2 + 4)
+      }
+      state.label?.setVisible(true)
+    }
+  }
+
+  _withdrawDay3PitPlacedToSorted(state) {
+    if (!this._day3FireLayUsesPitStickVisual()) return
+    if (!state?.pileKey || state.phase !== 'placed' || !state.layerId || state.day3ZeroFire) return
+    if (!state.isSortable) return
+    const zoneId = LAYER_ID_TO_STACK_ZONE[state.layerId]
+    if (zoneId == null) return
+    this._recallStackItem(zoneId, state.pileKey)
+  }
+
+  _bindDay3PitPlacedPickupHandlers(state) {
+    const spr = state.sprite
+    if (!spr?.on || state.phase !== 'placed' || !state.layerId) return
+
+    if (state._day3PitDownHandler) {
+      spr.off('pointerdown', state._day3PitDownHandler)
+      spr.off('pointerup', state._day3PitUpHandler)
+    }
+    state._day3PitDownHandler = (pointer) => {
+      state._day3PitPickupDownWx = pointer.worldX
+      state._day3PitPickupDownWy = pointer.worldY
+    }
+    state._day3PitUpHandler = (pointer) => {
+      const sx = state._day3PitPickupDownWx
+      const sy = state._day3PitPickupDownWy
+      state._day3PitPickupDownWx = undefined
+      state._day3PitPickupDownWy = undefined
+      if (sx == null || sy == null) return
+      if (!this._day3FireLayUsesPitStickVisual() || state.phase !== 'placed') return
+      const dist = Phaser.Math.Distance.Between(pointer.worldX, pointer.worldY, sx, sy)
+      if (dist <= DAY3_PIT_POP_TAP_DRAG_PX) this._withdrawDay3PitPlacedToSorted(state)
+    }
+    spr.on('pointerdown', state._day3PitDownHandler)
+    spr.on('pointerup', state._day3PitUpHandler)
+  }
+
+  _enableDay3PitPlacedPickup() {
+    if (!this._day3FireLayUsesPitStickVisual()) return
+    const pad = ITEM_W / 2
+    for (const state of Object.values(this._matStates)) {
+      if (state.phase !== 'placed' || !state.layerId || !state.pitPos || state.day3ZeroFire) continue
+      if (!state.isSortable || !state.sprite?.setInteractive) continue
+      if (state._day3WindStripFlying) continue
+      const spr = state.sprite
+      const pitHit = new Phaser.Geom.Rectangle(-pad - 12, -(ITEM_H / 2) - 12, ITEM_W + 24, ITEM_H + 24)
+      spr.setInteractive({
+        draggable: true,
+        useHandCursor: true,
+        hitArea: pitHit,
+        hitAreaCallback: (shape, x, y) => Phaser.Geom.Rectangle.Contains(shape, x, y),
+      })
+      this.input.setDraggable(spr, true)
+      spr.setDepth(18)
+      state.label?.setDepth(19)
+      this._bindDay3PitPlacedPickupHandlers(state)
+    }
+  }
+
   _refreshFireLaySpritePresentation() {
     const showPlacedInPit =
-      this.step === 'ignite' || this.step === 'spread' || this.step === 'sustain'
+      this.step === 'ignite' ||
+      this.step === 'spread' ||
+      this.step === 'sustain' ||
+      (this.day >= 3 && (this.step === 'stack' || this.step === 'campsite_open'))
     for (const st of Object.values(this._matStates)) {
       if (!st.sprite) continue
       if (st.phase === 'burned' || st.phase === 'ignite_spent') {
@@ -2613,20 +4110,46 @@ export class FireBuildingMinigame extends Phaser.Scene {
         st.label?.setVisible(false)
         continue
       }
+      if (st.phase === 'lost_wind') continue
+      if (st._day3WindStripFlying) continue
       if (st.phase !== 'placed' || !st.layerId || !st.pitPos) continue
       if (showPlacedInPit) {
         const dim = st.greyed || st.quality === 'BAD'
         const a = dim ? 0.35 : 1
-        st.sprite.setPosition(st.pitPos.x, st.pitPos.y)
-        st.label?.setPosition(st.pitPos.x, st.pitPos.y + ITEM_H / 2 + 4)
+        const useCompactStick =
+          this._day3UsesCompactStickPitRender() &&
+          !st.day3ZeroFire &&
+          st.isSortable &&
+          correctSortZoneForMatId(st.id) != null
+
+        const bx = st.pitPos.x
+        const by = st.pitPos.y
+        st.sprite.setPosition(bx, by)
+        if (!useCompactStick) {
+          st.label?.setPosition(bx, by + ITEM_H / 2 + 4)
+        }
         st.sprite.setVisible(true).setAlpha(a)
-        st.label?.setVisible(true).setAlpha(a)
+        this._applyDay3PitLayStickVisual(st, useCompactStick, {
+          anchorX: bx,
+          anchorY: by,
+        })
+        if (useCompactStick) {
+          st.sprite.setAlpha(a)
+        } else {
+          st.label?.setVisible(true).setAlpha(a)
+        }
         st.sprite.setDepth(15)
         st.label?.setDepth(16)
       } else {
         st.sprite.setAlpha(0)
         st.label?.setAlpha(0)
       }
+    }
+    if (
+      showPlacedInPit &&
+      this._day3FireLayUsesPitStickVisual()
+    ) {
+      this._enableDay3PitPlacedPickup()
     }
   }
 
@@ -2660,8 +4183,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
       return
     }
 
-    // Lay UI not built yet (Ren proposal / pit tap) — piles stay visible but non-draggable.
-    if (this.step === 'stack' && !this._stackCrossSectionCont) {
+    // Lay UI not built yet (Ren proposal / pit tap) — day < 3 only; Day 3 drags straight onto pit to open lay UI.
+    if (this.step === 'stack' && !this._stackCrossSectionCont && this.day < 3) {
       for (const state of Object.values(this._matStates)) {
         if (!state.sprite) continue
         if (state._stackTapHandler) {
@@ -2840,6 +4363,15 @@ export class FireBuildingMinigame extends Phaser.Scene {
     const geom = this._stackCrossSectionGeom
     const hg = this._stackLayerHighlightG
     if (!geom || !hg) return
+
+    const nPlaced =
+      (this._stackDropCount?.tinder ?? 0) +
+      (this._stackDropCount?.kindling ?? 0) +
+      (this._stackDropCount?.fuel_wood ?? 0)
+    if (!this._stackLayLockedComplete && nPlaced <= 0) {
+      hg.clear()
+      return
+    }
 
     hg.clear()
     const zoneId = this._stackLayLockedComplete
@@ -3039,6 +4571,26 @@ export class FireBuildingMinigame extends Phaser.Scene {
         .setOrigin(0.5, 0)
         .setDepth(14)
     }
+    if (this._stackAwaitingPitForLay || !this._stackCrossSectionCont) {
+      if (this.day >= 3) {
+        this._hideFlintUiCompletely()
+      } else {
+        this._setFlintActive(false)
+      }
+      if (this._stackLockedBlowBg && this._stackLockedBlowTxt) {
+        this._stackLockedBlowBg.setVisible(false)
+        this._stackLockedBlowTxt.setVisible(false)
+      }
+      if (this.day >= 3) {
+        this._stackStrikeGateHint?.setVisible(false)
+        return
+      }
+      this._stackStrikeGateHint.setText(
+        'Tap the fire pit (or drag material onto it) to start placing the lay.',
+      )
+      this._stackStrikeGateHint.setVisible(true)
+      return
+    }
     if (this._stackLockedBlowBg && this._stackLockedBlowTxt) {
       this._stackLockedBlowBg.setVisible(true)
       this._stackLockedBlowTxt.setVisible(true)
@@ -3050,6 +4602,24 @@ export class FireBuildingMinigame extends Phaser.Scene {
         this._stackLockedBlowTxt.setAlpha(0.48)
       }
       this._stackStrikeGateHint.setVisible(false)
+      return
+    }
+    if (this.day >= 3) {
+      if (!this._stackDay3EachLayerAtLeastOne()) {
+        this._hideFlintUiCompletely()
+      } else {
+        this._setFlintActive(false)
+      }
+      if (this._stackLockedBlowBg && this._stackLockedBlowTxt) {
+        this._stackLockedBlowBg.setAlpha(0.28)
+        this._stackLockedBlowTxt.setAlpha(0.32)
+      }
+      const pitHint =
+        this._stackActiveLayerIndex >= 2
+          ? 'STRIKE / BLOW unlock after FINISH LAY.\nTap FINISH LAY above the pit (amber outline, pulsing).'
+          : 'STRIKE / BLOW unlock after FINISH LAY.\nUse Next layer, then FINISH LAY on the top band.'
+      this._stackStrikeGateHint.setText(pitHint)
+      this._stackStrikeGateHint.setVisible(true)
       return
     }
     this._setFlintActive(false)
@@ -3217,7 +4787,10 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _onStackNextLayerClick() {
     if (this.step !== 'stack' || this._stackLayLockedComplete) return
 
-    if (!this._stackMinimumMetForLayerIndex(this._stackActiveLayerIndex)) {
+    if (
+      this.day < 3 &&
+      !this._stackMinimumMetForLayerIndex(this._stackActiveLayerIndex)
+    ) {
       return
     }
 
@@ -3227,6 +4800,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
       this._updateStackLayerHighlight()
       this._updateStackPrevLayerButton()
       this._updateStackStrikeGateUi()
+      this._syncStackSortedDraggability()
+      if (this.day >= 3) this._enableDay3StackPileDrag()
       return
     }
 
@@ -3243,6 +4818,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._syncStackSortedDraggability()
     this._updateStackPrevLayerButton()
     this._updateStackStrikeGateUi()
+
+    if (this.day >= 3) {
+      afterSummaryOrUnlock()
+      return
+    }
 
     if (this._stackBuildFireMinimumMet() && !this._stackLaySummaryRenShown) {
       this._stackLaySummaryRenShown = true
@@ -3269,8 +4849,9 @@ export class FireBuildingMinigame extends Phaser.Scene {
     const y0 = geom.groundH + layerIndex * geom.layerH
     const cy = y0 + geom.layerH / 2
     const left = 8
+    const cellPitch = (STACK_CS_SQ + STACK_CS_GAP) * this._stackPitGridScale()
     for (const [i, entry] of this._stackLayerPlacements[zoneId].entries()) {
-      const lx = left + i * (STACK_CS_SQ + STACK_CS_GAP)
+      const lx = left + i * cellPitch
       entry.marker.setPosition(lx + STACK_CS_SQ / 2, cy)
     }
   }
@@ -3303,6 +4884,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
     const ix = arr.findIndex(e => e.pileKey === pileKey)
     if (ix < 0) return
 
+    const stSizing = this._matStates[pileKey]
+    if (stSizing && this.day >= 3 && stSizing.sprite) {
+      this._applyDay3PitLayStickVisual(stSizing, false, { skipRepos: true })
+    }
+
     arr[ix].marker.destroy()
     arr.splice(ix, 1)
     this._stackDropCount[zoneId] = Math.max(0, this._stackDropCount[zoneId] - 1)
@@ -3318,18 +4904,475 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     if (st.zonePos) {
       st.sprite.setPosition(st.zonePos.x, st.zonePos.y)
-      st.label.setPosition(st.zonePos.x, st.zonePos.y + ITEM_H / 2 + 4)
+      st.label?.setPosition(st.zonePos.x, st.zonePos.y + ITEM_H / 2 + 4)
     }
     st.sprite.setAlpha(1)
-    st.label.setAlpha(1)
+    st.label?.setAlpha(1)
+
+    this._syncSortedMaterialsRegistryLive()
+    this._syncStackLayRegistry()
+
+    const nAfter =
+      this._stackDropCount.tinder + this._stackDropCount.kindling + this._stackDropCount.fuel_wood
+    if (!this._stackLayLockedComplete && nAfter <= 0) {
+      this._stackActiveLayerIndex = 0
+      this._revertStackLayUiToPitPromptState()
+      this._refreshFireLaySpritePresentation()
+      return
+    }
 
     this._refreshStackCategoryCards()
     this._syncStackSortedDraggability()
+    if (this.day >= 3 && this.step === 'stack') this._enableDay3StackPileDrag()
     this._updateStackLayerHighlight()
+    this._updateStackPrevLayerButton()
     this._refreshStackNextLayerMinimumGate()
+    if (this.day >= 3 && this.step === 'stack') this._updateStackStrikeGateUi()
+    this._refreshFireLaySpritePresentation()
+  }
+
+  _releaseDay3WindStripDialogBusy() {
+    if (this.time) {
+      this.time.delayedCall(0, () => {
+        this._day3WindStripDialogBusy = false
+      })
+    } else {
+      this._day3WindStripDialogBusy = false
+    }
+  }
+
+  _playDay3WindStripDialogue(materialId) {
+    if (this.day < 3 || !this._dialogue) return
+    if (this._day3WindStripDialogBusy) return
+    this._day3WindStripDialogBusy = true
+
+    const line1 = windStripTinderShortLineForId(materialId)
+    this._dialogue.showSequence(
+      [
+        { speaker: 'Aiden', text: line1 },
+        { speaker: 'Aiden', text: WIND_STRIP_TINDER_BLOCK_WIND_HINT },
+      ],
+      () => {
+        this._dialogue.hide()
+        this._releaseDay3WindStripDialogBusy()
+      },
+    )
+  }
+
+  /** Pit → leeward + generous travel (world px). */
+  _day3WindStripOffscreenFlyTarget(sprX, sprY, windDir) {
+    const { leeward } = day3WindSlotRoles(windDir)
+    const L = this._windSlotCenters?.[leeward]
+    const cx = this._pitX
+    const cy = this._pitY
+    let dx = (L?.x ?? cx) - cx
+    let dy = (L?.y ?? cy) - cy
+    let len = Math.hypot(dx, dy)
+    if (len < 4) {
+      dx = 0
+      dy = WIND_SHIELD_SLOT_OFFSET
+      len = Math.hypot(dx, dy) || 1
+    }
+    const ux = dx / len
+    const uy = dy / len
+    const reach = Math.max(this.scale.width, this.scale.height) * 3 + 200
+    return { x: sprX + ux * reach, y: sprY + uy * reach }
+  }
+
+  _pileKeyNumericIndex(pileKey) {
+    const m = /^pile_(\d+)$/.exec(String(pileKey ?? ''))
+    return m ? parseInt(m[1], 10) : NaN
+  }
+
+  _clearDay3WindStripPendingTimers(st) {
+    if (!st) return
+    const d = st._day3WindStripDelayTimer
+    const g = st._day3WindStripGustTimer
+    if (d?.remove) {
+      try {
+        d.remove(false)
+      } catch {
+        //
+      }
+    }
+    if (g?.remove) {
+      try {
+        g.remove(false)
+      } catch {
+        //
+      }
+    }
+    st._day3WindStripDelayTimer = null
+    st._day3WindStripGustTimer = null
+  }
+
+  _cancelPendingWindStripsAwaitingShield() {
+    if (this.day < 3 || !this._matStates) return
+    for (const k of Object.keys(this._matStates)) {
+      if (!k.startsWith('pile_')) continue
+      const st = this._matStates[k]
+      if (!st) continue
+      if (st._day3WindStripFlying || st._day3WindStripTl) continue
+      this._clearDay3WindStripPendingTimers(st)
+    }
+  }
+
+  _shiftPlacementAndBackupPileKeysAfterRemove(removeIdx) {
+    const zones = ['tinder', 'kindling', 'fuel_wood']
+    for (const zone of zones) {
+      const arr = this._stackLayerPlacements?.[zone]
+      if (Array.isArray(arr)) {
+        for (const ent of arr) {
+          const n = this._pileKeyNumericIndex(ent.pileKey)
+          if (Number.isFinite(n) && n > removeIdx) ent.pileKey = `pile_${n - 1}`
+        }
+      }
+      const bk = this._sustainBackupKeysByZone?.[zone]
+      if (Array.isArray(bk)) {
+        this._sustainBackupKeysByZone[zone] = bk.map((pk) => {
+          const n = this._pileKeyNumericIndex(pk)
+          if (Number.isFinite(n) && n > removeIdx) return `pile_${n - 1}`
+          return pk
+        })
+      }
+    }
+  }
+
+  /**
+   * After `_collected` splice at removeIdx, shift pile_* keys down so pile indices align with `_collected`.
+   * Caller must `_shiftPlacementAndBackupPileKeysAfterRemove` first (pileKey strings reference old indices).
+   * @param {number} removeIdx
+   * @param {number} preLen `_collected.length` before splice
+   */
+  _compactMatStatesAfterCollectedRemove(removeIdx, preLen) {
+    if (!(preLen >= 1) || !(removeIdx >= 0 && removeIdx < preLen)) return
+
+    for (let j = removeIdx; j < preLen - 1; j++) {
+      const srcKey = `pile_${j + 1}`
+      const dstKey = `pile_${j}`
+      const moving = this._matStates[srcKey]
+      delete this._matStates[dstKey]
+      if (moving) {
+        moving.pileKey = dstKey
+        this._matStates[dstKey] = moving
+      }
+      delete this._matStates[srcKey]
+    }
+  }
+
+  _cleanupDay3WindStripAnimations(andFinalize = true) {
+    if (this.day < 3 || !this._matStates) return
+
+    for (const st of Object.values(this._matStates)) {
+      if (!st || typeof st !== 'object') continue
+      this._clearDay3WindStripPendingTimers(st)
+
+      const tl = st._day3WindStripTl
+      const flying = !!st._day3WindStripFlying
+      if (!tl && !flying) continue
+
+      const zoneId = st._day3WindStripZoneId
+      const pileKey = st.pileKey
+
+      if (tl) {
+        tl.kill()
+        st._day3WindStripTl = null
+      }
+
+      delete st._day3WindStripFlying
+      delete st._day3WindStripZoneId
+
+      if (
+        andFinalize === true &&
+        typeof zoneId === 'string' &&
+        pileKey != null
+      ) {
+        this._finalizeDay3WindStripPlacement(zoneId, pileKey)
+      }
+    }
+  }
+
+  _finalizeDay3WindStripPlacement(zoneId, pileKey) {
+    if (this.day < 3 || !pileKey) return
+
+    const st = this._matStates[pileKey]
+    if (!st || st.phase === 'lost_wind') return
+
+    const removeIdx = this._pileKeyNumericIndex(pileKey)
+    const layWasChecked = this.todoState.lay === true
+
+    if (st.sprite) gsap.killTweensOf(st.sprite)
+    if (st.label) gsap.killTweensOf(st.label)
+
+    const arr = this._stackLayerPlacements[zoneId]
+    const ix = Array.isArray(arr) ? arr.findIndex((e) => e.pileKey === pileKey) : -1
+
+    if (ix >= 0) {
+      if (this.day >= 3 && st.sprite) {
+        this._applyDay3PitLayStickVisual(st, false, { skipRepos: true })
+      }
+      arr[ix].marker.destroy()
+      arr.splice(ix, 1)
+      this._stackDropCount[zoneId] = Math.max(0, this._stackDropCount[zoneId] - 1)
+      this._stackUnitIndexInZone[zoneId] = this._stackDropCount[zoneId]
+      this._relayoutStackLayerMarkers(zoneId)
+    }
+
+    const spr = st.sprite
+    const lbl = st.label
+
+    if (spr?.scene) {
+      spr.off?.('pointerdown')
+      spr.off?.('pointerup')
+      spr.disableInteractive?.()
+      this._safeSetDraggable(spr, false)
+      this.input.setDraggable(spr, false)
+      spr.destroy()
+    }
+    if (lbl?.scene) lbl.destroy()
+
+    st.sprite = null
+    st.label = null
+    st.phase = 'lost_wind'
+    st.layerId = null
+    st.pitPos = null
+
+    delete st._day3WindStripFlying
+    delete st._day3WindStripZoneId
+    st._day3WindStripTl = null
+    this._clearDay3WindStripPendingTimers(st)
+
+    const preCollectedLen = Array.isArray(this._collected) ? this._collected.length : 0
+
+    const _devWindStripSnapshot = (label) => {
+      try {
+        if (!import.meta.env?.DEV) return
+        const items = Array.isArray(this._collected) ? this._collected : []
+        const sdRaw = this.registry.get('stackData')
+        const tLen = sdRaw?.tinder?.length ?? sdRaw?.bottom?.length
+        const kLen = sdRaw?.kindling?.length ?? sdRaw?.middle?.length
+        const fLen = sdRaw?.fuel?.length ?? sdRaw?.top?.length ?? sdRaw?.fuel_wood?.length
+        // eslint-disable-next-line no-console
+        console.table?.([
+          {
+            label,
+            collectedLen: items.length,
+            stackTinderCells: typeof tLen === 'number' ? tLen : '?',
+            stackKindlingCells: typeof kLen === 'number' ? kLen : '?',
+            stackFuelCells: typeof fLen === 'number' ? fLen : '?',
+            dropTinder: this._stackDropCount?.tinder,
+            dropKindling: this._stackDropCount?.kindling,
+            dropFuelWood: this._stackDropCount?.fuel_wood,
+          },
+        ])
+      } catch {
+        //
+      }
+    }
+
+    _devWindStripSnapshot('wind finalize before pile compact')
+
+    if (
+      Number.isFinite(removeIdx) &&
+      removeIdx >= 0 &&
+      removeIdx < preCollectedLen &&
+      Array.isArray(this._collected)
+    ) {
+      this._collected.splice(removeIdx, 1)
+      this.registry.set('collectedMaterials', {
+        items: this._collected,
+        count: collectRegistryCounts(this._collected),
+      })
+      this._shiftPlacementAndBackupPileKeysAfterRemove(removeIdx)
+      this._compactMatStatesAfterCollectedRemove(removeIdx, preCollectedLen)
+      const badCount = this._collected.filter((m) => m?.quality === 'BAD').length
+      this._strengthCeiling = Math.max(1, SEGMENT_COUNT - badCount)
+      this._fireStrength = Math.min(this._fireStrength, this._strengthCeiling)
+    }
+
+    _devWindStripSnapshot('wind finalize after pile compact')
+
+    this._syncSortedMaterialsRegistryLive()
+    this._syncStackLayRegistry()
+
+    _devWindStripSnapshot('wind finalize after registry sync')
+
+    const nAfter =
+      this._stackDropCount.tinder +
+      this._stackDropCount.kindling +
+      this._stackDropCount.fuel_wood
+
+    if (!this._stackLayLockedComplete && nAfter <= 0) {
+      this._stackActiveLayerIndex = 0
+      this._revertStackLayUiToPitPromptState()
+      this._refreshFireLaySpritePresentation()
+      return
+    }
+
+    this._refreshStackCategoryCards()
+    this._syncStackSortedDraggability()
+    if (this.day >= 3 && this.step === 'stack') this._enableDay3StackPileDrag()
+    this._updateStackLayerHighlight()
+    this._updateStackPrevLayerButton()
+    this._refreshStackNextLayerMinimumGate()
+
+    if (
+      layWasChecked &&
+      !this._stackDay3EachLayerAtLeastOne() &&
+      this.todoState.lay
+    ) {
+      this.todoState.lay = false
+      const todo = { ...(this.registry.get('day3TodoState') ?? {}), lay: false }
+      this.registry.set('day3TodoState', todo)
+      this.updateTodoList()
+      if (this.day >= 3 && this.step === 'stack') this._updateStackStrikeGateUi()
+    } else if (this.day >= 3 && this.step === 'stack') {
+      this._updateStackStrikeGateUi()
+    }
+    this._refreshFireLaySpritePresentation()
+  }
+
+  _maybeDay3WindStripAfterTinderPlaced(state, zoneId, opts) {
+    if (this.day < 3) return
+    this._ensureDay3WindDirection()
+    if (!this._windSlotCenters) this._buildDay3WindSlots()
+    if (this.step !== 'stack' && this.step !== 'campsite_open') return
+    if (correctSortZoneForMatId(state.id) !== 'tinder') return
+    if (isDay3ZeroFireMaterial(state.id)) return
+    if (!opts?.fromPitDrop) return
+    if (this._windShield !== 'none') return
+    if (!this._windDirection || !DAY3_WIND_CARDINALS.includes(this._windDirection)) return
+    if (zoneId !== 'tinder') return
+    if (state._day3WindStripTl) return
+    if (state._day3WindStripDelayTimer || state._day3WindStripGustTimer) return
+
+    const pileKey = state.pileKey
+    if (!pileKey || !state.sprite?.scene) return
+
+    this._clearDay3WindStripPendingTimers(state)
+
+    const zoneHold = zoneId
+    const delayMs = Phaser.Math.Between(WIND_STRIP_DELAY_MIN, WIND_STRIP_DELAY_MAX)
+
+    state._day3WindStripGustTimer = this.time.delayedCall(WIND_STRIP_GUST_LEAD_MS, () => {
+      state._day3WindStripGustTimer = null
+      if (this.day < 3) return
+      if (state.phase !== 'placed' || !state.sprite?.scene) return
+      if (this._windShield !== 'none') return
+      if (state._day3WindStripTl) return
+      this._spawnDay3WindLeafGustBurst()
+    })
+
+    state._day3WindStripDelayTimer = this.time.delayedCall(delayMs, () => {
+      state._day3WindStripDelayTimer = null
+      try {
+        if (this.day < 3 || !state || state.phase !== 'placed' || !state.sprite?.scene) return
+        if (this._windShield !== 'none') return
+        if (state._day3WindStripTl) return
+        this._runDay3WindStripTinderTimeline(state, zoneHold)
+      } catch {
+        if (state.phase === 'placed' && state.sprite?.scene && !state._day3WindStripTl && this.day >= 3) {
+          if (this._windShield !== 'none') return
+          this._runDay3WindStripTinderTimeline(state, zoneHold)
+        }
+      }
+    })
+  }
+
+  _runDay3WindStripTinderTimeline(state, zoneId) {
+    if (this.day < 3) return
+    if (this._windShield !== 'none') return
+    this._ensureDay3WindDirection()
+    if (!this._windSlotCenters) this._buildDay3WindSlots()
+
+    const spr = state.sprite
+    if (
+      !spr?.scene ||
+      spr.active === false ||
+      state._day3WindStripTl ||
+      state.phase !== 'placed'
+    ) {
+      return
+    }
+
+    this._clearDay3WindStripPendingTimers(state)
+
+    const lbl = state.label
+    const windDir = this._windDirection
+    const pileKey = state.pileKey
+    if (!windDir || !pileKey) return
+
+    const popDy = Phaser.Math.Between(60, 80)
+    const flyDur = 1 + Math.random() * 0.4
+
+    spr.disableInteractive?.()
+    this._safeSetDraggable(spr, false)
+    this.input.setDraggable(spr, false)
+
+    state._day3WindStripFlying = true
+    state._day3WindStripZoneId = zoneId
+
+    const tl = gsap.timeline({
+      delay: 0.2,
+      onComplete: () => {
+        state._day3WindStripTl = null
+        this._finalizeDay3WindStripPlacement(zoneId, pileKey)
+      },
+    })
+
+    state._day3WindStripTl = tl
+
+    tl.call(() => {
+      this._playDay3WindStripDialogue(state.id)
+    })
+
+    tl.to(spr, { y: `-=${popDy}`, duration: 0.3, ease: 'power2.out' })
+    if (lbl) tl.to(lbl, { y: `-=${popDy}`, duration: 0.3, ease: 'power2.out' }, '<')
+
+    tl.call(() => {
+      const spin =
+        spr.rotation +
+        Phaser.Math.DegToRad(Phaser.Math.FloatBetween(360, 720))
+
+      const tgt = this._day3WindStripOffscreenFlyTarget(spr.x, spr.y, windDir)
+      const dxLab = lbl ? lbl.x - spr.x : 0
+      const dyLab = lbl ? lbl.y - spr.y : 0
+
+      const flyPiece = gsap.timeline()
+
+      flyPiece.to(spr, {
+        x: tgt.x,
+        y: tgt.y,
+        rotation: spin,
+        duration: flyDur,
+        ease: 'power1.in',
+      })
+      if (lbl) {
+        flyPiece.to(
+          lbl,
+          {
+            x: tgt.x + dxLab,
+            y: tgt.y + dyLab,
+            duration: flyDur,
+            ease: 'power1.in',
+          },
+          '<',
+        )
+      }
+
+      flyPiece.fromTo(
+        lbl ? [spr, lbl] : [spr],
+        { alpha: 1 },
+        { alpha: 0, duration: flyDur * 0.45, ease: 'none' },
+        `-=${flyDur * 0.52}`,
+      )
+
+      tl.add(flyPiece, '>')
+    })
   }
 
   _maybeStackFreePlacementHints(state, zoneId) {
+    if (this.day >= 3 && this.step === 'stack') return
     const want = correctSortZoneForMatId(state.id)
     if (!want || !this._stackFreeHintFlags) return
     if (want === zoneId) return
@@ -3348,6 +5391,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
   }
 
   _stackOnPlacedTutorial(zoneId, state) {
+    if (this.day >= 3) return
     const matCat = correctSortZoneForMatId(state.id)
     let lines = null
 
@@ -3407,6 +5451,13 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._stackLabelTexts[2].setPosition(px + STACK_TOP_R + 6, py - 20)
   }
 
+  /** Faint pit rings + Bottom/Middle/Top labels — “pre-lay” only; hidden while cross-section lay UI is active. */
+  _setStackLayRingGuidesVisible(show) {
+    const a = show ? 0.3 : 0
+    this._stackGraphics?.setAlpha(a)
+    this._stackLabelTexts?.forEach((t) => t?.setAlpha(a))
+  }
+
   _applyStackStepZoneLabels() {
     const labels = [
       { title: 'Bottom', desc: 'Tinder — base of the lay.' },
@@ -3435,6 +5486,22 @@ export class FireBuildingMinigame extends Phaser.Scene {
     return {
       x: zone.x + (col - 1) * 28,
       y: zone.y - 10 + row * 16,
+    }
+  }
+
+  /** Pit placement grid step (Day 3 ×0.8 for tighter lay vs stone wind ring). */
+  _stackPitGridScale() {
+    return this.day >= 3 ? 0.8 : 1
+  }
+
+  /** Pit placement targets: same small grid as sort slots but centered on the fire pit (not the bottom buckets). */
+  _stackPitPlacePos(unitIndex) {
+    const s = this._stackPitGridScale()
+    const col = unitIndex % 3
+    const row = Math.floor(unitIndex / 3)
+    return {
+      x: this._pitX + (col - 1) * 28 * s,
+      y: this._pitY - 10 + row * 16 * s,
     }
   }
 
@@ -3483,6 +5550,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _stackPlacedCountInLayer(layerId) {
     let n = 0
     for (const st of Object.values(this._matStates)) {
+      if (st.phase === 'lost_wind') continue
+      if (st._day3WindStripFlying) continue
       if (st.phase === 'placed' && st.layerId === layerId) n++
     }
     return n
@@ -3736,11 +5805,23 @@ export class FireBuildingMinigame extends Phaser.Scene {
     const stackData = { bottom: [], middle: [], top: [] }
     const reserveMaterials = []
     for (const st of Object.values(this._matStates)) {
-      if (st.phase === 'placed' && st.layerId && stackData[st.layerId]) {
+      if (
+        st.phase === 'placed' &&
+        st.layerId &&
+        stackData[st.layerId] &&
+        !st.day3ZeroFire &&
+        !st._day3WindStripFlying
+      ) {
         stackData[st.layerId].push({ id: st.id, quality: st.quality })
       }
-      if (st.phase === 'sorted' && st.isSortable && st.quality !== 'BAD') {
-        const matType = normalizeStackSortZoneId(correctSortZoneForMatId(st.id))
+      if (st.phase === 'sorted' && st.quality !== 'BAD' && !isDay3ZeroFireMaterial(st.id)) {
+        const eligible = st.isSortable || this.day >= 3
+        if (!eligible) continue
+        const matType =
+          this.day >= 3
+            ? normalizeStackSortZoneId(st.sortZoneId)
+            : normalizeStackSortZoneId(correctSortZoneForMatId(st.id))
+        if (!matType) continue
         reserveMaterials.push({
           id: st.id,
           quality: st.quality,
@@ -3785,6 +5866,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _enterStack() {
     this._titleText.setText(`Day ${this.day} — Build the fire lay`)
 
+    if (this.day >= 3) {
+      this._refreshDay3WindRockInput()
+      this._startDay3WindFx()
+    }
+
     const W = this.scale.width
     const H = this.scale.height
 
@@ -3807,6 +5893,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
       this._stackUnitIndexInZone = { tinder: 0, kindling: 0, fuel_wood: 0 }
       this._stackHadError        = false
       this._stackLaySummaryRenShown = false
+      this._stackDay3LayAidenDone = false
       this._stackTutorialFlags = {
         firstTinderBottom:   false,
         firstKindlingMiddle: false,
@@ -3840,9 +5927,20 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._stackGraphics.setAlpha(0)
     this._stackLabelTexts.forEach(t => t.setAlpha(0))
 
-    const hasStackables = Object.values(this._matStates).some(
-      s => s.phase === 'sorted' && s.isSortable,
-    )
+    const hasStackables = Object.values(this._matStates).some((s) => {
+      if (this.day >= 3) {
+        if (
+          s.phase === 'pile' &&
+          !s.greyed &&
+          (s.isSortable || isDay3ZeroFireMaterial(s.id))
+        )
+          return true
+      }
+      if (s.phase !== 'sorted' || !s.sortZoneId || s.quality === 'BAD') return false
+      if (isDay3ZeroFireMaterial(s.id)) return false
+      if (this.day >= 3) return true
+      return s.isSortable
+    })
 
     if (!hasStackables) {
       this._setFlintActive(false)
@@ -3851,7 +5949,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
 
     this._ensureSortedMaterialsZoneLayout()
-    this._setFlintActive(false)
+    if (this.day >= 3) {
+      this._hideFlintUiCompletely()
+    } else {
+      this._setFlintActive(false)
+    }
     this._syncStackSortedDraggability()
 
     // Ignite trial: restore stack UI immediately (no dialogue / pit gate).
@@ -3881,8 +5983,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
     // Fallback: proposal already shown — if lay UI never built, wait for pit tap.
     this._stackPreserveLayoutPending = preserveLayout
     if (!this._stackCrossSectionCont && hasStackables) {
-      if (this._stackDevJumpSkipPitPrompt) {
-        this._stackDevJumpSkipPitPrompt = false
+      if (this._stackDevJumpSkipPitPrompt || this.day >= 3) {
+        if (this._stackDevJumpSkipPitPrompt) this._stackDevJumpSkipPitPrompt = false
         this._stackAwaitingPitForLay = false
         this._destroyStackPitTapPrompt()
         this._beginStack(W, H, preserveLayout)
@@ -3901,6 +6003,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
   /** Semi-transparent pit hit zone + stroked pulse — tap opens `_beginStack`. */
   _showStackPitTapPrompt(W, H) {
+    if (this.day >= 3) {
+      this._destroyStackPitTapPrompt()
+      this._setStackLayRingGuidesVisible(true)
+      return
+    }
     this._destroyStackPitTapPrompt()
 
     const px = this._pitX
@@ -3944,6 +6051,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
       })
       .setOrigin(0.5)
       .setDepth(121)
+
+    this._setStackLayRingGuidesVisible(true)
   }
 
   _destroyStackPitTapPrompt() {
@@ -3977,6 +6086,12 @@ export class FireBuildingMinigame extends Phaser.Scene {
       const H = this.scale.height
       const preserveLayout = this._stackPreserveLayoutPending ?? false
       this._stackPreserveLayoutPending = preserveLayout
+      if (this.day >= 3) {
+        this._stackAwaitingPitForLay = false
+        this._destroyStackPitTapPrompt()
+        this._beginStack(W, H, preserveLayout)
+        return
+      }
       this._stackAwaitingPitForLay = true
       this._showStackPitTapPrompt(W, H)
     }
@@ -4024,9 +6139,18 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._stackAwaitingPitForLay = false
     this._sortFeedbackLocked = false
     this._stackRenFeedbackLocked = false
+    this._setStackLayRingGuidesVisible(false)
 
+    this._recalcStackDropCountFromPlaced()
     this._createStackCrossSection()
-    if (preserveLayout) this._rebuildPlacedStackMarkers()
+    this._rebuildPlacedStackMarkers()
+
+    for (const st of Object.values(this._matStates)) {
+      if (st.phase === 'placed' && st.day3ZeroFire && st.sprite) {
+        st.sprite.setAlpha(0)
+        st.label?.setAlpha(0)
+      }
+    }
 
     this._createStackCategoryCards(W, H)
     this._createStackLayerNavUi(W, H)
@@ -4041,7 +6165,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
 
     for (const state of Object.values(this._matStates)) {
-      if (state.phase !== 'sorted' || !state.isSortable || !state.sprite) continue
+      if (state.phase !== 'sorted' || !state.sprite) continue
+      const okStackPrep =
+        state.isSortable ||
+        (this.day >= 3 && isDay3ZeroFireMaterial(state.id) && state.sortZoneId)
+      if (!okStackPrep) continue
       if (!state.zonePos && state.sortZoneId) {
         const zone = this._sortZones[state.sortZoneId]
         if (zone) {
@@ -4065,6 +6193,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     this._buildStackGoFindMaterials(W, H)
     this._updateStackStrikeGateUi()
+    if (this.day >= 3 && this.step === 'stack') this._maybeDay3StackLayMilestone()
     this._holdSlots.forEach(s => s.setAlpha(0))
 
     if (this.step === 'stack') {
@@ -4074,12 +6203,14 @@ export class FireBuildingMinigame extends Phaser.Scene {
       if (this.step !== 'stack') return
       this._syncStackSortedDraggability()
       this._refreshStackNextLayerMinimumGate()
+      this._enableDay3StackPileDrag()
     })
+    this._showDay3ForestHotspotForStack()
   }
 
   _rebuildPlacedStackMarkers() {
     for (const st of Object.values(this._matStates)) {
-      if (st.phase !== 'placed' || !st.layerId) continue
+      if (st.phase !== 'placed' || !st.layerId || st.day3ZeroFire) continue
       const z = LAYER_ID_TO_STACK_ZONE[st.layerId]
       if (z) this._addStackCrossSectionMarker(z, st)
     }
@@ -4090,6 +6221,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
   }
 
   _exitStack() {
+    if (this.day >= 3) this._cleanupDay3WindStripAnimations(true)
     this._stackAwaitingPitForLay = false
     this._destroyStackPitTapPrompt()
     this._destroyStackStrikeHint()
@@ -4196,29 +6328,86 @@ export class FireBuildingMinigame extends Phaser.Scene {
     })
   }
 
-  _tryStackPlace(state, zoneId) {
+  /**
+   * Lay UI is normally opened by tapping the pit; a direct pit drop should still run `_beginStack`
+   * so cross-section markers, Next layer, and strike hints attach to the placement.
+   * Day 3 `campsite_open`: promote to `stack` first so `_enterStack` can run `_beginStack` before this placement.
+   */
+  _ensureStackLayUiBeforePlace() {
+    this._day3PromoteOpenCampToStackForLay()
+    if (this.step !== 'stack') return
+    if (this._stackCrossSectionCont) return
+    const W = this.scale.width
+    const H = this.scale.height
+    const preserveLayout = this._stackPreserveLayoutPending ?? false
+    this._beginStack(W, H, preserveLayout)
+  }
+
+  /** All pit placements removed — restore pre-lay fire pit (tap prompt) without layer / cross-section UI. */
+  _revertStackLayUiToPitPromptState() {
+    if (this.step !== 'stack' || this._stackLayLockedComplete) return
+    this._stackRenFeedbackLocked = false
+    this._sortFeedbackLocked = false
+    this._stackPreserveLayoutPending = false
+    this._destroyStackLayerNavUi()
+    this._destroyStackCategoryCards()
+    this._destroyStackCrossSection()
+    this._destroyStackPitTapPrompt()
+    this._stackAwaitingPitForLay = false
+    if (this.day >= 3) {
+      this._setStackLayRingGuidesVisible(true)
+    } else {
+      this._stackAwaitingPitForLay = true
+      const W = this.scale.width
+      const H = this.scale.height
+      this._showStackPitTapPrompt(W, H)
+    }
+    this._syncSortedMaterialsRegistryLive()
+    this._syncStackLayRegistry()
+    this._syncStackSortedDraggability()
+    if (this.day >= 3) this._enableDay3StackPileDrag()
+    this._updateStackStrikeGateUi()
+  }
+
+  _tryStackPlace(state, zoneId, placeOpts = {}) {
     if (state.quality === 'BAD') {
+      if (this.day >= 3 && (this.step === 'campsite_open' || this.step === 'stack')) {
+        this._day3SetMaterialFreeGroundPosition(state, state.sprite.x, state.sprite.y)
+        return
+      }
       this._bounceToStackOrHome(state)
-      this._showRenLines(WET_MATERIAL_REN_LINES, () => this._greyOut(state))
+      if (this.day < 3 || this.step !== 'campsite_open') {
+        this._showRenLines(WET_MATERIAL_REN_LINES, () => this._greyOut(state))
+      }
       return
     }
 
     const correctZone = correctSortZoneForMatId(state.id)
-    if (correctZone == null) {
+    if (correctZone == null && !isDay3ZeroFireMaterial(state.id)) {
       this._bounceToStackOrHome(state)
-      this._showRenLines(WET_MATERIAL_REN_LINES, () => this._greyOut(state))
+      if (this.day < 3 || this.step !== 'campsite_open') {
+        this._showRenLines(WET_MATERIAL_REN_LINES, () => this._greyOut(state))
+      }
       return
     }
 
+    this._ensureStackLayUiBeforePlace()
+
     this._maybeStackFreePlacementHints(state, zoneId)
-    this._stackFreePlace(state, zoneId, {})
+    this._stackFreePlace(state, zoneId, {
+      skipStackTutorial: this.day >= 3,
+      day3FromOpenCamp: this.day >= 3 && this.step === 'campsite_open',
+      fromPitDrop: !!placeOpts.fromPitDrop,
+    })
   }
 
   _stackFreePlace(state, zoneId, opts = {}) {
     const idx = this._stackUnitIndexInZone[zoneId]++
     this._stackDropCount[zoneId]++
 
-    const pit = this._stackSlotInSortZone(zoneId, idx)
+    const pit = opts.fromPitDrop
+      ? this._stackPitPlacePos(idx)
+      : this._stackSlotInSortZone(zoneId, idx)
 
     state.phase   = 'placed'
     state.layerId = STACK_ZONE_TO_LAYER[zoneId]
@@ -4228,43 +6417,65 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     this._addStackCrossSectionMarker(zoneId, state)
 
-    this.tweens.add({
-      targets: state.sprite,
-      x: pit.x,
-      y: pit.y,
-      duration: 220,
-      ease: 'Back.Out',
-      onComplete: () => {
-        if (this.step === 'stack') {
-          state.sprite.setAlpha(0)
-          state.label.setAlpha(0)
-        } else {
-          this._refreshFireLaySpritePresentation()
-        }
-      },
-    })
-    this.tweens.add({
-      targets: state.label,
-      x: pit.x,
-      y: pit.y + ITEM_H / 2 + 4,
-      duration: 220,
-      ease: 'Back.Out',
-      onComplete: () => {
-        if (this.step === 'stack') {
-          state.label.setAlpha(0)
-        } else {
-          this._refreshFireLaySpritePresentation()
-        }
-      },
-    })
+    const instantDay3PitLay =
+      this.day >= 3 &&
+      opts.fromPitDrop &&
+      (this.step === 'stack' || this.step === 'campsite_open')
+    const tweenMs = instantDay3PitLay ? 0 : 220
+
+    const spriteDone = () => {
+      if (this.step === 'stack' && this.day < 3) {
+        state.sprite.setAlpha(0)
+        state.label?.setAlpha(0)
+      } else {
+        this._refreshFireLaySpritePresentation()
+      }
+      if (opts.day3FromOpenCamp) this._maybeDay3TransitionToStackAfterFirstPit()
+    }
+    const labelDone = () => {
+      if (this.step === 'stack' && this.day < 3) {
+        state.label?.setAlpha(0)
+      } else {
+        this._refreshFireLaySpritePresentation()
+      }
+    }
+
+    if (instantDay3PitLay) {
+      state.sprite.setPosition(pit.x, pit.y)
+      state.label?.setPosition(pit.x, pit.y + ITEM_H / 2 + 4)
+      spriteDone()
+      labelDone()
+    } else {
+      this.tweens.add({
+        targets: state.sprite,
+        x: pit.x,
+        y: pit.y,
+        duration: tweenMs,
+        ease: 'Back.Out',
+        onComplete: spriteDone,
+      })
+      this.tweens.add({
+        targets: state.label,
+        x: pit.x,
+        y: pit.y + ITEM_H / 2 + 4,
+        duration: tweenMs,
+        ease: 'Back.Out',
+        onComplete: labelDone,
+      })
+    }
 
     this._flashZone(zoneId, 0x44dd44)
     if (!opts.skipStackTutorial) this._stackOnPlacedTutorial(zoneId, state)
     this._syncSortedMaterialsRegistryLive()
     this._refreshStackCategoryCards()
     this._syncStackSortedDraggability()
+    if (this.day >= 3 && this.step === 'stack') this._enableDay3StackPileDrag()
     this._updateStackLayerHighlight()
     this._refreshStackNextLayerMinimumGate()
+    if (this.day >= 3 && this.step === 'stack')
+      this._maybeDay3StackLayMilestone()
+    if (this.day >= 3)
+      this._maybeDay3WindStripAfterTinderPlaced(state, zoneId, opts)
   }
 
   _bounceToStackOrHome(state) {
@@ -4387,7 +6598,10 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._effectiveDecayMs = effectiveDecayMs
     if (this.day <= 2) {
       this._effectiveDecayMs = Math.max(1200, this._effectiveDecayMs)
+    } else if (this.day >= 3) {
+      this._effectiveDecayMs = Math.max(800, this._effectiveDecayMs)
     }
+    this._igniteDecayMsBaseForDirection = this._effectiveDecayMs
     this._igniteDecayPerTick = this._igniteDifficulty.decayPerTick
 
     const tinderN = Math.max(
@@ -4413,8 +6627,184 @@ export class FireBuildingMinigame extends Phaser.Scene {
     if (this.day <= 2) {
       this._igniteBlowPenalty = kindN >= 3 ? 5 : kindN === 2 ? 7 : 10
     } else {
-      this._igniteBlowPenalty = kindN >= 3 ? 5 : kindN === 2 ? 8 : 12
+      this._igniteBlowPenalty = kindN >= 3 ? 3 : kindN === 2 ? 5 : 8
     }
+  }
+
+  _clearIgniteDecayRainTimersOnly() {
+    if (this._decayTimer) {
+      this._decayTimer.remove()
+      this._decayTimer = null
+    }
+    if (this._rainTimer) {
+      this._rainTimer.remove()
+      this._rainTimer = null
+    }
+  }
+
+  _ensureIgniteIdleTimerRunning() {
+    if (this.step !== 'ignite' || !this._igniteMechanicsPhase) return
+    if (this._idleTimer) return
+    this._idleTimer = this.time.addEvent({
+      delay: 500,
+      callback: this._checkIdle,
+      callbackScope: this,
+      loop: true,
+    })
+  }
+
+  /** Day 3 Step 7 — multiplier already applied → `_effectiveDecayMs`. */
+  _startIgniteDecayAndRainAfterDay3Direction() {
+    if (this.day < 3) return
+    this._clearIgniteDecayRainTimersOnly()
+
+    const base = this._igniteDecayMsBaseForDirection ?? this._effectiveDecayMs
+    const mult = day3SparkStrikeDecayMultiplier(this._windDirection, this._sparkDirection)
+    this._effectiveDecayMs = Math.max(80, Math.floor(base * mult))
+
+    this._decayTimer = this.time.addEvent({
+      delay: this._effectiveDecayMs,
+      callback: this._igniteDecayTick,
+      callbackScope: this,
+      loop: true,
+    })
+
+    if (this._igniteUseRain) {
+      this._rainTimer = this.time.addEvent({
+        delay: 4000,
+        callback: this._applyRainInterference,
+        callbackScope: this,
+        loop: true,
+      })
+    }
+  }
+
+  _destroyDay3SparkDirectionPicker() {
+    for (const arc of this._day3SparkDirHoverTargets) {
+      const hud = arc?.getData?.('sparkDirHud')
+      if (hud) gsap.killTweensOf(hud)
+    }
+    this._day3SparkDirHoverTargets = []
+    for (const o of this._day3SparkDirPickerObjs) {
+      try {
+        o?.destroy?.()
+      } catch (_) {
+        /* noop */
+      }
+    }
+    this._day3SparkDirPickerObjs = []
+    this._day3SparkDirPromptText = null
+  }
+
+  _resetDay3IgniteStrikeDirectionGate() {
+    if (this.day < 3) return
+    this._destroyDay3SparkDirectionPicker()
+    this._sparkDirection = null
+    this._igniteAwaitDay3DirectionPick = true
+    this._clearIgniteDecayRainTimersOnly()
+  }
+
+  _mountDay3SparkDirectionPicker() {
+    if (this.day < 3 || this.step !== 'ignite') return
+    if (this._day3SparkDirPromptText?.scene) return
+
+    this._ensureDay3WindDirection()
+    if (!this._windSlotCenters) {
+      this._buildDay3WindSlots()
+    }
+    const centers = this._windSlotCenters
+    if (!centers) return
+
+    const W = this.scale.width
+    const hint = this.add
+      .text(W / 2, this._pitY - STACK_TOP_R - 52, 'Choose where to strike.', {
+        fontSize: '15px',
+        fontFamily: 'Georgia, serif',
+        fill: '#e8dcc8',
+      })
+      .setOrigin(0.5)
+      .setDepth(145)
+    this._day3SparkDirPromptText = hint
+    this._day3SparkDirPickerObjs.push(hint)
+
+    this._dialogue.show({
+      speaker: 'Aiden',
+      text: 'I need to strike where the wind cannot reach. Watch which way it blows.',
+      onComplete: () => this._dialogue.hide(),
+    })
+
+    const r = DAY3_SPARK_DIRECTION_HOTSPOT_R
+    const dimFill = 0.28
+    const hoverFill = 0.52
+    for (const id of DAY3_WIND_CARDINALS) {
+      const c = centers[id]
+      if (!c) continue
+
+      const arc = this.add
+        .circle(c.x, c.y, r, 0xffffff, dimFill)
+        .setStrokeStyle(2, 0xffffff, 0.58)
+        .setDepth(144)
+        .setInteractive(
+          new Phaser.Geom.Circle(0, 0, r),
+          Phaser.Geom.Circle.Contains,
+        )
+
+      arc.setFillStyle(0xffffff, dimFill)
+      const hud = { fa: dimFill }
+      arc.setData('sparkDirHud', hud)
+      arc.on('pointerover', () => {
+        gsap.killTweensOf(hud)
+        gsap.to(hud, {
+          fa: hoverFill,
+          duration: 0.12,
+          onUpdate: () => arc.setFillStyle(0xffffff, hud.fa),
+        })
+      })
+      arc.on('pointerout', () => {
+        gsap.killTweensOf(hud)
+        gsap.to(hud, {
+          fa: dimFill,
+          duration: 0.18,
+          onUpdate: () => arc.setFillStyle(0xffffff, hud.fa),
+        })
+      })
+      arc.on('pointerup', () => {
+        if (this.step !== 'ignite' || !this._igniteAwaitDay3DirectionPick) return
+        this._onDay3SparkDirectionChosen(id)
+      })
+
+      this._day3SparkDirHoverTargets.push(arc)
+      this._day3SparkDirPickerObjs.push(arc)
+    }
+
+    this._titleText.setText('Choose a side of the pit to strike from, then tap STRIKE.')
+  }
+
+  /**
+   * @param {'north'|'south'|'east'|'west'} dir
+   */
+  _onDay3SparkDirectionChosen(dir) {
+    if (this.day < 3 || this.step !== 'ignite') return
+
+    this._sparkDirection = dir
+    this._destroyDay3SparkDirectionPicker()
+
+    const windward =
+      this._windDirection && day3WindSlotRoles(this._windDirection).windward
+    if (windward && dir === windward) {
+      this._dialogue.show({
+        speaker: 'Aiden',
+        text: 'Wind blew it straight out. Wrong side.',
+        onComplete: () => this._dialogue.hide(),
+      })
+    }
+
+    this._igniteAwaitDay3DirectionPick = false
+    this._startIgniteDecayAndRainAfterDay3Direction()
+    this._titleText.setText(
+      'Ignite — Phase 1: Tap STRIKE to build heat (watch both bars).',
+    )
+    this._refreshIgniteStrikeAvailability()
   }
 
   /** Live pit bottom-layer rows matching `_syncStackLayRegistry` → `stackData.bottom` shape (`{ id, quality }`). */
@@ -4818,6 +7208,10 @@ export class FireBuildingMinigame extends Phaser.Scene {
     const zoneId = this._igniteSparkTargetZone
 
     if (zoneId !== 'tinder') {
+      if (this.day >= 3) {
+        this._dialogue.hide()
+        return
+      }
       this._dialogue.showSequence(
         [
           {
@@ -4831,6 +7225,18 @@ export class FireBuildingMinigame extends Phaser.Scene {
       return
     }
 
+    const afterPick = () => {
+      this._dialogue.hide()
+      this._igniteAwaitingLayerStrike = false
+      this._destroyIgniteSparkPickPhaseUi()
+      this._beginIgniteMechanics()
+    }
+
+    if (this.day >= 3) {
+      afterPick()
+      return
+    }
+
     const lines = [
       { speaker: 'Ren', text: 'Tinder. Right.' },
       {
@@ -4839,12 +7245,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
       },
     ]
 
-    this._dialogue.showSequence(lines, () => {
-      this._dialogue.hide()
-      this._igniteAwaitingLayerStrike = false
-      this._destroyIgniteSparkPickPhaseUi()
-      this._beginIgniteMechanics()
-    })
+    this._dialogue.showSequence(lines, afterPick)
   }
 
   /** Day 1–2: bright 1.5s / dark 1.0s (~60% good blow window); tighter on later days. */
@@ -5280,6 +7681,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
   }
 
   _enterIgnite() {
+    if (this.day >= 3) {
+      this._refreshDay3WindRockInput()
+      this._startDay3WindFx()
+    }
+
     this._titleText.setText('Catch the spark — heat, smoke, then breathe.')
 
     if (import.meta.env.DEV) {
@@ -5357,6 +7763,14 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     this._stepProposalShown.ignite = true
 
+    if (this.day >= 3) {
+      this._destroyIgniteLayerPickUi()
+      this._maybeShowIgniteForestReturnHint(forestResume)
+      this._igniteProposalPath = 'pathA'
+      this._startIgniteLayerStrikePhase()
+      return
+    }
+
     this._dialogue.showSequence(
       [
         { speaker: 'Ren', text: 'Alright, fire is built. Let us get a spark going.' },
@@ -5433,20 +7847,26 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._setIgniteBlowInteractive(false)
     this._refreshIgniteStrikeAvailability()
 
-    this._decayTimer = this.time.addEvent({
-      delay: this._effectiveDecayMs,
-      callback: this._igniteDecayTick,
-      callbackScope: this,
-      loop: true,
-    })
-
-    if (this._igniteUseRain) {
-      this._rainTimer = this.time.addEvent({
-        delay: 4000,
-        callback: this._applyRainInterference,
+    if (this.day >= 3) {
+      this._igniteAwaitDay3DirectionPick = true
+      this._sparkDirection = null
+    } else {
+      this._igniteAwaitDay3DirectionPick = false
+      this._decayTimer = this.time.addEvent({
+        delay: this._effectiveDecayMs,
+        callback: this._igniteDecayTick,
         callbackScope: this,
         loop: true,
       })
+
+      if (this._igniteUseRain) {
+        this._rainTimer = this.time.addEvent({
+          delay: 4000,
+          callback: this._applyRainInterference,
+          callbackScope: this,
+          loop: true,
+        })
+      }
     }
 
     this._idleTimer = this.time.addEvent({
@@ -5470,7 +7890,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
       'Ignite — Phase 2: Blow when smoke glows bright (warm tint), not when dim (grey).',
     )
 
-    if (this.day >= 2 && !this._igniteSmokeRenShown) {
+    if (this.day >= 2 && this.day < 3 && !this._igniteSmokeRenShown) {
       this._igniteSmokeRenShown = true
       this._igniteDecayHoldUntilNextBlow = true
       this._dialogue.showSequence(
@@ -5503,6 +7923,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
   _exitIgnite() {
     this._hideCampsiteForestButton()
+    if (this.day >= 3) {
+      this._destroyDay3SparkDirectionPicker()
+      this._igniteAwaitDay3DirectionPick = false
+      this._sparkDirection = null
+    }
     this._stopIgniteTimers()
     this._stopIgniteSmokePulse()
     this._igniteAwaitingLayerStrike = false
@@ -5534,12 +7959,20 @@ export class FireBuildingMinigame extends Phaser.Scene {
         IGNITE_PROGRESS_MAX,
         this._igniteProgress + this._igniteBlowGain,
       )
-      if (this.day >= 2 && !this._igniteRenBlowCorrectShown) {
+      if (this.day >= 2 && this.day < 3 && !this._igniteRenBlowCorrectShown) {
         this._igniteRenBlowCorrectShown = true
         this._dialogue.showSequence(
           [{ speaker: 'Ren', text: 'That is it. Right when it glows.' }],
           () => this._dialogue.hide(),
         )
+      }
+      if (this.day >= 3 && !this.registry.get('day3IgniteWaitForGlowAidenShown')) {
+        this.registry.set('day3IgniteWaitForGlowAidenShown', true)
+        this._dialogue.show({
+          speaker: 'Aiden',
+          text: 'Wait for the glow. Ren was right about that.',
+          onComplete: () => this._dialogue.hide(),
+        })
       }
       this.tweens.add({
         targets: this._tinderSprite,
@@ -5552,7 +7985,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     } else {
       const pen = this._igniteBlowPenalty ?? 14
       this._igniteProgress = Math.max(0, this._igniteProgress - pen)
-      if (this.day >= 2 && !this._igniteBlowHardRenShown) {
+      if (this.day >= 2 && this.day < 3 && !this._igniteBlowHardRenShown) {
         this._igniteBlowHardRenShown = true
         this._dialogue.showSequence(
           [
@@ -5642,9 +8075,23 @@ export class FireBuildingMinigame extends Phaser.Scene {
   }
 
   _igniteSuccess() {
+    if (this.day >= 3) {
+      this._destroyDay3SparkDirectionPicker()
+      this._igniteAwaitDay3DirectionPick = false
+      this._sparkDirection = null
+    }
     this.registry.set('ignitionSuccess', true)
     /** §4.6 — final `fireQuality` set after spread (strong / weak); cleared here so sustain reads registry truth. */
     this.registry.set('fireQuality', null)
+
+    if (this.day >= 3) {
+      if (!this.todoState.light) {
+        this.todoState.light = true
+        const todo = { ...(this.registry.get('day3TodoState') ?? {}), light: true }
+        this.registry.set('day3TodoState', todo)
+      }
+      this.updateTodoList()
+    }
 
       this._stopIgniteTimers()
     this._stopIgniteSmokePulse()
@@ -5726,7 +8173,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
 
     const idx = this._stackUnitIndexInZone.tinder++
-    const pit = this._stackSlotInSortZone('tinder', idx)
+    const pit = this._stackPitPlacePos(idx)
     state.phase = 'placed'
     state.layerId = 'bottom'
     state.sortZoneId = null
@@ -5751,6 +8198,16 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     this._maybePromoteIgniteToBlowPhase()
     this._refreshIgniteProgressUi()
+
+    if (
+      this.day >= 3 &&
+      this.step === 'ignite' &&
+      this._igniteMechanicsPhase === 'spark'
+    ) {
+      this._resetDay3IgniteStrikeDirectionGate()
+      this._ensureIgniteIdleTimerRunning()
+      this._refreshIgniteStrikeAvailability()
+    }
   }
 
   _igniteFail() {
@@ -5781,6 +8238,19 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     const hasReserveTinder = this._igniteHasSortedReserveTinder()
 
+    const afterFail = () => {
+      this._dialogue.hide()
+      this._refreshFireLaySpritePresentation()
+      this._syncSortZoneHudSortedSpriteVisibility()
+      this._syncStackSortedDraggability()
+      if (!hasReserveTinder) this._pulseForestButtonBriefly()
+    }
+
+    if (this.day >= 3) {
+      afterFail()
+      return
+    }
+
     const lines = [
       {
         speaker: 'Ren',
@@ -5799,13 +8269,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
       })
     }
 
-    this._dialogue.showSequence(lines, () => {
-      this._dialogue.hide()
-      this._refreshFireLaySpritePresentation()
-      this._syncSortZoneHudSortedSpriteVisibility()
-      this._syncStackSortedDraggability()
-      if (!hasReserveTinder) this._pulseForestButtonBriefly()
-    })
+    this._dialogue.showSequence(lines, afterFail)
   }
 
   _stopIgniteTimers() {
@@ -6107,6 +8571,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
   }
 
   _enterSpread() {
+    if (this.day >= 3) {
+      this._stopDay3WindFx()
+      this._refreshDay3WindRockInput()
+    }
+
     this._clearSpreadTimers()
     this._spreadAwaitingRemediation = false
     this._spreadRemediationZone = null
@@ -6305,8 +8774,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
 
     let targetZone = null
-    if (this._pitStackDropContains(dropX, dropY))
+    let fromPitDrop = false
+    if (this._pitStackDropContains(dropX, dropY)) {
       targetZone = this._stackZoneIdAtPitWorldPos(dropX, dropY)
+      fromPitDrop = true
+    }
     if (!targetZone) {
       const csBounds = this._stackCrossSectionWorldBounds()
       if (csBounds?.contains(dropX, dropY))
@@ -6334,7 +8806,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
 
     this._spreadRemediatedWeak = true
-    this._stackFreePlace(state, need, { skipStackTutorial: true })
+    this._stackFreePlace(state, need, { skipStackTutorial: true, fromPitDrop })
     this._syncStackLayRegistry()
     this._spreadClearSymptom()
     this._spreadDisableSortedDragAll()
@@ -6379,6 +8851,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
   }
 
   _enterSustain() {
+    if (this.day >= 3) {
+      this._stopDay3WindFx()
+      this._refreshDay3WindRockInput()
+    }
+
     const W = this.scale.width
     const H = this.scale.height
 
@@ -6700,6 +9177,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
     if (this._drainTimer) { this._drainTimer.remove(); this._drainTimer = null }
     if (this._nightTimer) { this._nightTimer.remove(); this._nightTimer = null }
     if (this._floodTimer) { this._floodTimer.remove(); this._floodTimer = null }
+  }
+
+  shutdown() {
+    this._cleanupDay3WindStripAnimations(true)
+    this._stopDay3WindFx()
   }
 
   // ── Day fail ──────────────────────────────────────────────────────────────────
