@@ -4,14 +4,15 @@
  * Usage:
  *   1. Set DEV_MOCK_FIRE_BUILDING = false before committing.
  *   2. Set MOCK_CONFIG.startStep — collect launches FireBuildingCollect; others → FireCampsiteMinigame.
- *   3. Use mockPreset `'ideal' | 'mixed' | 'bad'` for quantity‑consistent stacks / reserves / qualities.
+ *   3. Optional MOCK_CONFIG.day — use `3` with `startStep: 'ignite'` for Day 3 cold-start from registry stack/sort.
+ *   4. Use mockPreset `'ideal' | 'mixed' | 'bad'` for quantity‑consistent stacks / reserves / qualities.
  *
  * Data flow (registry): Collect → collectedMaterials → Sort → sortedMaterials → Stack → stackData +
  * reserveMaterials → Ignite / Spread / Sustain (reserveMaterials stays live via `_syncStackLayRegistry`).
  */
 
 /** Master switch — set true to bypass OnboardingScene and jump straight to the minigame. */
-export const DEV_MOCK_FIRE_BUILDING = false
+export const DEV_MOCK_FIRE_BUILDING = true
 
 const STEP_ORDER = ['ren_intro', 'clear', 'collect', 'sort', 'stack', 'ignite', 'spread', 'sustain']
 // Ink day2/day3: `# minigame:fire_campsite` → ren_intro → clear; collect only inside campsite (`devFireBuildChain`), not an Ink minigame tag.
@@ -189,6 +190,10 @@ export const MOCK_CONFIG = {
 
   spreadDevScenario: null,
   spreadTestReserveKindling: false,
+
+  // Day 3 fields (only used when day === 3)
+  /** `'north'` | `'south'` | `'east'` | `'west'` | null (random) */
+  windDirection: null,
 }
 
 // ── Registry seeding ──────────────────────────────────────────────────────────
@@ -253,12 +258,18 @@ export function seedFireBuildingMockRegistry(registry) {
 }
 
 export function getFireBuildingMockPayload() {
+  const WIND_DIRS = ['north', 'south', 'east', 'west']
+  const windDirection =
+    MOCK_CONFIG.windDirection ??
+    WIND_DIRS[Math.floor(Math.random() * WIND_DIRS.length)]
+
   return {
-    day:               2,
+    day:               MOCK_CONFIG.day ?? 2,
     startStep:         MOCK_CONFIG.startStep,
     campsiteQuality:   MOCK_CONFIG.campsiteQuality,
     spreadDevScenario: MOCK_CONFIG.spreadDevScenario ?? null,
     mockPreset:        MOCK_CONFIG.mockPreset ?? 'ideal',
+    windDirection:     (MOCK_CONFIG.day ?? 2) >= 3 ? windDirection : undefined,
   }
 }
 

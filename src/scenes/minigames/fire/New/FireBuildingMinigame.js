@@ -438,7 +438,7 @@ function day3WindSlotRoles(dir) {
 }
 
 /**
- * Day 3 ignite — strike cardinal vs wind: leeward ×1.0, cross ×1.5, windward ×2.0
+ * Day 3 ignite — strike cardinal vs wind: leeward ×1.0, cross ×1.3, windward ×1.6
  * @param {'north'|'south'|'east'|'west'|null} windDir
  * @param {'north'|'south'|'east'|'west'|null} sparkDir
  */
@@ -453,8 +453,8 @@ function day3SparkStrikeDecayMultiplier(windDir, sparkDir) {
   }
   const { windward, leeward, sideA, sideB } = day3WindSlotRoles(windDir)
   if (sparkDir === leeward) return 1
-  if (sparkDir === windward) return 2
-  if (sparkDir === sideA || sparkDir === sideB) return 1.5
+  if (sparkDir === windward) return 1.6
+  if (sparkDir === sideA || sparkDir === sideB) return 1.3
   return 1
 }
 
@@ -6609,6 +6609,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._effectiveDecayMs = effectiveDecayMs
     if (this.day <= 2) {
       this._effectiveDecayMs = Math.max(1200, this._effectiveDecayMs)
+    } else {
+      this._effectiveDecayMs = Math.max(800, this._effectiveDecayMs)
     }
     this._igniteDecayMsBaseForDirection = this._effectiveDecayMs
     this._igniteDecayPerTick = this._igniteDifficulty.decayPerTick
@@ -6636,7 +6638,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     if (this.day <= 2) {
       this._igniteBlowPenalty = kindN >= 3 ? 5 : kindN === 2 ? 7 : 10
     } else {
-      this._igniteBlowPenalty = kindN >= 3 ? 5 : kindN === 2 ? 8 : 12
+      this._igniteBlowPenalty = kindN >= 3 ? 3 : kindN === 2 ? 5 : 8
     }
   }
 
