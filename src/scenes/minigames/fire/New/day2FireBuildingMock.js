@@ -12,7 +12,7 @@
  */
 
 /** Master switch — set true to bypass OnboardingScene and jump straight to the minigame. */
-export const DEV_MOCK_FIRE_BUILDING = true
+export const DEV_MOCK_FIRE_BUILDING = false
 
 const STEP_ORDER = ['ren_intro', 'clear', 'collect', 'sort', 'stack', 'ignite', 'spread', 'sustain']
 // Ink day2/day3: `# minigame:fire_campsite` → ren_intro → clear; collect only inside campsite (`devFireBuildChain`), not an Ink minigame tag.
@@ -182,7 +182,7 @@ export const MOCK_PRESETS = {
 export const MOCK_CONFIG = {
   /** `2` | `3` — set to 3 to run Day 3 flow. */
   day: 3,
-  startStep: 'stack',
+  startStep: 'collect',
   /** `'ideal'` | `'mixed'` | `'bad'` — drives collected / sorted / stack / reserve coherence. */
   mockPreset: 'ideal',
   campsiteQuality: 'good',

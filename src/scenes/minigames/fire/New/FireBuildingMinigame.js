@@ -2374,8 +2374,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
     for (let i = 0; i < this._todoItems.length; i++) {
       const { key, label } = this._todoItems[i]
       const done = this.todoState[key]
-      this._todoListTexts[i].setText((done ? '✓ ' : '  ') + label)
-      this._todoListTexts[i].setColor(done ? '#666644' : '#aaa890')
+      this._todoListTexts[i].setText((done ? '✓ ' : '· ') + label)
+      this._todoListTexts[i].setColor(done ? '#6a8a44' : '#b8b898')
     }
   }
 
