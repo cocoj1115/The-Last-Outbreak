@@ -6454,7 +6454,12 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
   _onCampsiteForestClick() {
     if (this.day >= 3) {
-      if (this.step !== 'campsite_open' && this.step !== 'ignite') return
+      if (
+        this.step !== 'campsite_open' &&
+        this.step !== 'stack' &&
+        this.step !== 'ignite'
+      )
+        return
     } else {
       if (this.step !== 'stack' && this.step !== 'ignite') return
     }
