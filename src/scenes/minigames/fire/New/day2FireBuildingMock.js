@@ -181,8 +181,8 @@ export const MOCK_PRESETS = {
 
 export const MOCK_CONFIG = {
   /** `2` | `3` — set to 3 to run Day 3 flow. */
-  day: 3,
-  startStep: 'collect',
+  day: 2,
+  startStep: 'sort',
   /** `'ideal'` | `'mixed'` | `'bad'` — drives collected / sorted / stack / reserve coherence. */
   mockPreset: 'ideal',
   campsiteQuality: 'good',

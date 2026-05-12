@@ -365,6 +365,11 @@ const SUSTAIN_RESERVE_PANEL_DEPTH = 22
 const SUSTAIN_RESERVE_DIM_PILE_DEPTH = 19
 /** Active reserve wood — above panels so hits go to sprites. */
 const SUSTAIN_RESERVE_PILE_DEPTH = 30
+/** Day 3 reserve chips in ignite/spread/sustain card row — higher than sort/stack default (`zone.y - 10`). */
+const DAY3_CARD_RESERVE_YPAD = 28
+/** Title / description / count above reserve chips (chips use ~15 ignite / ~30 sustain). */
+const DAY3_SORT_ZONE_HUD_ABOVE_CHIPS_DEPTH = 40
+const DAY3_IGNITE_RESERVE_CHIP_DEPTH = 15
 /** @deprecated label-only; panels use `SUSTAIN_RESERVE_PANEL_DEPTH`. */
 const SUSTAIN_BACKUP_UI_DEPTH = SUSTAIN_RESERVE_PANEL_DEPTH
 
@@ -1914,6 +1919,51 @@ export class FireBuildingMinigame extends Phaser.Scene {
     })
   }
 
+  /** Day 3 ignite/spread/sustain: canonical spare row `zone.y - DAY3_CARD_RESERVE_YPAD` for sorted `zonePos`. */
+  _day3SyncSortedCardRowZonePos() {
+    if (this.day < 3) return
+    const stepForLayout = this.step ?? this._startStep
+    if (!stepForLayout || !['ignite', 'spread', 'sustain'].includes(stepForLayout)) return
+    for (const state of Object.values(this._matStates)) {
+      if (state.phase !== 'sorted' || !state.sortZoneId) continue
+      const zone = this._sortZones[state.sortZoneId]
+      if (!zone) continue
+      const h = (state.pileKey ?? '').length
+      const offset = (h % 2 === 0) ? -16 : 16
+      state.zonePos = { x: zone.x + offset, y: zone.y - DAY3_CARD_RESERVE_YPAD }
+    }
+  }
+
+  /** Lift Tinder/Kindling/Fuel chrome above Day 3 reserve chip sprites. */
+  _bumpDay3SortZoneChromeAboveReserveChips() {
+    if (this.day < 3) return
+    const d = DAY3_SORT_ZONE_HUD_ABOVE_CHIPS_DEPTH
+    this._sortZoneParts.forEach((part) => {
+      part.labelTxt?.setDepth(d)
+      part.descTxt?.setDepth(d)
+      part.countSegments?.forEach((t) => t.setDepth(d))
+    })
+  }
+
+  _restoreSortZoneChromeDepthsDefault() {
+    this._sortZoneParts.forEach((part) => {
+      part.labelTxt?.setDepth(3)
+      part.descTxt?.setDepth(3)
+      part.countSegments?.forEach((t) => t.setDepth(3))
+    })
+  }
+
+  /** Day 3 sustain reserve “chips” — `Rectangle.setStrokeStyle` only when available. */
+  _clearReservePileStroke(sprite) {
+    if (sprite && typeof sprite.setStrokeStyle === 'function') sprite.setStrokeStyle(0)
+  }
+
+  _applyReservePileStroke(sprite) {
+    if (sprite && typeof sprite.setStrokeStyle === 'function') {
+      sprite.setStrokeStyle(2, 0xe8c896, 0.95)
+    }
+  }
+
   _getMaterialCounts() {
     const counts = {
       tinder: { placed: 0, sorted: 0, burned: 0 },
@@ -2286,6 +2336,22 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
   /** Day 2 — one-shot non-blocking Ren after returning from forest with spare tinder during ignite. */
   _maybeShowIgniteForestReturnHint(forestResume) {
+    if (forestResume && this.day >= 3) {
+      if (this.registry.get('day3IgniteForestReturnHintShown')) return
+      this.registry.set('day3IgniteForestReturnHintShown', true)
+      this._dialogue.showSequence(
+        [
+          {
+            speaker: 'Aiden',
+            text: 'Wind put out my work. Starting over.',
+          },
+        ],
+        () => this._dialogue.hide(),
+        { modal: false },
+      )
+      return
+    }
+
     if (!forestResume || this.day !== 2) return
     if (!this._igniteHasSortedReserveTinder()) return
     if (this.registry.get('igniteForestTinderHintShown')) return
@@ -4404,7 +4470,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
         correctSortZoneForMatId(state.id) === 'tinder' &&
         state.quality !== 'BAD'
       const dim = state.greyed || state.quality === 'BAD'
-      const pileDepth = STACK_SORTED_PILE_DEPTH
+      const pileDepth =
+        this.day >= 3 ? DAY3_IGNITE_RESERVE_CHIP_DEPTH : STACK_SORTED_PILE_DEPTH
       state.sprite.setDepth(pileDepth)
       state.label?.setDepth(pileDepth + 1)
       if (allowDrag) {
@@ -5740,14 +5807,31 @@ export class FireBuildingMinigame extends Phaser.Scene {
   }
 
   _applySustainReserveSpritePresentation() {
+    if (this.day >= 3) {
+      this._day3SyncSortedCardRowZonePos()
+    }
     for (const st of Object.values(this._matStates)) {
       if (!st.sprite || st.phase !== 'sorted' || !st.isSortable) continue
-      st.sprite.setVisible(true)
-      st.label?.setVisible(true)
       const zoneId = this._stackSortedCategory(st)
       const keys = zoneId ? this._sustainBackupKeysByZone[zoneId] : null
       const inReserve = !!(zoneId && keys?.includes(st.pileKey))
       const usable = inReserve && st.quality !== 'BAD'
+
+      if (this.day >= 3) {
+        this._clearReservePileStroke(st.sprite)
+        if (usable) {
+          st.sprite.setVisible(true).setAlpha(1)
+          st.label?.setVisible(true).setAlpha(1)
+          this._applyReservePileStroke(st.sprite)
+        } else {
+          st.sprite.setVisible(false)
+          st.label?.setVisible(false)
+        }
+        continue
+      }
+
+      st.sprite.setVisible(true)
+      st.label?.setVisible(true)
       if (usable) {
         st.sprite.setAlpha(1)
         st.label?.setAlpha(1)
@@ -5756,11 +5840,17 @@ export class FireBuildingMinigame extends Phaser.Scene {
         st.label?.setAlpha(0.22)
       }
     }
+    if (this.day >= 3 && this.step === 'sustain') {
+      this._ensureSortedMaterialsZoneLayout()
+    }
   }
 
   _restoreSortedPilePresentationAfterSustain() {
     for (const st of Object.values(this._matStates)) {
       if (!st.sprite || st.phase !== 'sorted') continue
+      if (this.day >= 3) {
+        this._clearReservePileStroke(st.sprite)
+      }
       const dim = st.greyed || st.quality === 'BAD'
       const a = dim ? 0.3 : 1
       st.sprite.setVisible(true).setAlpha(a)
@@ -5774,6 +5864,9 @@ export class FireBuildingMinigame extends Phaser.Scene {
     const st = this._matStates[pileKey]
     if (!st?.sprite) return
     st.phase = 'sustain_used'
+    if (this.day >= 3) {
+      this._clearReservePileStroke(st.sprite)
+    }
     st.sprite.setAlpha(0)
     st.label?.setAlpha(0)
     this.input.setDraggable(st.sprite, false)
@@ -6429,7 +6522,18 @@ export class FireBuildingMinigame extends Phaser.Scene {
    */
   _leaveCampsiteForForest() {
     const stamina = this.registry.get('stamina')
-    const alive = stamina?.deduct(1) ?? true
+    const before = stamina?.getState?.()?.current
+    const deductReturn = stamina?.deduct(1)
+    const alive = deductReturn ?? true
+    if (import.meta.env.DEV) {
+      console.log('[StaminaDebug] _leaveCampsiteForForest', {
+        before,
+        deductReturn,
+        after: stamina?.getState?.()?.current,
+        alive,
+        staminaNull: stamina == null,
+      })
+    }
     if (!alive) {
       this._emitDayFail('fire_campsite')
       return
@@ -7640,7 +7744,13 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
   /** Ignite uses live pile sprites + sort-zone chrome only (no duplicate category chips / lay-preview rects). */
   _igniteEnsureReserveHud(W, H) {
-    this._applyStackStepZoneLabels()
+    if (this.day >= 3) {
+      this._restoreSortZoneLabels()
+      this._day3SyncSortedCardRowZonePos()
+      this._bumpDay3SortZoneChromeAboveReserveChips()
+    } else {
+      this._applyStackStepZoneLabels()
+    }
     Object.values(this._sortZones).forEach(z => {
       this.tweens.killTweensOf(z.rect)
       this.tweens.add({ targets: z.rect, alpha: 0.85, duration: 300 })
@@ -7744,8 +7854,13 @@ export class FireBuildingMinigame extends Phaser.Scene {
   /**
    * Read-only placeholders matching `_buildMaterialPile`: MAT_COLOR rects + Georgia labels.
    * Steps: sort / spread only (`SORT_ZONE_LAY_PREVIEW_STEPS`). Ignite shows pit sprites via presenter.
+   * Day 3 spread: reserves only — pit lay is compact-stick sprites, not duplicated in cards.
    */
   _buildSortZoneLayPreview() {
+    if (this.day >= 3 && this.step === 'spread' && !this._spreadAwaitingRemediation) {
+      this._destroySortZoneLayPreview()
+      return
+    }
     this._destroySortZoneLayPreview()
 
     const padX = 12
@@ -7754,16 +7869,21 @@ export class FireBuildingMinigame extends Phaser.Scene {
     const zoneBottomPad = 8
     const labelBelow = 4
 
+    const day3SpreadReservesOnly = this.day >= 3 && this.step === 'spread'
+
     for (const def of SORT_ZONE_DEFS) {
       const layerId = STACK_ZONE_TO_LAYER[def.id]
       if (!layerId) continue
       const zone = this._sortZones[def.id]
       if (!zone) continue
 
-      const placed = Object.values(this._matStates).filter(
-        (s) => s.phase === 'placed' && s.layerId === layerId && s.isSortable,
-      )
-      placed.sort((a, b) => this._pileKeySortOrder(a, b))
+      const placed = day3SpreadReservesOnly
+        ? []
+        : Object.values(this._matStates)
+            .filter(
+              (s) => s.phase === 'placed' && s.layerId === layerId && s.isSortable,
+            )
+            .sort((a, b) => this._pileKeySortOrder(a, b))
 
       let reserves = Object.values(this._matStates).filter((s) => {
         if (s.phase !== 'sorted' || !s.isSortable) return false
@@ -8112,6 +8232,9 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._setIgniteBlowInteractive(false)
     this._tinderSprite.setAlpha(0)
     this._igniteMechanicsPhase = null
+    if (this.day >= 3) {
+      this._restoreSortZoneLabels()
+    }
   }
 
   _onIgniteBlowClick() {
@@ -8397,7 +8520,18 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._refreshFireLaySpritePresentation()
 
     const stamina = this.registry.get('stamina')
-    const alive = stamina?.deduct(1) ?? true
+    const beforeFail = stamina?.getState?.()?.current
+    const deductReturn = stamina?.deduct(1)
+    const alive = deductReturn ?? true
+    if (import.meta.env.DEV) {
+      console.log('[StaminaDebug] _igniteFail', {
+        before: beforeFail,
+        deductReturn,
+        after: stamina?.getState?.()?.current,
+        alive,
+        staminaNull: stamina == null,
+      })
+    }
     if (!alive) {
       this._stopIgniteTimers()
       this.time.delayedCall(800, () => this._emitDayFail('fire_campsite'))
@@ -8766,6 +8900,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
     if (this.day >= 3) {
       this._stopDay3WindFx()
       this._refreshDay3WindRockInput()
+      this._restoreSortZoneLabels()
+      this._day3SyncSortedCardRowZonePos()
     }
 
     this._clearSpreadTimers()
@@ -9317,6 +9453,9 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     this._hideSortZonesUnderSustainReservePanels(false)
     this._ensureSustainDragHint(W, H)
+    if (this.day >= 3) {
+      this._bumpDay3SortZoneChromeAboveReserveChips()
+    }
     this._applySustainReserveSpritePresentation()
     this._refreshFireLaySpritePresentation()
     beginTimers()
@@ -9337,6 +9476,9 @@ export class FireBuildingMinigame extends Phaser.Scene {
       t.setStyle({ fill: '#7a6040', fontFamily: 'Georgia, serif', fontSize: '10px' })
     })
     this._restoreSortedPilePresentationAfterSustain()
+    if (this.day >= 3) {
+      this._restoreSortZoneChromeDepthsDefault()
+    }
     this._setStrengthBarVisible(false)
     this._setNightBarVisible(false)
   }
