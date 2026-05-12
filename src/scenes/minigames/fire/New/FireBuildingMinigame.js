@@ -607,6 +607,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._igniteBarFireMarker       = null
     this._igniteBlowBg              = null
     this._igniteBlowTxt             = null
+    /** Day 3 blow-phase hint: GSAP pulse on `_igniteBlowBg` until first BLOW. */
+    this._igniteBlowHintPulseTween   = null
     /** Read-only chips showing the `placed` lay inside sort zones (sort → sustain). */
     this._sortZoneLayPreviewNodes = []
     /** Blow phase smoke pulse: `bright` = good blow window (§4.5). */
@@ -3175,9 +3177,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _onForestHotspotClick() {
     // Day 3: no step gate, no debris-clearing gate — forest is always accessible
     if (this.day >= 3) {
-      this.registry.set('devFireBuildChain', true)
-      this.scene.stop(this.scene.key)
-      this.scene.start('FireBuildingCollect', { day: this.day })
+      this._leaveCampsiteForForest()
       return
     }
 
@@ -6414,9 +6414,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._stackGoFindBg.on('pointerup', () => this._onCampsiteForestClick())
   }
 
-  _onCampsiteForestClick() {
-    if (this.step !== 'stack' && this.step !== 'ignite') return
-
+  /**
+   * Leave campsite for forest mid-flow: stamina, optional ignite collect floor, stack snapshot, resume collect session.
+   * Callers supply step guards (e.g. `_onCampsiteForestClick`); top forest hotspot on Day 3 calls with no gate.
+   */
+  _leaveCampsiteForForest() {
     const stamina = this.registry.get('stamina')
     const alive = stamina?.deduct(1) ?? true
     if (!alive) {
@@ -6439,6 +6441,15 @@ export class FireBuildingMinigame extends Phaser.Scene {
       day: this.day,
       collectSessionKind: COLLECT_SESSION_RESUME_CAMPSITE,
     })
+  }
+
+  _onCampsiteForestClick() {
+    if (this.day >= 3) {
+      if (this.step !== 'campsite_open' && this.step !== 'ignite') return
+    } else {
+      if (this.step !== 'stack' && this.step !== 'ignite') return
+    }
+    this._leaveCampsiteForForest()
   }
 
   /**
@@ -7585,6 +7596,30 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._refreshIgniteProgressUi()
   }
 
+  _stopIgniteBlowHintPulse() {
+    if (this._igniteBlowHintPulseTween) {
+      this._igniteBlowHintPulseTween.kill()
+      this._igniteBlowHintPulseTween = null
+    }
+    if (this._igniteBlowBg) gsap.killTweensOf(this._igniteBlowBg)
+    this._igniteBlowBg?.setScale(1)
+    this._igniteBlowBg?.setAlpha(1)
+  }
+
+  /** Day 3: breathe pulse on BLOW chrome until the first BLOW click (hold + visual cue). */
+  _startIgniteBlowHintPulse() {
+    if (!this._igniteBlowBg?.scene) return
+    this._stopIgniteBlowHintPulse()
+    this._igniteBlowHintPulseTween = gsap.to(this._igniteBlowBg, {
+      scaleX: 1.12,
+      scaleY: 1.12,
+      duration: 0.6,
+      yoyo: true,
+      repeat: -1,
+      ease: 'sine.inOut',
+    })
+  }
+
   // ════════════════════════════════════════════════════════════════════════════
   // IGNITE STEP
   // ════════════════════════════════════════════════════════════════════════════
@@ -7849,6 +7884,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._igniteLastBlowTime = 0
 
     this._igniteDecayHoldUntilNextBlow = false
+    this._stopIgniteBlowHintPulse()
 
     this._igniteAwaitingLayerStrike = false
     this._igniteAwaitFirstStrikeForSparkUi = false
@@ -7936,6 +7972,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._stopIgniteTimers()
 
     this._igniteDecayHoldUntilNextBlow = false
+    this._stopIgniteBlowHintPulse()
 
     this._configureIgniteDifficultyParams()
     this._igniteClickBudget = this._computeIgniteClickBudget()
@@ -8018,6 +8055,12 @@ export class FireBuildingMinigame extends Phaser.Scene {
         () => this._dialogue.hide(),
       )
     }
+
+    if (this.day >= 3) {
+      this._igniteDecayHoldUntilNextBlow = true
+      this._startIgniteBlowHintPulse()
+    }
+
     this._refreshIgniteProgressUi()
   }
 
@@ -8029,6 +8072,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._stopIgniteSmokePulse()
     this._setIgniteBlowInteractive(false)
     this._igniteDecayHoldUntilNextBlow = false
+    this._stopIgniteBlowHintPulse()
     this._tinderSprite?.setAlpha(0.72)
     this._titleText.setText(
       'Ignite — Phase 1: Tap STRIKE again (smoke faded — rebuild heat).',
@@ -8045,6 +8089,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
     this._stopIgniteTimers()
     this._stopIgniteSmokePulse()
+    this._stopIgniteBlowHintPulse()
     this._igniteAwaitingLayerStrike = false
     this._igniteAwaitFirstStrikeForSparkUi = false
     this._destroyIgniteLayerPickUi()
@@ -8061,6 +8106,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     if (typeof this._dialogue?.isBlocking === 'function' && this._dialogue.isBlocking())
       return
 
+    this._stopIgniteBlowHintPulse()
     this._igniteDecayHoldUntilNextBlow = false
 
     const now = this.time.now
@@ -8327,6 +8373,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
   _igniteFail() {
     this._stopIgniteSmokePulse()
+    this._stopIgniteBlowHintPulse()
 
     this._igniteAwaitFirstStrikeForSparkUi = false
     this._igniteAwaitingLayerStrike = false
@@ -8346,6 +8393,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._configureIgniteDifficultyParams()
     this._relayoutIgniteHeatBarHud()
     this._igniteTotalClicks = 0
+    this._igniteDecayHoldUntilNextBlow = false
     this._igniteClickBudget = this._computeIgniteClickBudget()
     this._igniteSnapToSparkWhenNoBottomTinder()
 
