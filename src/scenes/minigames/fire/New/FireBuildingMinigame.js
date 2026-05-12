@@ -816,7 +816,9 @@ export class FireBuildingMinigame extends Phaser.Scene {
     // Day 3 — forest resume routing; mock/spread/sustain cold-start needs registry → _matStates hydrate.
     if (this.day >= 3) {
       if (stackResumeHandled) {
-        const targetStep = resumeCampsiteStep === 'ignite' ? 'ignite' : 'campsite_open'
+        // Non-ignite Day 3 uses `campsite_open`; legacy snapshots may still say `stack`.
+        const targetStep =
+          resumeCampsiteStep === 'ignite' ? 'ignite' : 'campsite_open'
         if (targetStep === 'ignite') {
           // Collect → campsite payload omits windDirection; re-hydrate from registry before FX.
           // _startDay3WindFx is idempotent (skips if _windLeafTimer already set).
@@ -1003,7 +1005,12 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     return {
       matSnapshot,
-      resumeCampsiteStep: this.step === 'ignite' ? 'ignite' : 'stack',
+      resumeCampsiteStep:
+        this.step === 'ignite'
+          ? 'ignite'
+          : this.day >= 3
+            ? 'campsite_open'
+            : 'stack',
       igniteResume: this.step === 'ignite' ? this._buildIgniteResumeSnapshot() : undefined,
       stackDropCount:       { ...this._stackDropCount },
       stackUnitIndexInZone: { ...this._stackUnitIndexInZone },
@@ -2745,6 +2752,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
     // Show pit rings at dim opacity (no materials yet, just orientation)
     this._stackGraphics.setAlpha(0.3)
     this._stackLabelTexts.forEach(t => t.setAlpha(0.3))
+
+    this._refreshFireLaySpritePresentation()
 
     // Show forest hotspot immediately — no debris-clearing gate
     if (this._forestHotspot) {

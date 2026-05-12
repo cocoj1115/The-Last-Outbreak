@@ -1356,7 +1356,9 @@ export class FireBuildingCollect extends Phaser.Scene {
       const snap =
         this.registry.get('fireCampsiteStackResume') ?? this._resumeSnapBackupCopy ?? {}
       if (this.day >= 3) {
-        startStep = snap.resumeCampsiteStep === 'ignite' ? 'ignite' : 'campsite_open'
+        const rs = snap.resumeCampsiteStep
+        // `campsite_open` or legacy `stack` → open camp; only `ignite` resumes ignite.
+        startStep = rs === 'ignite' ? 'ignite' : 'campsite_open'
       } else {
         startStep = snap.resumeCampsiteStep === 'ignite' ? 'ignite' : 'stack'
       }
