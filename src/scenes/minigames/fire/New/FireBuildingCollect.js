@@ -1417,6 +1417,34 @@ export class FireBuildingCollect extends Phaser.Scene {
         const todoState = this.registry.get('day3TodoState') ?? {}
         todoState.gather = true
         this.registry.set('day3TodoState', todoState)
+
+        const resumeSnapRaw =
+          this.registry.get('fireCampsiteStackResume') ?? this._resumeSnapBackupCopy
+        if (!this.registry.get('fireCampsiteStackResume') && resumeSnapRaw) {
+          this.registry.set('fireCampsiteStackResume', resumeSnapRaw)
+        }
+
+        const matSnap = resumeSnapRaw?.matSnapshot
+        const expectedLen = resumeSnapRaw?.matSnapshotCollectedLen
+        const lenOk =
+          typeof expectedLen !== 'number' ||
+          (Array.isArray(matSnap) && expectedLen === matSnap.length)
+        const snapOk =
+          resumeSnapRaw &&
+          Array.isArray(matSnap) &&
+          matSnap.every((s) => s && typeof s.id === 'string') &&
+          lenOk
+
+        if (this._isResumeCampsiteSession && !snapOk) {
+          if (import.meta.env.DEV) {
+            console.warn(
+              '[FireBuildingCollect] Day3 resume_campsite had no usable stack snapshot — returning without stack restore',
+            )
+          }
+          this._deferSwitchToFireBuildingMinigame(false, null)
+          return
+        }
+
         this._deferSwitchToFireBuildingMinigame(true, items)
         return
       }
