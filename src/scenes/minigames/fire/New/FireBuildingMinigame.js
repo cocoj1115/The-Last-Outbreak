@@ -5316,6 +5316,25 @@ export class FireBuildingMinigame extends Phaser.Scene {
       return
     }
 
+    if (
+      this.day === 2 &&
+      fromPitDrop &&
+      this._stackCrossSectionCont &&
+      !this._stackLayLockedComplete &&
+      this._stackMinimumMetForLayerIndex(this._stackActiveLayerIndex)
+    ) {
+      const matZone = correctSortZoneForMatId(state.id)
+      if (
+        matZone &&
+        normalizeStackSortZoneId(matZone) === normalizeStackSortZoneId(need) &&
+        normalizeStackSortZoneId(targetZone) === normalizeStackSortZoneId(need)
+      ) {
+        this._maybeDay2StackLayerFullRen(need)
+        this._bounceToStackOrHome(state)
+        return
+      }
+    }
+
     this._tryStackPlace(state, targetZone, { fromPitDrop })
   }
 
@@ -5884,11 +5903,32 @@ export class FireBuildingMinigame extends Phaser.Scene {
         continue
       }
       const rem = this._stackRemainingInPile(z)
+      const need = STACK_LAYER_ORDER[this._stackActiveLayerIndex] ?? 'tinder'
+      const allowD2DragWhenRemZeroLayerFullProbe =
+        this.day === 2 &&
+        this.step === 'stack' &&
+        this._stackCrossSectionCont &&
+        !this._stackLayLockedComplete &&
+        this._stackMinimumMetForLayerIndex(this._stackActiveLayerIndex) &&
+        z === need
       if (rem <= 0) {
-        this._safeSetDraggable(state.sprite, false)
-        state.sprite.disableInteractive()
-        state.sprite.setDepth(5)
-        state.label?.setDepth(6)
+        if (allowD2DragWhenRemZeroLayerFullProbe) {
+          const pileDepth = this.step === 'stack' ? STACK_SORTED_PILE_DEPTH : 5
+          const labelDepth = this.step === 'stack' ? STACK_SORTED_PILE_DEPTH + 1 : 6
+          state.sprite.setDepth(pileDepth)
+          state.label?.setDepth(labelDepth)
+          state.sprite.setInteractive({ useHandCursor: true })
+          if (this.step === 'stack') {
+            this._safeSetDraggable(state.sprite, true)
+          } else {
+            this._safeSetDraggable(state.sprite, false)
+          }
+        } else {
+          this._safeSetDraggable(state.sprite, false)
+          state.sprite.disableInteractive()
+          state.sprite.setDepth(5)
+          state.label?.setDepth(6)
+        }
       } else {
         const pileDepth = this.step === 'stack' ? STACK_SORTED_PILE_DEPTH : 5
         const labelDepth = this.step === 'stack' ? STACK_SORTED_PILE_DEPTH + 1 : 6
@@ -5939,7 +5979,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
   }
 
-  /** Ignite — reserve piles visible; only tinder becomes draggable while refilling bottom after fail. */
+  /** Ignite — reserve piles visible; mechanics: tinder draggable to pit; Day 2 K/F draggable for bounce + Ren. */
   _syncIgniteSortedDraggability() {
     for (const state of Object.values(this._matStates)) {
       if (!state.sprite) continue
@@ -5951,11 +5991,19 @@ export class FireBuildingMinigame extends Phaser.Scene {
         this._safeSetDraggable(state.sprite, false)
         continue
       }
-      const allowDrag =
+      const cat = correctSortZoneForMatId(state.id)
+      const allowTinderDrag =
         this.step === 'ignite' &&
         this._igniteMechanicsPhase &&
-        correctSortZoneForMatId(state.id) === 'tinder' &&
+        cat === 'tinder' &&
         state.quality !== 'BAD'
+      const allowD2KindlingFuelDrag =
+        this.day === 2 &&
+        this.step === 'ignite' &&
+        this._igniteMechanicsPhase &&
+        (cat === 'kindling' || cat === 'fuel_wood') &&
+        state.quality !== 'BAD'
+      const allowDrag = allowTinderDrag || allowD2KindlingFuelDrag
       const pileDepth = STACK_SORTED_PILE_DEPTH
       state.sprite.setDepth(pileDepth)
       state.label?.setDepth(pileDepth + 1)
@@ -5972,6 +6020,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
         state.label?.setAlpha(footprintA)
       }
     }
+    if (this.day === 2) this._refreshDay2SortZoneChromeForAllSorted()
   }
 
   _createStackCrossSection() {
@@ -7290,6 +7339,67 @@ export class FireBuildingMinigame extends Phaser.Scene {
     return Math.min(0.5, currentDimAlpha)
   }
 
+  /**
+   * Base alpha for sorted chips before Day 2 “locked” chrome (grey tint + min(0.5, •)).
+   * BAD/greyed stay at 0.3 (always lower than locked good chips capped at 0.5).
+   * Unlock paths must use this, never hard-code 1.
+   */
+  _computeMatStateBaseAlpha(state) {
+    if (!state?.sprite) return 1
+    if (state.greyed || state.quality === 'BAD') return 0.3
+    if (state.phase !== 'sorted' || !state.isSortable) return 1
+    if (this.step === 'ignite') return this._igniteSortedReserveFootprintAlpha(state)
+    if (this.step === 'sustain') {
+      if (this.day < 3 && this._sortZoneSpareBucketForMatState(state) == null) return 0.01
+      const zoneId = this._stackSortedCategory(state)
+      const keys = zoneId ? this._sustainBackupKeysByZone[zoneId] : null
+      const inReserve = !!(zoneId && keys?.includes(state.pileKey))
+      const usable = inReserve && state.quality !== 'BAD'
+      return usable ? 1 : 0.22
+    }
+    if (this.step === 'spread') {
+      if (this._sortZoneSpareBucketForMatState(state) == null) return 0.01
+      return 1
+    }
+    return 1
+  }
+
+  /** Day 2 only — “教学/剧情禁拖”期的灰色叠层（仍可交互与否由 _sync*Draggability 决定）。 */
+  _day2SortZoneChromeLockedForState(state) {
+    if (this.day !== 2) return false
+    if (state.phase !== 'sorted' || !state.isSortable) return false
+    if (this.step === 'stack' && !this._stackCrossSectionCont) return true
+    if (this.step === 'ignite' && !this._igniteMechanicsPhase) return true
+    if (this.step === 'spread') {
+      if (!this._spreadAwaitingRemediation || !this._spreadRemediationZone) return true
+      return correctSortZoneForMatId(state.id) !== this._spreadRemediationZone
+    }
+    return false
+  }
+
+  _refreshDay2SortZoneChromeForAllSorted() {
+    if (this.day !== 2) return
+    for (const st of Object.values(this._matStates)) this._applyDay2SortZoneChromeForState(st)
+  }
+
+  _applyDay2SortZoneChromeForState(state) {
+    if (this.day !== 2 || !state?.sprite?.scene) return
+    if (state.phase !== 'sorted' || !state.isSortable) return
+    if (!state.sprite.visible) return
+    const locked = this._day2SortZoneChromeLockedForState(state)
+    const base = this._computeMatStateBaseAlpha(state)
+    if (locked) {
+      const a = Math.min(0.5, base)
+      state.sprite.setAlpha(a)
+      state.label?.setAlpha(a)
+      state.sprite.setTint(0x888888)
+    } else {
+      state.sprite.clearTint()
+      state.sprite.setAlpha(base)
+      state.label?.setAlpha(base)
+    }
+  }
+
   _applyDay3StackRingHudLabels() {
     if (this.day < 3 || !this._stackLabelTexts?.length) return
     const labels = ['Tinder', 'Kindling', 'Fuel']
@@ -8382,6 +8492,38 @@ export class FireBuildingMinigame extends Phaser.Scene {
       this._maybeDay3StackLayMilestone()
     if (this.day >= 3)
       this._maybeDay3WindStripAfterTinderPlaced(state, zoneId, opts)
+  }
+
+  /** Day 2 stack — one-shot Ren when dropping on the correct pit band after that layer’s minimum is already met (tap Next layer first). */
+  _maybeDay2StackLayerFullRen(needCat) {
+    if (this.day !== 2) return
+    if (needCat === 'kindling') {
+      if (this.registry.get('day2StackLayerFullKindlingShown')) return
+      this.registry.set('day2StackLayerFullKindlingShown', true)
+      this._dialogue.showSequence(
+        [
+          {
+            speaker: 'Ren',
+            text: 'That layer is already filled—use Next layer before adding more there.',
+          },
+        ],
+        () => this._dialogue.hide(),
+      )
+      return
+    }
+    if (needCat === 'fuel_wood') {
+      if (this.registry.get('day2StackLayerFullFuelShown')) return
+      this.registry.set('day2StackLayerFullFuelShown', true)
+      this._dialogue.showSequence(
+        [
+          {
+            speaker: 'Ren',
+            text: 'That tier is already set—finish the lay or pull a stick back to swap.',
+          },
+        ],
+        () => this._dialogue.hide(),
+      )
+    }
   }
 
   /** Day 2 ignite — one-shot Ren when dragging kindling/fuel reserve before tinder phase allows it (mechanics running). */
@@ -9701,6 +9843,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     } else if (['stack', 'spread', 'ignite', 'sustain'].includes(this.step)) {
       this._syncStackSortedDraggability()
     }
+    this._refreshDay2SortZoneChromeForAllSorted()
     this._refreshSortZoneMaterialCounts()
   }
 
