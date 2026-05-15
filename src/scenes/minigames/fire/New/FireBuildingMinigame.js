@@ -7388,14 +7388,16 @@ export class FireBuildingMinigame extends Phaser.Scene {
     if (!state.sprite.visible) return
     const locked = this._day2SortZoneChromeLockedForState(state)
     const base = this._computeMatStateBaseAlpha(state)
+    const spr = state.sprite
     if (locked) {
       const a = Math.min(0.5, base)
-      state.sprite.setAlpha(a)
+      spr.setAlpha(a)
       state.label?.setAlpha(a)
-      state.sprite.setTint(0x888888)
+      if (typeof spr.setTint === 'function') spr.setTint(0x888888)
     } else {
-      state.sprite.clearTint()
-      state.sprite.setAlpha(base)
+      if (typeof spr.clearTint === 'function') spr.clearTint()
+      else if (typeof spr.setTint === 'function') spr.setTint(0xffffff)
+      spr.setAlpha(base)
       state.label?.setAlpha(base)
     }
   }
