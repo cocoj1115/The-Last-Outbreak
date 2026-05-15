@@ -5338,7 +5338,60 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._tryStackPlace(state, targetZone, { fromPitDrop })
   }
 
-  /** Places sorted sprites over sort zones (visible). Needed when skipping sort via dev/mock jump. */
+  /**
+   * Same chip grid as `_buildSortZoneLayPreview` (scaled rows/cols within each zone width).
+   * @returns {{ positions: Array<{ cx: number, cy: number }>, scale: number }}
+   */
+  _computeSortZoneChipSlotLayout(zone, n) {
+    const empty = { positions: [], scale: 1 }
+    if (n <= 0 || !zone) return empty
+
+    const padX = 12
+    const gap = 8
+    const rowGap = 10
+    const zoneBottomPad = 8
+    const labelBelow = 4
+
+    const innerW = ZONE_W - padX * 2
+    let cols = n
+    let rows = 1
+    let scale = innerW / (cols * ITEM_W + (cols - 1) * gap)
+    if (scale < 0.38 && n > 2) {
+      rows = 2
+      cols = Math.ceil(n / 2)
+      scale = innerW / (cols * ITEM_W + (cols - 1) * gap)
+    }
+    scale = Phaser.Math.Clamp(scale, 0.32, 0.68)
+
+    const w = ITEM_W * scale
+    const h = ITEM_H * scale
+    const fontPx = Math.max(8, Math.min(11, Math.round(11 * scale)))
+    const rowLaneH = h + labelBelow + fontPx + 2
+
+    const zoneBottom = zone.y + ZONE_H / 2 - zoneBottomPad
+    const blockH = rows * rowLaneH + (rows - 1) * rowGap
+
+    const positions = []
+    for (let r = 0; r < rows; r++) {
+      const rowStart = r * cols
+      if (rowStart >= n) break
+      const rowLen = Math.min(cols, n - rowStart)
+      const rowW = rowLen * w + (rowLen - 1) * gap
+      const rowCenterY =
+        zoneBottom - blockH + r * (rowLaneH + rowGap) + h / 2
+
+      for (let c = 0; c < rowLen; c++) {
+        const cx = zone.x - rowW / 2 + w / 2 + c * (w + gap)
+        positions.push({ cx, cy: rowCenterY })
+        if (positions.length >= n) break
+      }
+      if (positions.length >= n) break
+    }
+
+    return { positions, scale }
+  }
+
+  /** Places sorted spares in each zone using the same grid as lay-preview placeholders (avoids overlap across stack → ignite). */
   _ensureSortedMaterialsZoneLayout() {
     for (const state of Object.values(this._matStates)) {
       if (state.phase !== 'sorted' || !state.sprite) continue
@@ -5349,20 +5402,40 @@ export class FireBuildingMinigame extends Phaser.Scene {
         state.isSortable || (this.day >= 3 && isDay3ZeroFireMaterial(state.id))
       if (!okSorted) continue
       if (state.sortZoneId !== inferredZone) state.sortZoneId = inferredZone
-      const zone = this._sortZones[inferredZone]
+    }
+
+    for (const def of SORT_ZONE_DEFS) {
+      const zone = this._sortZones[def.id]
       if (!zone) continue
-      if (!state.zonePos) {
-        const h = (state.pileKey ?? '').length
-        const offset = (h % 2 === 0) ? -16 : 16
-        state.zonePos = { x: zone.x + offset, y: zone.y - 10 }
-      }
-      const dim = state.greyed || state.quality === 'BAD'
-      state.sprite.setVisible(true)
-      state.label?.setVisible(true)
-      state.sprite.setPosition(state.zonePos.x, state.zonePos.y)
-      state.label?.setPosition(state.zonePos.x, state.zonePos.y + ITEM_H / 2 + 4)
-      state.sprite.setAlpha(dim ? 0.3 : 1)
-      state.label?.setAlpha(dim ? 0.3 : 1)
+
+      const reserves = Object.values(this._matStates)
+        .filter((s) => {
+          if (s.phase !== 'sorted' || !s.sprite) return false
+          const okSorted =
+            s.isSortable || (this.day >= 3 && isDay3ZeroFireMaterial(s.id))
+          if (!okSorted) return false
+          return this._sortZoneSpareBucketForMatState(s) === def.id
+        })
+        .sort((a, b) => this._pileKeySortOrder(a, b))
+
+      const layout = this._computeSortZoneChipSlotLayout(zone, reserves.length)
+      reserves.forEach((state, i) => {
+        const pos = layout.positions[i]
+        if (!pos) return
+        const sc = layout.scale
+        state.zonePos = { x: pos.cx, y: pos.cy }
+        state._sortZoneReserveScale = sc
+        const dim = state.greyed || state.quality === 'BAD'
+        state.sprite.setVisible(true)
+        state.label?.setVisible(true)
+        state.sprite.setScale(sc)
+        state.label?.setScale(sc)
+        state.sprite.setPosition(pos.cx, pos.cy)
+        const labelY = pos.cy + (ITEM_H * sc) / 2 + 4
+        state.label?.setPosition(pos.cx, labelY)
+        state.sprite.setAlpha(dim ? 0.3 : 1)
+        state.label?.setAlpha(dim ? 0.3 : 1)
+      })
     }
   }
 
@@ -8109,31 +8182,15 @@ export class FireBuildingMinigame extends Phaser.Scene {
       this._updateStackStrikeGateUi()
     }
 
+    this._ensureSortedMaterialsZoneLayout()
     for (const state of Object.values(this._matStates)) {
       if (state.phase !== 'sorted' || !state.sprite) continue
       const okStackPrep =
         state.isSortable ||
         (this.day >= 3 && isDay3ZeroFireMaterial(state.id) && state.sortZoneId)
       if (!okStackPrep) continue
-      if (!state.zonePos && state.sortZoneId) {
-        const zone = this._sortZones[state.sortZoneId]
-        if (zone) {
-          const h = (state.pileKey ?? '').length
-          const offset = (h % 2 === 0) ? -16 : 16
-          state.zonePos = { x: zone.x + offset, y: zone.y - 10 }
-        }
-      }
-      state.sprite.setVisible(true)
-      state.label?.setVisible(true)
-      const dim = state.greyed || state.quality === 'BAD'
-      state.sprite.setAlpha(dim ? 0.3 : 1)
-      state.label?.setAlpha(dim ? 0.3 : 1)
-      if (state.zonePos) {
-        state.sprite.setPosition(state.zonePos.x, state.zonePos.y)
-        state.label?.setPosition(state.zonePos.x, state.zonePos.y + ITEM_H / 2 + 4)
-      }
       this._safeSetDraggable(state.sprite, false)
-        state.sprite.disableInteractive()
+      state.sprite.disableInteractive()
     }
 
     this._buildStackGoFindMaterials(W, H)
@@ -8429,6 +8486,12 @@ export class FireBuildingMinigame extends Phaser.Scene {
     const idx = this._stackUnitIndexInZone[zoneId]++
     this._stackDropCount[zoneId]++
 
+    if (state.sprite) {
+      state.sprite.setScale(1)
+      state.label?.setScale(1)
+      delete state._sortZoneReserveScale
+    }
+
     const pit = opts.fromPitDrop
       ? this._stackPitPlacePos(idx)
       : this._stackSlotInSortZone(zoneId, idx)
@@ -8556,11 +8619,13 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _bounceToStackOrHome(state) {
     if (state.zonePos) {
       const { x, y } = state.zonePos
+      const sc = state._sortZoneReserveScale ?? 1
+      const labelY = y + (ITEM_H * sc) / 2 + 4
       this.tweens.add({ targets: state.sprite, x, y, duration: 280, ease: 'Back.Out' })
       this.tweens.add({
         targets: state.label,
         x,
-        y: y + ITEM_H / 2 + 4,
+        y: labelY,
         duration: 280,
         ease: 'Back.Out',
       })
@@ -9830,6 +9895,9 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
   /** Show lay preview on these steps; hide and destroy nodes when leaving the fire-lay HUD. */
   _refreshSortZoneLayPreview() {
+    if (['sort', 'stack', 'ignite', 'spread', 'sustain'].includes(this.step)) {
+      this._ensureSortedMaterialsZoneLayout()
+    }
     this._syncSortZoneHudSortedSpriteVisibility()
     if (SORT_ZONE_LAY_PREVIEW_STEPS.includes(this.step)) {
       this._buildSortZoneLayPreview()
@@ -9938,12 +10006,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
     this._destroySortZoneLayPreview()
 
-    const padX = 12
-    const gap = 8
-    const rowGap = 10
-    const zoneBottomPad = 8
     const labelBelow = 4
-
     const day3SpreadReservesOnly = this.day >= 3 && this.step === 'spread'
 
     for (const def of SORT_ZONE_DEFS) {
@@ -9968,62 +10031,41 @@ export class FireBuildingMinigame extends Phaser.Scene {
       const combined = [...placed, ...reserves]
       if (!combined.length) continue
 
-      const innerW = ZONE_W - padX * 2
-      const n = combined.length
-
-      let cols = n
-      let rows = 1
-      let scale = innerW / (cols * ITEM_W + (cols - 1) * gap)
-      if (scale < 0.38 && n > 2) {
-        rows = 2
-        cols = Math.ceil(n / 2)
-        scale = innerW / (cols * ITEM_W + (cols - 1) * gap)
-      }
-      scale = Phaser.Math.Clamp(scale, 0.32, 0.68)
-
+      const layout = this._computeSortZoneChipSlotLayout(zone, combined.length)
+      const scale = layout.scale
       const w = ITEM_W * scale
       const h = ITEM_H * scale
       const fontPx = Math.max(8, Math.min(11, Math.round(11 * scale)))
-      const rowLaneH = h + labelBelow + fontPx + 2
+      const gap = 8
 
-      const zoneBottom = zone.y + ZONE_H / 2 - zoneBottomPad
-      const blockH = rows * rowLaneH + (rows - 1) * rowGap
+      combined.forEach((st, i) => {
+        const pos = layout.positions[i]
+        if (!pos) return
+        const cx = pos.cx
+        const rowCenterY = pos.cy
+        const color = MAT_COLOR[st.quality] ?? 0x5a4a30
+        const dim = st.greyed || st.quality === 'BAD'
+        const alpha = dim ? 0.35 : 1
 
-      for (let r = 0; r < rows; r++) {
-        const rowItems = combined.slice(r * cols, r * cols + cols)
-        const rowLen = rowItems.length
-        const rowW = rowLen * w + (rowLen - 1) * gap
-        const rowCenterY =
-          zoneBottom - blockH + r * (rowLaneH + rowGap) + h / 2
+        const bg = this.add
+          .rectangle(cx, rowCenterY, w, h, color)
+          .setDepth(SORT_ZONE_LAY_PREVIEW_BG_DEPTH)
+          .setAlpha(alpha)
 
-        for (let c = 0; c < rowLen; c++) {
-          const st = rowItems[c]
-          const cx =
-            zone.x - rowW / 2 + w / 2 + c * (w + gap)
-          const color = MAT_COLOR[st.quality] ?? 0x5a4a30
-          const dim = st.greyed || st.quality === 'BAD'
-          const alpha = dim ? 0.35 : 1
+        const txt = this.add
+          .text(cx, rowCenterY + h / 2 + labelBelow, this._truncateSortZonePlaceholderLabel(st.id), {
+            fontSize: `${fontPx}px`,
+            fontFamily: 'Georgia, serif',
+            fill: '#d8c898',
+            align: 'center',
+            wordWrap: { width: Math.ceil(w + gap) },
+          })
+          .setOrigin(0.5, 0)
+          .setDepth(SORT_ZONE_LAY_PREVIEW_ID_LABEL_DEPTH)
+          .setAlpha(alpha)
 
-          const bg = this.add
-            .rectangle(cx, rowCenterY, w, h, color)
-            .setDepth(SORT_ZONE_LAY_PREVIEW_BG_DEPTH)
-            .setAlpha(alpha)
-
-          const txt = this.add
-            .text(cx, rowCenterY + h / 2 + labelBelow, this._truncateSortZonePlaceholderLabel(st.id), {
-              fontSize: `${fontPx}px`,
-              fontFamily: 'Georgia, serif',
-              fill: '#d8c898',
-              align: 'center',
-              wordWrap: { width: Math.ceil(w + gap) },
-            })
-            .setOrigin(0.5, 0)
-            .setDepth(SORT_ZONE_LAY_PREVIEW_ID_LABEL_DEPTH)
-            .setAlpha(alpha)
-
-          this._sortZoneLayPreviewNodes.push(bg, txt)
-        }
-      }
+        this._sortZoneLayPreviewNodes.push(bg, txt)
+      })
     }
   }
 
