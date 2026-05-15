@@ -2,8 +2,10 @@ import Phaser from 'phaser'
 import { gsap } from 'gsap'
 import { GameEvents } from '../../../../systems/GameEvents.js'
 import { DialogueBox } from './DialogueBox.js'
+import { showDay3SustainInfoModal } from './Day3SustainInfoModal.js'
 import { COLLECT_SESSION_RESUME_CAMPSITE, COLLECT_TARGETS } from './FireBuildingCollect.js'
 import { FIRE_CAMPSITE_SCENE_KEY } from './fireSceneKeys.js'
+import { DEV_MOCK_FIRE_BUILDING, getFireBuildingMockPayload } from './day2FireBuildingMock.js'
 
 // ─── Sort configuration ───────────────────────────────────────────────────────
 
@@ -275,6 +277,9 @@ const DIFFICULTY_CONFIG = {
 }
 
 const IGNITE_PROGRESS_MAX = 100
+
+/** `igniteResume` schema version embedded in campsite→forest snapshots (materials conserved; mechanics restored). */
+const IGNITE_FOREST_RESUME_REV = 1
 /** Fallback STRIKE+Blow cap when stackData.bottom is missing or empty (dev jump / guard). */
 const MAX_CLICKS            = 36
 function normalizeMatQualityTier(q) {
@@ -326,8 +331,9 @@ const IDLE_THRESHOLD        = 2000
 
 const SEGMENT_COUNT = 5
 
-/** Fixed night length (§ rebalance): progress bar reaches full in 30s regardless of lay size. */
-const SUSTAIN_NIGHT_TOTAL_MS = 30000
+/** Fixed night length — Day 2 sustain only (Day 3 uses `SUSTAIN_NIGHT_TOTAL_MS_DAY3`). */
+const SUSTAIN_NIGHT_TOTAL_MS_DAY2 = 30000
+const SUSTAIN_NIGHT_TOTAL_MS_DAY3 = 45000
 
 const DRAIN_MS = {
   good_cleared: 4000,
@@ -341,10 +347,16 @@ const FLOOD_INTERVAL_CLEARED = 12000
 const FLOOD_INTERVAL_DIRTY   = 10000
 const FLOOD_BG_DURATION      = 1200
 
-/** Day 3 sustain — wind warning cadence (warnings spaced by `interval`; gust fires `DAY3_WIND_WARN_LEAD_MS` later). */
-const DAY3_WIND_WARN_INTERVAL_GOOD_MS = 12000
-const DAY3_WIND_WARN_INTERVAL_POOR_MS = 8000
-const DAY3_WIND_WARN_LEAD_MS = 2000
+/** Gust hits at these ms relative to entering sustain. Warn fires `DAY3_WIND_WARN_LEAD_MS` before each. */
+const DAY3_WIND_GUST_AT_MS = Object.freeze([13000, 30000, 43000])
+const DAY3_WIND_WARN_LEAD_MS = 10000
+/** Deferred `_onFireOut` after a lethal gust (~1–1.5s). */
+const DAY3_WIND_GUST_FIREOUT_DELAY_MS = 1250
+
+/** Gust 0/1 sustained high-rate decay duration (instant burst replaced by ticking). */
+const DAY3_GUST_DECAY_MS_PAIR = 3000
+/** Gust 2 — lasts longer (+1 s vs pair). */
+const DAY3_GUST_DECAY_MS_LAST = 4000
 
 // ─── Background colours ──────────────────────────────────────────────────────
 
@@ -424,9 +436,21 @@ const DAY3_WIND_CARDINALS = ['north', 'south', 'east', 'west']
 const WIND_SHIELD_SLOT_OFFSET = 100
 const WIND_SHIELD_HIT_W = 96
 const WIND_SHIELD_HIT_H = 80
+
+/** Placement annulus (Commit 2+ rules); Commit 1 = visual donut only — Ri clears ignite hotspots (radius 142). */
+const DAY3_WIND_RING_INNER_R = 148
+const DAY3_WIND_RING_OUTER_R = 195
+const DAY3_WIND_RING_GUIDE_DEPTH = 2
 const WIND_LEAF_BATCH_INTERVAL_MS = 2000
 const WIND_LEAF_COUNT_MIN = 3
 const WIND_LEAF_COUNT_MAX = 5
+/** Sustain-only: cadence ms between batches (`_queueDay3WindLeafBatch`). */
+const DAY3_LEAF_MS_CALM = 1100
+const DAY3_LEAF_MS_WARN_EARLY = 340
+const DAY3_LEAF_MS_WARN_LATE = 115
+/** Sustain gust_phase `gust_burst` — batch spacing (dense leaves/sec while gust decay runs). */
+const DAY3_LEAF_MS_GUST_BURST = 300
+const DAY3_LEAF_MS_POST_GUST = 330
 const WIND_LEAF_DURATION_MIN = 3
 const WIND_LEAF_DURATION_MAX = 4
 
@@ -481,7 +505,9 @@ function day3WindSlotRoles(dir) {
 }
 
 /**
- * Day 3 ignite — strike cardinal vs wind: leeward ×1.0, cross ×1.3, windward ×1.6
+ * Day 3 ignite — `sparkDir` is which side of the pit the player crouches on (`_windDirection` = wind
+ * source cardinal). Crouch on windward = body blocks wind → slowest decay (×1.6). Leeward = wind
+ * over the tinder → fastest decay (×1.0). Cross-wind sides ×1.3.
  * @param {'north'|'south'|'east'|'west'|null} windDir
  * @param {'north'|'south'|'east'|'west'|null} sparkDir
  */
@@ -495,14 +521,21 @@ function day3SparkStrikeDecayMultiplier(windDir, sparkDir) {
     return 1
   }
   const { windward, leeward, sideA, sideB } = day3WindSlotRoles(windDir)
-  if (sparkDir === leeward) return 1
   if (sparkDir === windward) return 1.6
+  if (sparkDir === leeward) return 1
   if (sparkDir === sideA || sparkDir === sideB) return 1.3
   return 1
 }
 
 /** Hit radius around each ordinal for Day 3 “where to strike” picker (world px). */
 const DAY3_SPARK_DIRECTION_HOTSPOT_R = 42
+
+/** After two wrong crouch picks, `stamina.deduct(1)` then one of these (Day 3 ignite). */
+const DAY3_WIND_PICK_STAMINA_TIRED_LINES = [
+  'I keep missing the right side. My hands are getting tired.',
+  'Trying again and again—my legs are starting to ache from crouching.',
+  'Cold and tired. I should think before I move next time.',
+]
 
 // ─── Scene ───────────────────────────────────────────────────────────────────
 
@@ -575,6 +608,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._stackReenterPreserveLayout = false
     this._stackGoFindBg           = null
     this._stackGoFindTxt          = null
+    /** Stack → ignite: keep existing `Edit lay` widgets across `_exitStack` (same button in strike phase). */
+    this._preserveStackEditLayForIgnite = false
     this._stackStrikeGateHint     = null
     this._stackFinishLayPulseTween = null
     this._stackRenFeedbackLocked = false
@@ -610,6 +645,9 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._igniteBlowGain          = 18
     /** Spark layer chosen via ignite chips (before mechanics). */
     this._igniteSparkTargetZone = 'tinder'
+
+    /** Day ≥3 ignite: spark gain scaler when excess kindling/fuel sits above baseline lay. */
+    this._igniteSparkObstructionPenalty = 0
 
     /** Max STRIKE+Blow attempts this ignite — scales down when fewer tinder units on stack. */
     this._igniteClickBudget = MAX_CLICKS
@@ -676,6 +714,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._day3SparkDirPromptText = null
     /** @type {Phaser.GameObjects.Arc[]} */
     this._day3SparkDirHoverTargets = []
+    /** Day 3 ignite: wrong crouch picks toward stamina penalty (2 wrong → deduct 1, local only). */
+    this._day3WindPickWrongStreakForStamina = 0
 
     /** §4.6 Spread — flame climb after ignite */
     this._spreadTimers        = []
@@ -691,7 +731,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
     // Sustain state
     this._fireStrength       = 0
     this._nightElapsed       = 0
-    this._nightTotalMs       = SUSTAIN_NIGHT_TOTAL_MS
+    this._nightTotalMs =
+      this.day >= 3 ? SUSTAIN_NIGHT_TOTAL_MS_DAY3 : SUSTAIN_NIGHT_TOTAL_MS_DAY2
     /** Monotonic floor for night bar fill so extending _nightTotalMs never shrinks the bar. */
     this._nightBarProgressFloor = 0
     this._strengthCeiling     = SEGMENT_COUNT
@@ -715,13 +756,50 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     /** Day 3 sustain wind-event timers (`Phaser.Time.TimerEvent`) */
     this._day3WindWarnTimer = null
+    /** @type {Phaser.Time.TimerEvent[]} pre-scheduled sustain gust warn lines */
+    this._day3SustainScheduledGustTimers = []
     this._day3WindPostGustTimer = null
     /** Day 3 sustain wind FX — treeline decorations + flash overlay */
     this._day3SustainWindTreeSprites = []
     this._day3SustainWindFlashRect = null
-    this._day3SustainWindWarnIntroShown = false
-    this._day3SustainWindGustHitShown = false
     this._day3SustainFuelWasteEarlyShown = false
+    /** Sustain warning — cardinal crouch hotspots (reuse ignite geometry constants; ignite logic untouched elsewhere). */
+    this._day3SustainCullPickerObjs = []
+    /** Gust warn HUD (text + bar) during sustain wind warning */
+    this._day3SustainGustWarnHudObjs = []
+    this._day3SustainGustWarnBarTween = null
+    this._day3SustainGustWarnTextPulse = null
+    this._day3SustainWarnLeafLateTimer = null
+    this._day3SustainPostGustLeafTimer = null
+    this._day3SustainPostGustLeafFollowTimer = null
+    /** Gust decay (Day 3 sustain): independent high-rate −1 ticks; pauses `_drainTimer`. */
+    this._day3GustDecayTimer = null
+    /** @type {boolean} */
+    this._day3GustDecayActive = false
+    /** @type {number} */
+    this._day3GustDecayDeadlineMs = 0
+    /** @type {number} gustOrdinal 0,1,2 */
+    this._day3GustDecayOrdinal = 0
+    /**
+     * Wind-shield tier locked at gust **landing** (`good`/`partial`/`none`); mid-gust rock placement does
+     * **not** change this wave's spacing.
+     * @type {'good'|'partial'|'none'}
+     */
+    this._day3GustDecayShieldTier = 'none'
+    /** When true, `_drainTimer` intentionally removed until gust decay ends */
+    this._day3DrainPausedForGust = false
+    /** Low-alpha hotspots to re-pick facing during gust decay (`_mountDay3SustainGustDecayFacingGrab`). */
+    this._day3SustainGustDecayFacingObjs = []
+
+    /** calm | warn_early | warn_late | gust_burst | post_gust */
+    this._day3SustainLeafPhase = 'calm'
+    this._day3WindRingBlockPulseAt = 0
+    this._day3SustainWindwardFigGfx = null
+    /** @type {Phaser.Geom.Rectangle | null} */
+    this._day3SustainWindwardFigRect = null
+    this._day3SustainTookWindwardLineShown = false
+    /** True while fist-gust tutorial modal owns global clocks (see `_pauseDay3GlobalForSustainTutorial`). */
+    this._day3TutorialPauseActive = false
 
     // Inputs
     this._campsiteQuality = 'good'
@@ -741,7 +819,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._day3Rocks = []
     /** `'none'` | `'partial'` | `'good'` */
     this._windShield = 'none'
-    /** @type {Record<'north'|'south'|'east'|'west', number|null>} rock index 0–7 per slot */
+    /** @type {Record<'north'|'south'|'east'|'west', number|null>} rock index per slot (legacy hydrate; gameplay uses ring) */
     this._windSlotRockIndex = { north: null, south: null, east: null, west: null }
     this._windSlotBounds = null
     this._windSlotCenters = null
@@ -751,6 +829,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._day3WindActiveLeaves = []
     /** @type {Phaser.Geom.Rectangle[]} pit-centered wind-block zones for leaf cull */
     this._day3WindBlockRectsCached = []
+    /** Donut gfx for Wind ring guide (Commit 1+). */
+    this._day3WindRingGfx = null
 
     // Day 3 to-do list
     this.todoState = {
@@ -770,6 +850,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._day3PitLayBurnOutStarted = false
     /** Day 3 ignite: one-shot lay heat pulse per ignite entry (see `_exitIgnite` reset). */
     this._day3IgniteHeatPulsePlayed = false
+    /** Last negative strength adjustment reason (Commit 6+). */
+    this._lastNegativeStrengthCause = null
   }
 
   create() {
@@ -802,6 +884,9 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._buildMoveOnButton(W, H)
     this._buildDialogueBox(W, H)
     this._setupDragListeners()
+
+    /** Forest resume → ignite/stack skips clear step; rebuild shows debris + hides rock ring until this runs. */
+    this._presentGroundClearedIfNeeded()
 
     this._enterHandlers = {
       campsite_open: () => this._enterDay3Campsite(),
@@ -852,14 +937,38 @@ export class FireBuildingMinigame extends Phaser.Scene {
             stackDropFuel: this._stackDropCount?.fuel_wood,
             collectedLen: this._collected?.length,
           })
+          if (resumeCampsiteStep === 'ignite') {
+            const mc = this._getMaterialCounts()
+            console.log('[IgniteForestDEV] campsite resume after Collect (ignite)', {
+              liveByZone: mc,
+              liveMaterialCountsPlacedSum:
+                mc.tinder.placed + mc.kindling.placed + mc.fuel_wood.placed,
+              matSnapshotPlacedPieces: Array.isArray(snap.matSnapshot)
+                ? snap.matSnapshot.filter((r) => r.phase === 'placed').length
+                : null,
+              matSnapshotLen: snap.matSnapshot?.length,
+              igniteRev: snap.igniteResume?.igniteForestResumeRev,
+            })
+          }
         }
         this._stackReenterPreserveLayout = true
         this.registry.remove('fireCampsiteStackResume')
         stackResumeHandled = true
       } else if (snap && !isFireStackResumeMatSnapshotValid(snap)) {
         if (import.meta.env.DEV) {
+          const exp = snap.matSnapshotCollectedLen
+          const arr = snap.matSnapshot
+          const len = Array.isArray(arr) ? arr.length : null
+          const idOk =
+            Array.isArray(arr) && arr.every((s) => s && typeof s.id === 'string')
+          let detail = 'unknown'
+          if (!Array.isArray(arr)) detail = 'matSnapshot not an array'
+          else if (!idOk) detail = 'matSnapshot entry missing string id'
+          else if (typeof exp === 'number' && exp !== len)
+            detail = `matSnapshotCollectedLen ${exp} !== matSnapshot.length ${len}`
           console.warn(
-            '[FireBuilding] fireCampsiteStackResume ignored — matSnapshot missing or invalid',
+            '[FireBuilding] fireCampsiteStackResume ignored — matSnapshot missing or invalid:',
+            detail,
           )
         }
         this.registry.remove('fireCampsiteStackResume')
@@ -880,6 +989,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
           if (!this._windSlotCenters) this._buildDay3WindSlots()
           this._restoreDay3WindShieldFromRegistry()
           this._recomputeWindShield()
+          this._ensureDay3WindRocksVisible()
           this._startDay3WindFx()
           // _applyStackResumeFromCollect already rebuilt _matStates — no hydrate here.
           this._enterStep('ignite')
@@ -942,6 +1052,10 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
     // HUDScene hides flames until PROLOGUE_END (normally from NarrativeScene after prologue).
     this.game.events.emit(GameEvents.PROLOGUE_END)
+    if (DEV_MOCK_FIRE_BUILDING) {
+      const p = getFireBuildingMockPayload()
+      this.game.events.emit(GameEvents.DAY_ADVANCE, { day: p.day ?? 2, maxDays: 5 })
+    }
   }
 
   // ── Inputs ───────────────────────────────────────────────────────────────────
@@ -1120,9 +1234,113 @@ export class FireBuildingMinigame extends Phaser.Scene {
       !!this._igniteMechanicsPhase ||
       this._igniteAwaitingLayerStrike ||
       this._igniteAwaitFirstStrikeForSparkUi
-    return {
-      igniteProposalComplete,
+
+    let igniteMechanicsPhase = null
+    if (this._igniteMechanicsPhase === 'spark' || this._igniteMechanicsPhase === 'blow') {
+      igniteMechanicsPhase = this._igniteMechanicsPhase
     }
+
+    const rev = igniteProposalComplete ? IGNITE_FOREST_RESUME_REV : 0
+
+    return {
+      igniteForestResumeRev: rev,
+      igniteProposalComplete,
+      igniteAwaitFirstStrikeForSparkUi: !!this._igniteAwaitFirstStrikeForSparkUi,
+      igniteAwaitingLayerStrike: !!this._igniteAwaitingLayerStrike,
+      igniteSparkTargetZone: this._igniteSparkTargetZone ?? 'tinder',
+      igniteProposalPath:
+        this.day < 3 && (this._igniteProposalPath === 'pathA' || this._igniteProposalPath === 'pathB')
+          ? this._igniteProposalPath
+          : undefined,
+      igniteMechanicsPhase,
+      igniteProgress: Phaser.Math.Clamp(
+        Number(this._igniteProgress) || 0,
+        0,
+        IGNITE_PROGRESS_MAX,
+      ),
+      igniteTotalClicks: Math.max(0, Math.floor(Number(this._igniteTotalClicks) || 0)),
+      igniteDecayHoldUntilNextBlow: !!this._igniteDecayHoldUntilNextBlow,
+      igniteSmokePulsePhase:
+        this._igniteMechanicsPhase === 'blow' &&
+        (this._igniteSmokePulsePhase === 'bright' || this._igniteSmokePulsePhase === 'dark')
+          ? this._igniteSmokePulsePhase
+          : undefined,
+      day3AwaitDirectionPick: this.day >= 3 ? !!this._igniteAwaitDay3DirectionPick : undefined,
+      day3SparkDirection:
+        this.day >= 3 && this._sparkDirection && DAY3_WIND_CARDINALS.includes(this._sparkDirection)
+          ? this._sparkDirection
+          : this.day >= 3
+            ? null
+            : undefined,
+    }
+  }
+
+  /** Older snapshots omit `igniteForestResumeRev` — `_beginIgniteMechanics`/layer pick behaves as today. */
+  _isIgniteForestResumeSupported(snap) {
+    return (
+      !!snap &&
+      typeof snap.igniteForestResumeRev === 'number' &&
+      snap.igniteForestResumeRev >= IGNITE_FOREST_RESUME_REV &&
+      snap.igniteProposalComplete === true
+    )
+  }
+
+  /** After `_enterIgnite` reset; restores layer-pick chips or skips to resumed mechanics (`_beginIgniteMechanics`). */
+  _maybeResumeIgniteFromForestTail(igniteResumeSnap) {
+    const ir =
+      igniteResumeSnap && this._isIgniteForestResumeSupported(igniteResumeSnap)
+        ? igniteResumeSnap
+        : null
+
+    if (!ir) {
+      this._beginIgniteMechanics(null)
+      return
+    }
+
+    if (typeof ir.igniteProposalPath === 'string' && this.day < 3) {
+      if (ir.igniteProposalPath === 'pathA' || ir.igniteProposalPath === 'pathB') {
+        this._igniteProposalPath = ir.igniteProposalPath
+      }
+    }
+
+    const sz = normalizeStackSortZoneId(ir.igniteSparkTargetZone)
+    const zoneOk =
+      sz && (sz === 'tinder' || sz === 'kindling' || sz === 'fuel_wood')
+
+    /** Layer-chip flow (never entered `_beginIgniteMechanics` yet for this ignite). */
+    if (ir.igniteAwaitFirstStrikeForSparkUi === true || ir.igniteAwaitingLayerStrike === true) {
+      this._igniteAwaitFirstStrikeForSparkUi = !!ir.igniteAwaitFirstStrikeForSparkUi
+      this._igniteAwaitingLayerStrike = !!ir.igniteAwaitingLayerStrike
+      if (this._igniteAwaitFirstStrikeForSparkUi) this._igniteAwaitingLayerStrike = false
+
+      this._stopIgniteTimers()
+      this._igniteMechanicsPhase = null
+      this._igniteProgress = 0
+      this._igniteTotalClicks = 0
+
+      this._igniteSparkTargetZone =
+        zoneOk ? sz : (this._stackSparkTargetZone ?? 'tinder')
+
+      this._setIgniteMechanicsHudVisible(false)
+      this._setIgniteBlowInteractive(false)
+      this._destroyIgniteSparkPickPhaseUi()
+      this._destroyStackPitTapPrompt()
+
+      this._tinderSprite?.setAlpha(0.72)
+      this._tinderSprite?.clearTint()
+      this._setFlintActive(true)
+
+      if (this._igniteAwaitFirstStrikeForSparkUi) {
+        this._titleText.setText(
+          'Ignite — Tap STRIKE to choose spark layer (chips), then tap STRIKE again to confirm.',
+        )
+      } else {
+        this._mountIgniteSparkPickUi({ restoreSparkTargetZone: zoneOk ? sz : null })
+      }
+      return
+    }
+
+    this._beginIgniteMechanics(ir)
   }
 
   _applyStackResumeFromCollect(snap) {
@@ -1226,6 +1444,77 @@ export class FireBuildingMinigame extends Phaser.Scene {
       (st) => st?.isSortable && st.phase === 'sorted',
     ).length
     this._traceReserveForestFlow('C', { matSnapshotLen: nOld, collectedLenAfter: this._collected?.length })
+    this._backfillMissingPlacedPitPositions()
+    this._ensureSortedMaterialsZoneLayout()
+    this._ensureResumePileGroundPresentation()
+  }
+
+  /** Forest resume: restore `pile` sprites to home ring (first snapshot loop only sets placed/sorted/burned). */
+  _ensureResumePileGroundPresentation() {
+    for (const state of Object.values(this._matStates)) {
+      if (state.phase !== 'pile' || !state.sprite?.scene) continue
+      const { x, y } = state.homePos
+      state.sprite.setPosition(x, y)
+      state.label?.setPosition(x, y + ITEM_H / 2 + 4)
+      const dim = state.greyed || state.quality === 'BAD'
+      const a = dim ? 0.3 : 1
+      state.sprite.setVisible(true).setAlpha(a)
+      state.label?.setVisible(true).setAlpha(a)
+    }
+  }
+
+  /**
+   * Registry `groundCleared` without re-running clear step (e.g. Day 1–2 resume→ignite).
+   */
+  _presentGroundClearedIfNeeded() {
+    if (!this._groundCleared) return
+    for (const obj of this._debrisObjects) {
+      if (obj.removed) continue
+      obj.removed = true
+      obj.circle.disableInteractive().setVisible(false)
+      obj.icon.setVisible(false)
+    }
+    this._debrisRemaining = 0
+    this.registry.set('groundCleared', true)
+    this._rockRing?.setVisible(true)
+    this._clearCounterText?.setVisible(false)
+    this._clearCheckmark?.setVisible(true)
+  }
+
+  /**
+   * When forest resume snapshot omits `pitPos` for placed rows, `_refreshFireLaySpritePresentation` skips them
+   * (alpha stays 0 after `_applyStackResumeFromCollect`). Re-slot the whole layer when any piece is missing coords.
+   */
+  _backfillMissingPlacedPitPositions() {
+    const validPit = (p) =>
+      p && typeof p.x === 'number' && typeof p.y === 'number'
+    const anyMissing = Object.values(this._matStates).some(
+      (st) =>
+        st.phase === 'placed' &&
+        (st.layerId === 'bottom' || st.layerId === 'middle' || st.layerId === 'top') &&
+        !validPit(st.pitPos),
+    )
+    if (!anyMissing) return
+
+    const layerIds = ['bottom', 'middle', 'top']
+    for (const layerId of layerIds) {
+      const placed = Object.values(this._matStates).filter(
+        (st) => st.phase === 'placed' && st.layerId === layerId,
+      )
+      placed.sort((a, b) => this._pileKeySortOrder(a, b))
+      let slot = 0
+      for (const st of placed) {
+        const pit = this._stackPitPlacePos(slot++)
+        st.pitPos = { x: pit.x, y: pit.y }
+        if (st.sprite?.scene) {
+          st.sprite.setPosition(pit.x, pit.y)
+          if (!this._day3UsesCompactStickPitRender() || st.day3ZeroFire) {
+            st.label?.setPosition(pit.x, pit.y + ITEM_H / 2 + 4)
+          }
+        }
+      }
+    }
+    this._recalcStackDropCountFromPlaced()
   }
 
   /**
@@ -1484,7 +1773,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     })
   }
 
-  // ── Day 3 wind-shield stones (8 placeholders; snap + FX in Step 5) ──
+  // ── Day 3 wind-shield stones (12; ring placement Commit 2+) ──
 
   _buildDay3Rocks() {
     if (this.day < 3) return
@@ -1493,14 +1782,18 @@ export class FireBuildingMinigame extends Phaser.Scene {
     const cy = this._pitY
 
     const positions = [
-      { x: cx - 350, y: cy + 158 },
-      { x: cx - 225, y: cy + 212 },
-      { x: cx - 105, y: cy + 170 },
-      { x: cx - 10,  y: cy + 225 },
-      { x: cx + 110, y: cy + 165 },
-      { x: cx + 240, y: cy + 215 },
-      { x: cx + 345, y: cy + 172 },
-      { x: cx + 425, y: cy + 198 },
+      { x: cx - 400, y: cy + 135 },
+      { x: cx - 315, y: cy + 198 },
+      { x: cx - 230, y: cy + 152 },
+      { x: cx - 135, y: cy + 225 },
+      { x: cx - 40, y: cy + 188 },
+      { x: cx + 55, y: cy + 232 },
+      { x: cx + 150, y: cy + 168 },
+      { x: cx + 238, y: cy + 215 },
+      { x: cx + 330, y: cy + 158 },
+      { x: cx + 418, y: cy + 198 },
+      { x: cx - 360, y: cy + 95 },
+      { x: cx + 360, y: cy + 102 },
     ]
 
     positions.forEach((pos, index) => {
@@ -1521,6 +1814,16 @@ export class FireBuildingMinigame extends Phaser.Scene {
     })
   }
 
+  /** `_buildDay3Rocks` spawns sprites at alpha 0; campsite_open uses `_enterDay3Campsite`, but resume→ignite skips that — always call before showing wind UX. */
+  _ensureDay3WindRocksVisible() {
+    if (this.day < 3) return
+    for (const { sprite } of this._day3Rocks) {
+      if (!sprite?.scene) continue
+      sprite.setVisible(true)
+      sprite.setAlpha(1)
+    }
+  }
+
   _ensureDay3WindDirection() {
     if (this.day < 3) return
     const valid = (d) => typeof d === 'string' && DAY3_WIND_CARDINALS.includes(d)
@@ -1536,6 +1839,28 @@ export class FireBuildingMinigame extends Phaser.Scene {
     const pick = DAY3_WIND_CARDINALS[Math.floor(Math.random() * 4)]
     this._windDirection = pick
     this.registry.set('day3WindDirection', pick)
+  }
+
+  /**
+   * Sustain: each of the three gust warnings rolls a **new** random wind direction (cardinal).
+   * Clears crouch facing so windward must be re-picked; redraws windward silhouette + leaf drift follows `_windDirection`.
+   * @param {number} [_gustOrdinal] 0..2 (reserved for future VO / analytics)
+   */
+  _rollSustainGustWindDirection(_gustOrdinal = 0) {
+    void _gustOrdinal
+    if (this.day < 3 || this.step !== 'sustain') return
+    const prev = this._windDirection
+    let next = DAY3_WIND_CARDINALS[Math.floor(Math.random() * DAY3_WIND_CARDINALS.length)]
+    if (prev && DAY3_WIND_CARDINALS.includes(prev)) {
+      let tries = 0
+      while (next === prev && tries++ < 16) {
+        next = DAY3_WIND_CARDINALS[Math.floor(Math.random() * DAY3_WIND_CARDINALS.length)]
+      }
+    }
+    this._windDirection = /** @type {'north'|'south'|'east'|'west'} */ (next)
+    this.registry.set('day3WindDirection', next)
+    this.registry.remove('day3SustainCullFacing')
+    this._destroyDay3SustainWindwardSilhouette()
   }
 
   _buildDay3WindSlots() {
@@ -1573,28 +1898,470 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._windSlotBounds = bounds
   }
 
+  _destroyDay3WindRingGfx() {
+    if (this._day3WindRingGfx?.scene) {
+      gsap.killTweensOf(this._day3WindRingGfx)
+      this._day3WindRingGfx.destroy()
+    }
+    this._day3WindRingGfx = null
+  }
+
+  /**
+   * Day 3 — wind-shield donut. `tier` drives ring readability (Commit E).
+   * @param {'good'|'partial'|'none'} tier
+   */
+  _redrawDay3WindRingGuideGfx(gfx, cx, cy, mult = 1, tier = 'none') {
+    const Ri = DAY3_WIND_RING_INNER_R
+    const Ro = DAY3_WIND_RING_OUTER_R
+    const m = Phaser.Math.Clamp(mult, 0, 1)
+    let fillA = 0.07
+    let outerA = 0.24
+    let innerA = 0.2
+    let dash = false
+    if (tier === 'good') {
+      fillA = 0.2
+      outerA = 0.74
+      innerA = 0.62
+    } else if (tier === 'partial') {
+      fillA = 0.12
+      outerA = 0.42
+      innerA = 0.34
+      dash = true
+    }
+
+    gfx.clear()
+    gfx.fillStyle(0xb8dcf0, fillA * m)
+    gfx.beginPath()
+    gfx.arc(cx, cy, Ro, 0, Phaser.Math.PI2, false)
+    gfx.arc(cx, cy, Ri, 0, Phaser.Math.PI2, true)
+    gfx.closePath()
+    gfx.fillPath()
+
+    const seg = 32
+    if (!dash) {
+      gfx.lineStyle(2.6, 0xd8eef8, outerA * m)
+      gfx.strokeCircle(cx, cy, Ro)
+      gfx.lineStyle(1.8, 0xb8d0e8, innerA * m)
+      gfx.strokeCircle(cx, cy, Ri)
+    } else {
+      for (let i = 0; i < seg; i += 2) {
+        const a0 = (i / seg) * Phaser.Math.PI2 + 0.02
+        const a1 = ((i + 1) / seg) * Phaser.Math.PI2 - 0.02
+        if (a1 <= a0) continue
+        gfx.lineStyle(2.4, 0xc8eaf8, outerA * m)
+        gfx.beginPath()
+        gfx.arc(cx, cy, Ro, a0, a1, false)
+        gfx.strokePath()
+      }
+      for (let i = 0; i < seg; i += 2) {
+        const a0 = (i / seg) * Phaser.Math.PI2 + 0.025
+        const a1 = ((i + 1) / seg) * Phaser.Math.PI2 - 0.025
+        if (a1 <= a0) continue
+        gfx.lineStyle(1.6, 0xa8c8d8, innerA * m)
+        gfx.beginPath()
+        gfx.arc(cx, cy, Ri, a0, a1, false)
+        gfx.strokePath()
+      }
+    }
+  }
+
+  /** @returns {'good'|'partial'|'none'} */
+  _day3WindShieldTierFromRegistry() {
+    const ws = this.registry.get('windShield')
+    return ws === 'good' || ws === 'partial' || ws === 'none' ? ws : 'none'
+  }
+
+  /** Creates / refreshes donut at current `_pitX` / `_pitY`. Safe to call whenever layouts settle. */
+  _ensureDay3WindRingGuideGfx() {
+    if (this.day < 3) return
+    const cx = this._pitX
+    const cy = this._pitY
+    const tier = this._day3WindShieldTierFromRegistry()
+    if (!this._day3WindRingGfx?.scene) {
+      const g = this.add.graphics().setDepth(DAY3_WIND_RING_GUIDE_DEPTH)
+      g.setAlpha(tier === 'none' ? 0.1 : 0.17)
+      this._day3WindRingGfx = g
+    }
+    this._redrawDay3WindRingGuideGfx(this._day3WindRingGfx, cx, cy, 1, tier)
+  }
+
+  _pulseDay3WindRingOnLeafBlocked() {
+    if (this.day < 3 || this.step !== 'sustain') return
+    const now = this.time?.now ?? 0
+    if (now - (this._day3WindRingBlockPulseAt ?? 0) < 220) return
+    this._day3WindRingBlockPulseAt = now
+    const g = this._day3WindRingGfx
+    if (!g?.scene) return
+    gsap.killTweensOf(g)
+    const base = g.alpha
+    gsap
+      .timeline()
+      .to(g, { alpha: Math.min(0.95, base + 0.42), duration: 0.08, ease: 'sine.out' })
+      .to(g, { alpha: base, duration: 0.14, ease: 'sine.out' })
+  }
+
+  /** Destroy gust warning HUD — call when gust lands or exiting sustain mid-warn. */
+  _destroyDay3SustainGustWarnHud() {
+    for (const o of this._day3SustainGustWarnHudObjs ?? []) {
+      try {
+        o?.destroy?.()
+      } catch (_) {
+        /* noop */
+      }
+    }
+    this._day3SustainGustWarnHudObjs = []
+    if (this._day3SustainGustWarnBarTween) {
+      this._day3SustainGustWarnBarTween.kill()
+      this._day3SustainGustWarnBarTween = null
+    }
+    if (this._day3SustainGustWarnTextPulse) {
+      this._day3SustainGustWarnTextPulse.kill()
+      this._day3SustainGustWarnTextPulse = null
+    }
+  }
+
+  _mountDay3SustainGustWarnHud() {
+    if (this.day < 3 || this.step !== 'sustain') return
+    const W = this.scale.width
+    const H = this.scale.height
+    const dpr = window.devicePixelRatio || 1
+    const pitY = this._pitY ?? H * 0.46
+    const labelY = Math.min(142, pitY - 188)
+    const barY = labelY + 40
+
+    const label = this.add
+      .text(W / 2, labelY, 'Gust incoming…', {
+        fontSize: `${17 * Math.min(dpr, 2)}px`,
+        fontFamily: 'Georgia, serif',
+        fill: '#e8dcd0',
+      })
+      .setOrigin(0.5)
+      .setDepth(4583)
+      .setAlpha(1)
+      .setScrollFactor(0)
+    const lab = { a: 0.55 }
+    this._day3SustainGustWarnTextPulse = gsap.to(lab, {
+      a: 1,
+      duration: 0.55,
+      yoyo: true,
+      repeat: -1,
+      ease: 'sine.inOut',
+      onUpdate: () => label.setAlpha(Math.min(1, lab.a)),
+    })
+
+    const barW = Math.min(W * 0.68, 460)
+    const bg = this.add
+      .rectangle(W / 2, barY, barW + 10, 14, 0x1a1612, 0.85)
+      .setStrokeStyle(1, 0x8a6848, 0.72)
+      .setOrigin(0.5)
+      .setDepth(4583)
+      .setScrollFactor(0)
+
+    const fill = this.add
+      .rectangle(W / 2 - barW / 2 + 5, barY, barW - 10, 8, 0xe0a848, 0.98)
+      .setOrigin(0, 0.5)
+      .setDepth(4587)
+      .setScrollFactor(0)
+    gsap.killTweensOf(fill)
+    fill.setScale(0.01, 1)
+
+    const leadSec = DAY3_WIND_WARN_LEAD_MS / 1000
+    this._day3SustainGustWarnBarTween = gsap.to(fill.scale, {
+      x: 1,
+      duration: leadSec,
+      ease: 'none',
+    })
+
+    this._day3SustainGustWarnHudObjs = [label, bg, fill]
+    try {
+      this.scene.manager?.bringToTop?.(this.scene)
+    } catch (_) {
+      /* noop */
+    }
+  }
+
+  _pauseDay3GlobalForSustainTutorial() {
+    if (this._day3TutorialPauseActive) return
+    this._day3TutorialPauseActive = true
+    this.time.paused = true
+    if (typeof this.tweens?.pauseAll === 'function') this.tweens.pauseAll()
+    gsap.globalTimeline.pause()
+  }
+
+  _resumeDay3GlobalFromSustainTutorial() {
+    if (!this._day3TutorialPauseActive) return
+    this._day3TutorialPauseActive = false
+    this.time.paused = false
+    if (typeof this.tweens?.resumeAll === 'function') this.tweens.resumeAll()
+    gsap.globalTimeline.resume()
+  }
+
+  _destroyDay3SustainWindwardSilhouette() {
+    gsap.killTweensOf(this._day3SustainWindwardFigGfx ?? {})
+    this._day3SustainWindwardFigGfx?.destroy?.()
+    this._day3SustainWindwardFigGfx = null
+    this._day3SustainWindwardFigRect = null
+  }
+
+  /** Sustain-only crouch silhouette + hit rect for stray leaves — only shown **after** a facing pick (`day3SustainCullFacing`). */
+  _ensureDay3SustainWindwardSilhouette() {
+    if (this.day < 3 || this.step !== 'sustain') return
+    this._ensureDay3WindDirection()
+    const faced = this.registry.get('day3SustainCullFacing')
+    if (
+      typeof faced !== 'string' ||
+      !DAY3_WIND_CARDINALS.some((s) => s === faced)
+    ) {
+      this._destroyDay3SustainWindwardSilhouette()
+      return
+    }
+    if (!this._windSlotCenters) return
+    const ww = /** @type {'north'|'south'|'east'|'west'} */ (faced)
+    const cw = this._windSlotCenters[ww]
+    if (!cw) return
+    const pitX = this._pitX ?? this.scale.width / 2
+    const pitY = this._pitY ?? this.scale.height * 0.5
+    this._destroyDay3SustainWindwardSilhouette()
+    const g = this.add.graphics().setDepth(4004).setScrollFactor(0)
+    g.fillStyle(0x1a2430, 0.82)
+    g.fillRoundedRect(-18, -46, 36, 70, 6)
+    g.lineStyle(2, 0x9ab8c8, 0.55)
+    g.strokeRoundedRect(-18, -46, 36, 70, 6)
+    const head = 10
+    g.fillStyle(0x2a3542, 0.9)
+    g.fillCircle(0, -58, head)
+    g.x = cw.x + (cw.x - pitX) * 0.42
+    g.y = cw.y + (cw.y - pitY) * 0.42 + 22
+    this._day3SustainWindwardFigGfx = g
+    this._updateDay3SustainWindwardFigRect()
+
+    gsap.killTweensOf(g)
+    gsap.timeline({ repeat: -1, yoyo: true }).to(g, {
+      rotation:
+        ww === 'east' || ww === 'west'
+          ? Math.PI / 42
+          : ww === 'north'
+            ? -Math.PI / 36
+            : Math.PI / 36,
+      duration: 1.05,
+      ease: 'sine.inOut',
+      onUpdate: () => this._updateDay3SustainWindwardFigRect(),
+    })
+  }
+
+  _updateDay3SustainWindwardFigRect() {
+    const gfx = this._day3SustainWindwardFigGfx
+    if (!gfx?.scene) {
+      this._day3SustainWindwardFigRect = null
+      return
+    }
+
+    const cos = Math.cos(gfx.rotation ?? 0)
+    const sin = Math.sin(gfx.rotation ?? 0)
+    const gx = gfx.x
+    const gy = gfx.y
+    const offs = /** @type {const} */ ([
+      [-26, -60],
+      [26, -60],
+      [26, 38],
+      [-26, 38],
+    ])
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    for (const [dx, dy] of offs) {
+      const rx = gx + dx * cos - dy * sin
+      const ry = gy + dx * sin + dy * cos
+      minX = Math.min(minX, rx)
+      maxX = Math.max(maxX, rx)
+      minY = Math.min(minY, ry)
+      maxY = Math.max(maxY, ry)
+    }
+    this._day3SustainWindwardFigRect = new Phaser.Geom.Rectangle(
+      minX - 8,
+      minY - 8,
+      maxX - minX + 16,
+      maxY - minY + 16,
+    )
+  }
+
+  _maybePlayWindwardShieldedLeafLine() {
+    if (this.day < 3 || this._day3SustainTookWindwardLineShown) return
+    if (!this.registry.get('lastSustainGustCullMatchedWindward')) return
+    this._day3SustainTookWindwardLineShown = true
+    if (typeof this._dialogue?.showSequence !== 'function') return
+    this.registry.set('day3SustainWindwardVisualLineShown', true)
+    this._dialogue.showSequence(
+      [{ speaker: 'Aiden', text: 'Took some of it for me.' }],
+      () => this._dialogue.hide(),
+    )
+  }
+
+  /** @param {'calm'|'warn_early'|'warn_late'|'gust_burst'|'post_gust'} phase */
+  _setDay3SustainLeafPhase(phase) {
+    this._day3SustainLeafPhase = phase
+  }
+
+  /**
+   * One-time pulse + optional line (`Wind's picking up.`). Registry `day3WindRingPulseShown`
+   * is set immediately when pulses begin — prevents repeats on resume / re-entry.
+   * Commit 1 does NOT change gameplay.
+   */
+  _maybeDay3WindRingEntryPresentation() {
+    if (this.day < 3 || !this._day3WindRingGfx?.scene) return
+    if (this.registry.get('day3WindRingPulseShown')) {
+      gsap.killTweensOf(this._day3WindRingGfx)
+      this._ensureDay3WindRingGuideGfx()
+      this._day3WindRingGfx.setAlpha(0.14)
+      return
+    }
+
+    this.registry.set('day3WindRingPulseShown', true)
+
+    gsap.killTweensOf(this._day3WindRingGfx)
+    this._ensureDay3WindRingGuideGfx()
+    this._day3WindRingGfx.setAlpha(0)
+
+    const settle = () => {
+      gsap.killTweensOf(this._day3WindRingGfx)
+      this._ensureDay3WindRingGuideGfx()
+      this._day3WindRingGfx.setAlpha(0.14)
+      if (!this.registry.get('day3WindRingVoiceDone') && typeof this._dialogue?.show === 'function') {
+        this.registry.set('day3WindRingVoiceDone', true)
+        this._dialogue.show({
+          speaker: 'Aiden',
+          text: "Wind's picking up.",
+          onComplete: () => this._dialogue.hide(),
+        })
+      }
+    }
+
+    gsap.timeline()
+      .to(this._day3WindRingGfx, { alpha: 0.55, duration: 0.34, ease: 'sine.inOut' })
+      .to(this._day3WindRingGfx, { alpha: 0.08, duration: 0.28, ease: 'sine.inOut' })
+      .to(this._day3WindRingGfx, { alpha: 0.5, duration: 0.3, ease: 'sine.inOut' })
+      .to(this._day3WindRingGfx, { alpha: 0.08, duration: 0.28, ease: 'sine.inOut' })
+      .call(settle)
+  }
+
+  /** Ri–Ro annulus around pit centre (Commit 2+ ring placement hit-test). */
+  _day3WorldPosInWindRing(wx, wy) {
+    if (this.day < 3) return false
+    const px = this._pitX
+    const py = this._pitY
+    const d = Math.hypot(wx - px, wy - py)
+    return d >= DAY3_WIND_RING_INNER_R && d <= DAY3_WIND_RING_OUTER_R
+  }
+
+  _countDay3RocksInWindRing() {
+    let n = 0
+    for (const r of this._day3Rocks) {
+      if (!r?.sprite?.scene) continue
+      if (this._day3WorldPosInWindRing(r.sprite.x, r.sprite.y)) n++
+    }
+    return n
+  }
+
+  /** Count ring stones as if rock `movingIndex` were at bx,by (sprite may already be moved). */
+  _countDay3RocksInWindRingSupposeRockAt(movingIndex, bx, by) {
+    let n = 0
+    for (const r of this._day3Rocks) {
+      if (!r?.sprite?.scene) continue
+      const x = r.index === movingIndex ? bx : r.sprite.x
+      const y = r.index === movingIndex ? by : r.sprite.y
+      if (this._day3WorldPosInWindRing(x, y)) n++
+    }
+    return n
+  }
+
+  /** @param {number} n stones currently in Ri–Ro */
+  _day3WindShieldTierFromRingCount(n) {
+    if (n <= 2) return 'none'
+    if (n <= 7) return 'partial'
+    return 'good'
+  }
+
+  _syncDay3WindRingRegistry() {
+    if (this.day < 3) return
+    const rocks = this._day3Rocks.map((r) => ({
+      index: r.index,
+      x: r.sprite.x,
+      y: r.sprite.y,
+    }))
+    this.registry.set('day3WindRingRockPositions', rocks)
+  }
+
+  /**
+   * Reactive lines when shield tier / in-ring count changes (Commit 2+).
+   * @param {{
+   *   droppedInRing: boolean
+   *   prevInRingCount: number
+   *   nextInRingCount: number
+   * }} p
+   */
+  _maybeDay3WindRingReactiveMonologue(p) {
+    if (this.day < 3 || typeof this._dialogue?.show !== 'function') return
+
+    if (!p.droppedInRing) {
+      if (!this.registry.get('day3WindRingOutsideLessonDone')) {
+        this.registry.set('day3WindRingOutsideLessonDone', true)
+        this._dialogue.show({
+          speaker: 'Aiden',
+          text: 'Wind goes right around it out there.',
+          onComplete: () => this._dialogue.hide(),
+        })
+      }
+      return
+    }
+
+    const { prevInRingCount, nextInRingCount } = p
+    const prevTier = this._day3WindShieldTierFromRingCount(prevInRingCount)
+    const nextTier = this._day3WindShieldTierFromRingCount(nextInRingCount)
+
+    if (prevInRingCount === 0 && nextInRingCount >= 1 && !this.registry.get('day3WindRingVoiceOneDown')) {
+      this.registry.set('day3WindRingVoiceOneDown', true)
+      this._dialogue.show({
+        speaker: 'Aiden',
+        text: 'One down.',
+        onComplete: () => this._dialogue.hide(),
+      })
+      return
+    }
+
+    if (prevTier === 'none' && nextTier === 'partial' && !this.registry.get('day3WindRingVoiceHittingNow')) {
+      this.registry.set('day3WindRingVoiceHittingNow', true)
+      this._dialogue.show({
+        speaker: 'Aiden',
+        text: "Wind's hitting the rocks now.",
+        onComplete: () => this._dialogue.hide(),
+      })
+      return
+    }
+
+    if (prevTier !== 'good' && nextTier === 'good' && !this.registry.get('day3WindRingVoiceQuieterInside')) {
+      this.registry.set('day3WindRingVoiceQuieterInside', true)
+      this._dialogue.show({
+        speaker: 'Aiden',
+        text: 'Quieter inside the ring.',
+        onComplete: () => this._dialogue.hide(),
+      })
+    }
+  }
+
   _day3RebuildWindBlockRects() {
     if (this.day < 3) {
       this._day3WindBlockRectsCached = []
       return
     }
-    const pitX = this._pitX
-    const pitY = this._pitY
-    const cw = WIND_BLOCK_CELL_W
-    const ch = WIND_BLOCK_CELL_H
-    const seen = new Set()
+    const half = 40
     const rects = []
-    for (const id of DAY3_WIND_CARDINALS) {
-      if (this._windSlotRockIndex[id] == null) continue
-      const rc = DAY3_WIND_SLOT_TO_GRID_CELL[id]
-      if (!rc) continue
-      const [r, c] = rc
-      const key = `${r},${c}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      const cx = pitX + (c - 1) * cw
-      const cy = pitY + (r - 1) * ch
-      rects.push(new Phaser.Geom.Rectangle(cx - cw / 2, cy - ch / 2, cw, ch))
+    for (const r of this._day3Rocks) {
+      if (!r?.sprite?.scene) continue
+      const x = r.sprite.x
+      const y = r.sprite.y
+      if (!this._day3WorldPosInWindRing(x, y)) continue
+      rects.push(new Phaser.Geom.Rectangle(x - half, y - half, half * 2, half * 2))
     }
     this._day3WindBlockRectsCached = rects
   }
@@ -1619,6 +2386,26 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
   _restoreDay3WindShieldFromRegistry() {
     if (this.day < 3 || !this._windSlotCenters) return
+
+    const ringSnap = this.registry.get('day3WindRingRockPositions')
+    if (Array.isArray(ringSnap) && ringSnap.length) {
+      for (const id of DAY3_WIND_CARDINALS) this._windSlotRockIndex[id] = null
+      for (const e of ringSnap) {
+        if (typeof e?.index !== 'number' || e.index < 0 || e.index >= this._day3Rocks.length) continue
+        const rock = this._day3Rocks[e.index]
+        if (!rock?.sprite) continue
+        if (typeof e.x === 'number' && typeof e.y === 'number') {
+          rock.sprite.setPosition(e.x, e.y)
+          rock.baseX = e.x
+          rock.baseY = e.y
+        }
+        rock.slotId = null
+      }
+      this._syncDay3WindShieldSlotsRegistry()
+      this._day3RebuildWindBlockRects()
+      return
+    }
+
     const snap = this.registry.get('day3WindShieldSlots')
     if (!snap || typeof snap !== 'object') return
     for (const id of DAY3_WIND_CARDINALS) {
@@ -1629,9 +2416,13 @@ export class FireBuildingMinigame extends Phaser.Scene {
       const rock = this._day3Rocks[ix]
       if (!rock?.sprite) continue
       rock.sprite.setPosition(c.x, c.y)
+      rock.baseX = c.x
+      rock.baseY = c.y
       rock.slotId = id
       this._windSlotRockIndex[id] = ix
     }
+    this._syncDay3WindRingRegistry()
+    this._syncDay3WindShieldSlotsRegistry()
     this._day3RebuildWindBlockRects()
   }
 
@@ -1646,31 +2437,22 @@ export class FireBuildingMinigame extends Phaser.Scene {
   }
 
   /**
-   * Reachable spec: good = windward≥1 & side≥1; partial = (windward 1 & side 0) OR (windward 0 & side≥2); else none.
+   * Annulus Ri–Ro: 0–2 rocks → none, 3–7 → partial, 8+ → good (`_windShield`; wind strip still keyed on `'none'`).
    */
   _recomputeWindShield() {
-    if (this.day < 3 || !this._windDirection) {
+    if (this.day < 3) {
       this._windShield = 'none'
       this.registry.set('windShield', 'none')
       return
     }
-    const { windward, sideA, sideB } = day3WindSlotRoles(this._windDirection)
-    let windwardN = 0
-    let sideN = 0
-    for (const id of DAY3_WIND_CARDINALS) {
-      const ix = this._windSlotRockIndex[id]
-      if (ix == null) continue
-      if (id === windward) windwardN++
-      else if (id === sideA || id === sideB) sideN++
-    }
-    let next = 'none'
-    if (windwardN >= 1 && sideN >= 1) next = 'good'
-    else if ((windwardN >= 1 && sideN === 0) || (windwardN === 0 && sideN >= 2)) next = 'partial'
-    this._windShield = next
+    const n = this._countDay3RocksInWindRing()
+    const next = this._day3WindShieldTierFromRingCount(n)
+    this._windShield = /** @type {'none'|'partial'|'good'} */ (next)
     this.registry.set('windShield', next)
-    if (this.day >= 3 && next !== 'none') {
+    if (next !== 'none') {
       this._cancelPendingWindStripsAwaitingShield()
     }
+    this._ensureDay3WindRingGuideGfx()
   }
 
   _day3WindPickSlotAt(wx, wy) {
@@ -1789,14 +2571,14 @@ export class FireBuildingMinigame extends Phaser.Scene {
           state.label?.setDepth(6)
           continue
         }
-        const dim = state.greyed || state.quality === 'BAD'
         const pileDepth = STACK_SORTED_PILE_DEPTH
         state.sprite.setDepth(pileDepth)
         state.label?.setDepth(pileDepth + 1)
         state.sprite.setInteractive({ useHandCursor: true })
         this.input.setDraggable(state.sprite, true)
-        state.sprite.setAlpha(dim ? 0.3 : 1)
-        state.label?.setAlpha(dim ? 0.3 : 1)
+        const a = this._igniteSortedReserveFootprintAlpha(state)
+        state.sprite.setAlpha(a)
+        state.label?.setAlpha(a)
         continue
       }
       this._safeSetDraggable(state.sprite, false)
@@ -1805,115 +2587,68 @@ export class FireBuildingMinigame extends Phaser.Scene {
   }
 
   /**
-   * @param {boolean} revertToSlot If true and the rock had been on a slot, snap back there (leeward / occupied target). If false, stay at release (free camp placement).
+   * Bounce drag-cancel / disallowed-step release: commits world position, clears legacy slot bookkeeping.
+   * @param {boolean} _revert Unused (legacy ring removed in Commit 2).
    */
-  _bounceWindRockHomeOrRestoreSlot(rock, wx, wy, revertToSlot = false) {
-    const ps = rock._pickupFromSlot
+  _bounceWindRockHomeOrRestoreSlot(rock, wx, wy, _revert = false) {
     rock._pickupFromSlot = undefined
+    rock._windDragOx = rock._windDragOy = undefined
     const x = wx ?? rock.sprite.x
     const y = wy ?? rock.sprite.y
-
-    if (
-      revertToSlot &&
-      ps &&
-      this._windSlotCenters?.[ps] &&
-      this._windSlotRockIndex[ps] == null
-    ) {
-      this._windSlotRockIndex[ps] = rock.index
-      rock.slotId = ps
-      const c = this._windSlotCenters[ps]
-      rock.sprite.setPosition(c.x, c.y)
-      this._recomputeWindShield()
-      this._syncDay3WindShieldSlotsRegistry()
-      this._day3RebuildWindBlockRects()
-      return
+    for (const id of DAY3_WIND_CARDINALS) {
+      if (this._windSlotRockIndex[id] === rock.index) this._windSlotRockIndex[id] = null
     }
-
     rock.sprite.setPosition(x, y)
     rock.baseX = x
     rock.baseY = y
     rock.slotId = null
     this._recomputeWindShield()
     this._syncDay3WindShieldSlotsRegistry()
+    this._syncDay3WindRingRegistry()
     this._day3RebuildWindBlockRects()
   }
 
-  _maybeDay3WindShieldCoverageMonologue() {
-    if (this.registry.get('day3WindShieldCoverageDone')) return
-    if (!this._windDirection) return
-    const { windward, sideA, sideB } = day3WindSlotRoles(this._windDirection)
-    let n = 0
-    for (const id of [windward, sideA, sideB]) {
-      if (this._windSlotRockIndex[id] != null) n++
-    }
-    if (n < 2) return
-    this.registry.set('day3WindShieldCoverageDone', true)
-    this._dialogue.show({
-      speaker: 'Aiden',
-      text: 'Not perfect, but it will help. The wind cannot cut straight through now.',
-      onComplete: () => this._dialogue.hide(),
-    })
-  }
-
   _onDay3WindRockDragEnd(rock, wx, wy) {
-    if (!this._windDirection || !this._windSlotCenters) {
-      this._bounceWindRockHomeOrRestoreSlot(rock, wx, wy, false)
-      return
+    if (this.day < 3) return
+    if (!this._windSlotCenters) this._buildDay3WindSlots()
+    this._ensureDay3WindDirection()
+
+    const ox = rock._windDragOx ?? wx
+    const oy = rock._windDragOy ?? wy
+    rock._windDragOx = rock._windDragOy = undefined
+
+    const prevInRingCount = this._countDay3RocksInWindRingSupposeRockAt(rock.index, ox, oy)
+
+    for (const id of DAY3_WIND_CARDINALS) {
+      if (this._windSlotRockIndex[id] === rock.index) this._windSlotRockIndex[id] = null
     }
-
-    const slot = this._day3WindPickSlotAt(wx, wy)
-    const roles = day3WindSlotRoles(this._windDirection)
-
-    if (!slot) {
-      this._bounceWindRockHomeOrRestoreSlot(rock, wx, wy, false)
-      return
-    }
-
-    if (slot === roles.leeward) {
-      if (!this.registry.get('day3WindShieldLeewardWrongDone')) {
-        this.registry.set('day3WindShieldLeewardWrongDone', true)
-        this._dialogue.show({
-          speaker: 'Aiden',
-          text: 'Wind is not coming from here. Wrong side.',
-          onComplete: () => this._dialogue.hide(),
-        })
-      }
-      this._bounceWindRockHomeOrRestoreSlot(rock, wx, wy, true)
-      return
-    }
-
-    const occupant = this._windSlotRockIndex[slot]
-    if (occupant != null && occupant !== rock.index) {
-      this._bounceWindRockHomeOrRestoreSlot(rock, wx, wy, true)
-      return
-    }
-
     rock._pickupFromSlot = undefined
-    const c = this._windSlotCenters[slot]
-    rock.sprite.setPosition(c.x, c.y)
-    rock.slotId = slot
-    this._windSlotRockIndex[slot] = rock.index
 
-    if (slot === roles.windward && !this.registry.get('day3WindShieldWindwardFirstDone')) {
-      this.registry.set('day3WindShieldWindwardFirstDone', true)
-      this._dialogue.show({
-        speaker: 'Aiden',
-        text: 'That side takes the wind. Good.',
-        onComplete: () => this._dialogue.hide(),
-      })
-    }
+    rock.sprite.setPosition(wx, wy)
+    rock.baseX = wx
+    rock.baseY = wy
+    rock.slotId = null
 
-    if (!this.todoState.shield) {
+    const droppedInRing = this._day3WorldPosInWindRing(wx, wy)
+    const nextInRingCount = this._countDay3RocksInWindRing()
+
+    if (!this.todoState.shield && droppedInRing) {
       this.todoState.shield = true
       const todo = { ...(this.registry.get('day3TodoState') ?? {}), shield: true }
       this.registry.set('day3TodoState', todo)
       this.updateTodoList()
     }
 
-    this._maybeDay3WindShieldCoverageMonologue()
     this._recomputeWindShield()
     this._syncDay3WindShieldSlotsRegistry()
+    this._syncDay3WindRingRegistry()
     this._day3RebuildWindBlockRects()
+
+    this._maybeDay3WindRingReactiveMonologue({
+      droppedInRing,
+      prevInRingCount,
+      nextInRingCount,
+    })
   }
 
   _stopDay3WindFx() {
@@ -1933,7 +2668,9 @@ export class FireBuildingMinigame extends Phaser.Scene {
       this.day >= 3 &&
       (this.step === 'campsite_open' ||
         this.step === 'stack' ||
-        this.step === 'ignite')
+        this.step === 'ignite' ||
+        this.step === 'spread' ||
+        this.step === 'sustain')
     )
   }
 
@@ -1941,18 +2678,131 @@ export class FireBuildingMinigame extends Phaser.Scene {
     if (!this._day3WindFxAllowedForStep() || !this._windDirection) return
     if (this._windLeafTimer) return
     this._spawnDay3WindLeafBatch()
-    this._windLeafTimer = this.time.addEvent({
-      delay: WIND_LEAF_BATCH_INTERVAL_MS,
-      loop: true,
-      callback: () => this._spawnDay3WindLeafBatch(),
-    })
+    this._queueDay3WindLeafBatch()
+  }
+
+  /** Variable-delay batch loop (sustain phases change interval + density). */
+  _queueDay3WindLeafBatch() {
+    if (!this._day3WindFxAllowedForStep() || !this._windDirection) return
+    if (this._windLeafTimer) {
+      this._windLeafTimer.remove(false)
+      this._windLeafTimer = null
+    }
+    const delay = this._day3WindLeafScheduleDelayMs()
+    this._windLeafTimer = this.time.delayedCall(
+      delay,
+      () => {
+        this._windLeafTimer = null
+        this._spawnDay3WindLeafBatch()
+        this._queueDay3WindLeafBatch()
+      },
+      [],
+      this,
+    )
+  }
+
+  /** @returns {number} */
+  _day3WindLeafScheduleDelayMs() {
+    if (this.step !== 'sustain') return WIND_LEAF_BATCH_INTERVAL_MS
+    const ph = this._day3SustainLeafPhase ?? 'calm'
+    switch (ph) {
+      case 'calm':
+        return DAY3_LEAF_MS_CALM
+      case 'warn_early':
+        return DAY3_LEAF_MS_WARN_EARLY
+      case 'warn_late':
+        return DAY3_LEAF_MS_WARN_LATE
+      case 'gust_burst':
+        return DAY3_LEAF_MS_GUST_BURST
+      case 'post_gust':
+        return DAY3_LEAF_MS_POST_GUST
+      default:
+        return WIND_LEAF_BATCH_INTERVAL_MS
+    }
   }
 
   _spawnDay3WindLeafBatch() {
     if (!this._day3WindFxAllowedForStep() || !this._windDirection) return
-    const nMin = WIND_LEAF_COUNT_MIN
-    const nMax = WIND_LEAF_COUNT_MAX
-    this._spawnDay3WindLeaves({ countMin: nMin, countMax: nMax, durScale: 1 })
+    const ph = this._day3SustainLeafPhase ?? 'calm'
+
+    if (this.step !== 'sustain') {
+      this._spawnDay3WindLeaves({
+        countMin: WIND_LEAF_COUNT_MIN,
+        countMax: WIND_LEAF_COUNT_MAX,
+        durScale: 1,
+      })
+      return
+    }
+
+    let nMin = WIND_LEAF_COUNT_MIN
+    let nMax = WIND_LEAF_COUNT_MAX
+    let durScale = 1
+
+    switch (ph) {
+      case 'calm':
+        nMin = 0
+        nMax = 1
+        durScale = 1
+        break
+      case 'warn_early':
+        nMin = 2
+        nMax = 4
+        durScale = 0.8
+        break
+      case 'warn_late':
+        nMin = 1
+        nMax = 1
+        durScale = 0.55
+        break
+      case 'gust_burst':
+        nMin = 8
+        nMax = 12
+        durScale = 0.4
+        break
+      case 'post_gust':
+        nMin = 1
+        nMax = 3
+        durScale = 0.7
+        break
+      default:
+        break
+    }
+
+    this._spawnDay3WindLeaves({ countMin: nMin, countMax: nMax, durScale })
+  }
+
+  /** Stable shuffle of [0..n-1]; same (n,batchKey) ⇒ same permutation. */
+  _day3DeterministicBatchOrder(n, batchKey) {
+    const a = Array.from({ length: n }, (_, i) => i)
+    let s = (Number(batchKey) | 0) >>> 0
+    if (s === 0) s = 20260101
+    for (let i = n - 1; i > 0; i--) {
+      s = (Math.imul(s, 1664525) + 1013904223) >>> 0
+      const j = s % (i + 1)
+      ;[a[i], a[j]] = [a[j], a[i]]
+    }
+    return a
+  }
+
+  /**
+   * `true` = leaf ignores wind-rock block rects (none: all bypass; partial: floor(n/2) per deterministic shuffle; good: none bypass).
+   * @returns {boolean[]}
+   */
+  _day3WindLeafBypassMaskForBatch(n, shield, batchSeed) {
+    /** @type {boolean[]} */
+    const out = Array(n).fill(false)
+    if (shield === 'none') {
+      for (let i = 0; i < n; i++) out[i] = true
+      return out
+    }
+    if (shield !== 'partial') return out
+    const k = Math.floor(n / 2)
+    const order = this._day3DeterministicBatchOrder(n, batchSeed)
+    for (let j = 0; j < k; j++) {
+      const ix = order[j]
+      if (typeof ix === 'number' && ix >= 0 && ix < n) out[ix] = true
+    }
+    return out
   }
 
   /** @param {{ countMin: number, countMax: number, durScale?: number }} opts */
@@ -1964,10 +2814,16 @@ export class FireBuildingMinigame extends Phaser.Scene {
     const W = this.scale.width
     const H = this.scale.height
     const n = Phaser.Math.Between(countMin, countMax)
+    this._day3WindLeafBatchSeq = (this._day3WindLeafBatchSeq ?? 0) + 1
+    let shieldTier = /** @type {'none'|'partial'|'good'} */ (this._windShield ?? 'none')
+    const ws = this.registry.get('windShield')
+    if (ws === 'none' || ws === 'partial' || ws === 'good') shieldTier = ws
+    const bypassMask = this._day3WindLeafBypassMaskForBatch(n, shieldTier, this._day3WindLeafBatchSeq)
     const dir = this._windDirection
     const pad = 28
 
-    const spawnLeaf = () => {
+    const spawnLeaf = (leafIx) => {
+      const ignoresBlocks = !!bypassMask[leafIx]
       const leaf = this.add
         .rectangle(0, 0, 10, 16, Phaser.Math.RND.pick([0x4a6b3a, 0x5a7a40, 0x4a5a38]))
         .setDepth(6)
@@ -2015,7 +2871,19 @@ export class FireBuildingMinigame extends Phaser.Scene {
           const jy = Math.cos(t * Math.PI * 5) * jitterY
           leaf.x = x0 + (x1 - x0) * t + jx
           leaf.y = y0 + (y1 - y0) * t + jy
-          if (this._day3PointInWindBlockZone(leaf.x, leaf.y)) {
+          const wf = this._day3SustainWindwardFigRect
+          if (
+            this.step === 'sustain' &&
+            wf instanceof Phaser.Geom.Rectangle &&
+            wf.contains(leaf.x, leaf.y)
+          ) {
+            this._maybePlayWindwardShieldedLeafLine()
+            this._killDay3WindLeaf(leaf, prog)
+            return
+          }
+          const rockHit = !ignoresBlocks && this._day3PointInWindBlockZone(leaf.x, leaf.y)
+          if (rockHit) {
+            if (this.step === 'sustain') this._pulseDay3WindRingOnLeafBlocked()
             this._killDay3WindLeaf(leaf, prog)
           }
         },
@@ -2034,16 +2902,22 @@ export class FireBuildingMinigame extends Phaser.Scene {
       })
     }
 
-    for (let i = 0; i < n; i++) spawnLeaf()
+    for (let i = 0; i < n; i++) spawnLeaf(i)
   }
 
-  _spawnDay3WindLeafGustBurst() {
+  /** @param {{ sustainBurst?: boolean }} [opts] — sustain uses 16–20 leaves; wind-strip keeps 6–8. */
+  _spawnDay3WindLeafGustBurst(opts = {}) {
     if (!this._day3WindFxAllowedForStep() || !this._windDirection) return
-    this._spawnDay3WindLeaves({
-      countMin: WIND_STRIP_GUST_LEAF_COUNT_MIN,
-      countMax: WIND_STRIP_GUST_LEAF_COUNT_MAX,
-      durScale: WIND_STRIP_GUST_DURATION_MULT,
-    })
+    const sustain = opts.sustainBurst === true
+    this._spawnDay3WindLeaves(
+      sustain
+        ? { countMin: 16, countMax: 20, durScale: 0.4 }
+        : {
+            countMin: WIND_STRIP_GUST_LEAF_COUNT_MIN,
+            countMax: WIND_STRIP_GUST_LEAF_COUNT_MAX,
+            durScale: WIND_STRIP_GUST_DURATION_MULT,
+          },
+    )
   }
   // ── Clear counter ─────────────────────────────────────────────────────────────
 
@@ -2184,8 +3058,14 @@ export class FireBuildingMinigame extends Phaser.Scene {
       const zone = correctSortZoneForMatId(st.id)
       if (!zone || !counts[zone]) continue
       if (st.phase === 'placed') counts[zone].placed++
-      else if (st.phase === 'sorted' && st.isSortable) counts[zone].sorted++
-      else if (st.phase === 'burned' || st.phase === 'ignite_spent') counts[zone].burned++
+      else if (st.phase === 'sorted') {
+        if (this.step === 'sort') {
+          if (st.isSortable) counts[zone].sorted++
+        } else {
+          const sz = this._sortZoneSpareBucketForMatState(st)
+          if (sz && counts[sz]) counts[sz].sorted++
+        }
+      } else if (st.phase === 'burned' || st.phase === 'ignite_spent') counts[zone].burned++
     }
     return counts
   }
@@ -2430,7 +3310,14 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._playIgniteSparkFx(fx, fy)
 
     const d = this._igniteDifficulty
-    const gained = Phaser.Math.Between(d.sparkMin, d.sparkMax)
+    const obstruction = Phaser.Math.Clamp(this._igniteSparkObstructionPenalty ?? 0, 0, 0.35)
+    const sparkMinEff = Math.max(1, Math.round(d.sparkMin * (1 - obstruction)))
+    let sparkMaxEff = Math.max(
+      sparkMinEff + 1,
+      Math.round(d.sparkMax * (1 - obstruction * 0.85)),
+    )
+    if (sparkMaxEff <= sparkMinEff) sparkMaxEff = sparkMinEff + 1
+    const gained = Phaser.Math.Between(sparkMinEff, sparkMaxEff)
     this._igniteProgress = Math.min(
       IGNITE_PROGRESS_MAX,
       this._igniteProgress + gained,
@@ -2760,19 +3647,13 @@ export class FireBuildingMinigame extends Phaser.Scene {
           : null
       if (windRock) {
         windRock._pickupFromSlot = windRock.slotId
+        windRock._windDragOx = sprite.x
+        windRock._windDragOy = sprite.y
         if (windRock.slotId && this._windSlotRockIndex[windRock.slotId] === windRock.index) {
           this._windSlotRockIndex[windRock.slotId] = null
         }
         windRock.slotId = null
         sprite.setDepth(22)
-        if (!this.registry.get('day3WindShieldFirstRockDragDone')) {
-          this.registry.set('day3WindShieldFirstRockDragDone', true)
-          this._dialogue.show({
-            speaker: 'Aiden',
-            text: 'These stones. If I stack them on the side the wind is hitting, they should block the worst of it.',
-            onComplete: () => this._dialogue.hide(),
-          })
-        }
         this._day3RebuildWindBlockRects()
         return
       }
@@ -2992,9 +3873,10 @@ export class FireBuildingMinigame extends Phaser.Scene {
             this._syncIgniteAfterSandboxPitDrop()
             const cat = correctSortZoneForMatId(state.id)
             if (cat === 'kindling' || cat === 'fuel_wood')
-              this._applyDay3IgniteNonTinderPitPenalty()
+              this._applyDay3IgniteNonTinderPitPenalty(cat)
           }
         } else if (state) {
+          this._maybeDay2IgniteRenWrongReserveCategoryHint(state)
           this._bounceToStackOrHome(state)
         }
         const d = state?.phase === 'sorted' ? STACK_SORTED_PILE_DEPTH : 5
@@ -3155,13 +4037,15 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
     this._enableDay3DebrisFreeDrag()
 
-    // Show rock stones immediately
-    this._day3Rocks.forEach(({ sprite }) => sprite.setAlpha(1))
+    this._ensureDay3WindRocksVisible()
 
     this._restoreDay3WindShieldFromRegistry()
     this._recomputeWindShield()
     this._startDay3WindFx()
     this._refreshDay3WindRockInput()
+
+    this._ensureDay3WindRingGuideGfx()
+    this._maybeDay3WindRingEntryPresentation()
 
     // Show pit rings at dim opacity (no materials yet, just orientation)
     this._stackGraphics.setAlpha(0.3)
@@ -4438,11 +5322,15 @@ export class FireBuildingMinigame extends Phaser.Scene {
   /** Places sorted sprites over sort zones (visible). Needed when skipping sort via dev/mock jump. */
   _ensureSortedMaterialsZoneLayout() {
     for (const state of Object.values(this._matStates)) {
-      if (state.phase !== 'sorted' || !state.sortZoneId || !state.sprite) continue
+      if (state.phase !== 'sorted' || !state.sprite) continue
+      const rawZ = state.sortZoneId || correctSortZoneForMatId(state.id)
+      const inferredZone = normalizeStackSortZoneId(rawZ)
+      if (!inferredZone) continue
       const okSorted =
         state.isSortable || (this.day >= 3 && isDay3ZeroFireMaterial(state.id))
       if (!okSorted) continue
-      const zone = this._sortZones[state.sortZoneId]
+      if (state.sortZoneId !== inferredZone) state.sortZoneId = inferredZone
+      const zone = this._sortZones[inferredZone]
       if (!zone) continue
       if (!state.zonePos) {
         const h = (state.pileKey ?? '').length
@@ -4667,7 +5555,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
   _syncDay3FireIconDepthForStep() {
     if (!this._fireIcon?.scene) return
-    if (this.day >= 3 && (this.step === 'spread' || this.step === 'sustain')) {
+    // Spread/sustain: flame above pit wood (PIT_PLACED_MATERIAL_DEPTH = 3) — Day 2 & 3 use depth 32.
+    if (this.step === 'spread' || this.step === 'sustain') {
       this._fireIcon.setDepth(32)
     } else if (this.step !== 'sustain') {
       this._fireIcon.setDepth(2)
@@ -5067,20 +5956,20 @@ export class FireBuildingMinigame extends Phaser.Scene {
         this._igniteMechanicsPhase &&
         correctSortZoneForMatId(state.id) === 'tinder' &&
         state.quality !== 'BAD'
-      const dim = state.greyed || state.quality === 'BAD'
       const pileDepth = STACK_SORTED_PILE_DEPTH
       state.sprite.setDepth(pileDepth)
       state.label?.setDepth(pileDepth + 1)
+      const footprintA = this._igniteSortedReserveFootprintAlpha(state)
       if (allowDrag) {
         state.sprite.setInteractive({ useHandCursor: true })
         this._safeSetDraggable(state.sprite, true)
-        state.sprite.setAlpha(dim ? 0.3 : 1)
-        state.label?.setAlpha(dim ? 0.3 : 1)
+        state.sprite.setAlpha(footprintA)
+        state.label?.setAlpha(footprintA)
       } else {
         this._safeSetDraggable(state.sprite, false)
         state.sprite.disableInteractive()
-        state.sprite.setAlpha(dim ? 0.3 : 1)
-        state.label?.setAlpha(dim ? 0.3 : 1)
+        state.sprite.setAlpha(footprintA)
+        state.label?.setAlpha(footprintA)
       }
     }
   }
@@ -5164,7 +6053,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
     hg.strokeRect(5, y0 + 2, geom.pitW - 10, fillH)
   }
 
-  _destroyStackLayerNavUi() {
+  _destroyStackLayerNavUi(opts = {}) {
+    const keepPrev = !!opts.keepPrev
     this._stackFinishLayPulseTween?.stop()
     this._stackFinishLayPulseTween = null
     this._stackLockedBlowBg?.destroy()
@@ -5173,18 +6063,20 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._stackLockedBlowTxt = null
     this._stackNextLayerBg?.destroy()
     this._stackNextLayerTxt?.destroy()
-    this._stackPrevLayerBg?.destroy()
-    this._stackPrevLayerTxt?.destroy()
+    this._stackNextLayerBg = null
+    this._stackNextLayerTxt = null
+    if (!keepPrev) {
+      this._stackPrevLayerBg?.destroy()
+      this._stackPrevLayerTxt?.destroy()
+      this._stackPrevLayerBg = null
+      this._stackPrevLayerTxt = null
+    }
     this._stackSparkLabel?.destroy()
     for (const p of this._stackSparkPickers) {
       p.bg?.destroy()
       p.txt?.destroy()
     }
-    this._stackNextLayerBg  = null
-    this._stackNextLayerTxt = null
-    this._stackPrevLayerBg  = null
-    this._stackPrevLayerTxt = null
-    this._stackSparkLabel  = null
+    this._stackSparkLabel = null
     this._stackSparkPickers = []
   }
 
@@ -5210,11 +6102,15 @@ export class FireBuildingMinigame extends Phaser.Scene {
       .setDepth(16)
 
     this._stackPrevLayerBg.on('pointerover', () => {
-      if (this.step !== 'stack' || !this._stackPrevLayerBg?.input?.enabled) return
+      if (
+        (this.step !== 'stack' && this.step !== 'ignite') ||
+        !this._stackPrevLayerBg?.input?.enabled
+      )
+        return
       this._stackPrevLayerBg.setFillStyle(0x3a3028)
     })
     this._stackPrevLayerBg.on('pointerout', () => {
-      if (this.step !== 'stack') return
+      if (this.step !== 'stack' && this.step !== 'ignite') return
       this._stackPrevLayerBg.setFillStyle(0x2a2218)
     })
     this._stackPrevLayerBg.on('pointerup', () => this._onStackPrevLayerClick())
@@ -5405,6 +6301,59 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._stackStrikeGateHint.setVisible(true)
   }
 
+  /**
+   * Forest resume / relight: no stack nav survived `_exitStack` — spawn the same `Edit lay` chrome as lay UI.
+   */
+  _spawnStackPrevLayerEditChromeForIgnite(W, H) {
+    if (this._stackPrevLayerBg && this._stackPrevLayerTxt) return
+    const pxNext = this._pitX - 175
+    const pxPrev = pxNext - 154
+    const ny = H * 0.36
+    this._stackPrevLayerBg = this.add
+      .rectangle(pxPrev, ny, 140, 36, 0x2a2218)
+      .setStrokeStyle(2, 0x6a6850)
+      .setDepth(15)
+      .setInteractive({ useHandCursor: true })
+
+    this._stackPrevLayerTxt = this.add
+      .text(pxPrev, ny, 'Edit lay', {
+        fontSize: '12px',
+        fontFamily: 'Georgia, serif',
+        fill: '#c8b8a0',
+      })
+      .setOrigin(0.5)
+      .setDepth(16)
+
+    this._stackPrevLayerBg.on('pointerover', () => {
+      if (
+        (this.step !== 'stack' && this.step !== 'ignite') ||
+        !this._stackPrevLayerBg?.input?.enabled
+      )
+        return
+      this._stackPrevLayerBg.setFillStyle(0x3a3028)
+    })
+    this._stackPrevLayerBg.on('pointerout', () => {
+      if (this.step !== 'stack' && this.step !== 'ignite') return
+      this._stackPrevLayerBg.setFillStyle(0x2a2218)
+    })
+    this._stackPrevLayerBg.on('pointerup', () => this._onStackPrevLayerClick())
+  }
+
+  /** Ignite (STRIKE phase): reuse stack `Edit lay` — elevated above `_mountIgniteSparkPickUi` (~139). */
+  _syncStackEditLayForIgnite(W, H) {
+    if (!this._stackPrevLayerBg || !this._stackPrevLayerTxt) {
+      this._spawnStackPrevLayerEditChromeForIgnite(W, H)
+    }
+    if (!this._stackPrevLayerBg || !this._stackPrevLayerTxt) return
+    this._stackPrevLayerTxt.setText('Edit lay')
+    this._stackPrevLayerBg.setVisible(true)
+    this._stackPrevLayerTxt.setVisible(true)
+    this._stackPrevLayerBg.setInteractive({ useHandCursor: true })
+    const uiDepth = 150
+    this._stackPrevLayerBg.setDepth(uiDepth)
+    this._stackPrevLayerTxt.setDepth(uiDepth + 1)
+  }
+
   _beginIgniteFromStack() {
     if (this.step !== 'stack' || !this._stackLayLockedComplete) return
     this._syncStackLayRegistry()
@@ -5426,6 +6375,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
           (rs?.length || 0),
       })
     }
+    this._preserveStackEditLayForIgnite = true
     this._enterStep('ignite')
   }
 
@@ -5488,6 +6438,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _updateStackPrevLayerButton() {
     if (!this._stackPrevLayerBg || !this._stackPrevLayerTxt) return
 
+    if (this.step === 'ignite') {
+      this._syncStackEditLayForIgnite(this.scale.width, this.scale.height)
+      return
+    }
+
     if (this._stackLayLockedComplete) {
       this._stackPrevLayerTxt.setText('Edit lay')
       this._stackPrevLayerBg.setVisible(true)
@@ -5508,6 +6463,16 @@ export class FireBuildingMinigame extends Phaser.Scene {
   }
 
   _onStackPrevLayerClick() {
+    if (this.step === 'ignite') {
+      if (
+        typeof this._dialogue?.isBlocking === 'function' &&
+        this._dialogue.isBlocking()
+      )
+        return
+      this._returnToStackFromIgnite()
+      return
+    }
+
     if (this.step !== 'stack') return
 
     if (this._stackLayLockedComplete) {
@@ -6299,10 +7264,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _sortZoneSpareBucketForMatState(st) {
     if (!st || st.phase !== 'sorted' || !st.isSortable) return null
     if (isDay3ZeroFireMaterial(st.id) || st.quality === 'BAD') return null
-    if (this.day >= 3 && !st.sortZoneId) return null
-    const z = normalizeStackSortZoneId(
-      this.day >= 3 ? st.sortZoneId : (st.sortZoneId ?? correctSortZoneForMatId(st.id)),
-    )
+    const rawZ = st.sortZoneId || correctSortZoneForMatId(st.id)
+    const z = normalizeStackSortZoneId(rawZ)
     if (!z || !['tinder', 'kindling', 'fuel_wood'].includes(z)) return null
     if (
       this.step === 'spread' &&
@@ -6312,6 +7275,19 @@ export class FireBuildingMinigame extends Phaser.Scene {
     )
       return null
     return z
+  }
+
+  /**
+   * Ignite sorted reserve chip alpha (HUD + D2 `_syncIgniteSortedDraggability` + D3 sandbox).
+   * Base material read: greyed/BAD → 0.3 (bad piece), else 1. Before mechanics start
+   * (`step === 'ignite'` && `!_igniteMechanicsPhase`), good chips use
+   * `alpha = min(0.5, currentDimAlpha)` so "not ready" reads weaker than BAD (0.3).
+   */
+  _igniteSortedReserveFootprintAlpha(state) {
+    const dim = !!(state?.greyed || state?.quality === 'BAD')
+    const currentDimAlpha = dim ? 0.3 : 1
+    if (this.step !== 'ignite' || this._igniteMechanicsPhase) return currentDimAlpha
+    return Math.min(0.5, currentDimAlpha)
   }
 
   _applyDay3StackRingHudLabels() {
@@ -6461,6 +7437,16 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _applySustainReserveSpritePresentation() {
     for (const st of Object.values(this._matStates)) {
       if (!st.sprite || st.phase !== 'sorted' || !st.isSortable) continue
+      // Day 2: match footer spare (`_sortZoneSpareBucketForMatState`) — hide chips the count excludes (e.g. BAD).
+      if (
+        this.day < 3 &&
+        this.step === 'sustain' &&
+        this._sortZoneSpareBucketForMatState(st) == null
+      ) {
+        st.sprite.setVisible(false)
+        st.label?.setVisible(false)
+        continue
+      }
       st.sprite.setVisible(true)
       st.label?.setVisible(true)
       const zoneId = this._stackSortedCategory(st)
@@ -7072,7 +8058,8 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._stackAwaitingPitForLay = false
     this._destroyStackPitTapPrompt()
     this._destroyStackStrikeHint()
-    this._destroyStackLayerNavUi()
+    this._destroyStackLayerNavUi({ keepPrev: this._preserveStackEditLayForIgnite })
+    this._preserveStackEditLayForIgnite = false
     this._destroyStackBuildFire()
     this._destroyStackCategoryCards()
     this._destroyStackCrossSection()
@@ -7149,6 +8136,20 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._stackGoFindBg.on('pointerup', () => this._onCampsiteForestClick())
   }
 
+  /** Ignite → stack cross-section anytime; preserves lay counts and ignite trial flags. */
+  _returnToStackFromIgnite() {
+    if (this.step !== 'ignite') return
+    if (
+      typeof this._dialogue?.isBlocking === 'function' &&
+      this._dialogue.isBlocking()
+    )
+      return
+    this._stackReenterPreserveLayout = true
+    this._stackPreserveAfterIgniteTrial = true
+    this._exitIgnite()
+    this._enterStep('stack')
+  }
+
   /**
    * Leave campsite for forest mid-flow: stamina, optional ignite collect floor, stack snapshot, resume collect session.
    * Callers supply step guards (e.g. `_onCampsiteForestClick`); top forest hotspot on Day 3 calls with no gate.
@@ -7181,7 +8182,28 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
 
     this._traceReserveForestFlow('A', { fromStep: this.step })
-    this.registry.set('fireCampsiteStackResume', this._buildStackResumePayload())
+    const _stackResumeLeave = this._buildStackResumePayload()
+    if (this.step === 'ignite' && _stackResumeLeave.igniteResume) {
+      _stackResumeLeave.igniteResume.igniteForestHeatExtinguished = true
+    }
+    if (import.meta.env.DEV && this.step === 'ignite' && _stackResumeLeave) {
+      const snapPlaced = (_stackResumeLeave.matSnapshot || []).filter(
+        (r) => r.phase === 'placed',
+      ).length
+      const mc = this._getMaterialCounts()
+      const placedSum =
+        mc.tinder.placed +
+        mc.kindling.placed +
+        mc.fuel_wood.placed
+      console.log('[IgniteForestDEV] leaving campsite (ignite)', {
+        liveMaterialCountsPlacedSum: placedSum,
+        liveByZone: mc,
+        matSnapshotPlacedPieces: snapPlaced,
+        matSnapshotLen: _stackResumeLeave.matSnapshot?.length,
+        igniteRev: _stackResumeLeave.igniteResume?.igniteForestResumeRev,
+      })
+    }
+    this.registry.set('fireCampsiteStackResume', _stackResumeLeave)
     this.scene.stop(this.scene.key)
     this.scene.start('FireBuildingCollect', {
       day: this.day,
@@ -7266,6 +8288,21 @@ export class FireBuildingMinigame extends Phaser.Scene {
       return
     }
 
+    const targetZ = normalizeStackSortZoneId(zoneId)
+    if (
+      this.step === 'ignite' &&
+      this.day >= 3 &&
+      this._igniteMechanicsPhase &&
+      placeOpts.fromPitDrop &&
+      correctZone &&
+      targetZ &&
+      correctZone !== targetZ
+    ) {
+      this._bounceToStackOrHome(state)
+      this._showAidenIgniteWrongPitRingReflection(correctZone, targetZ)
+      return
+    }
+
     this._ensureStackLayUiBeforePlace()
 
     this._maybeStackFreePlacementHints(state, zoneId)
@@ -7345,6 +8382,31 @@ export class FireBuildingMinigame extends Phaser.Scene {
       this._maybeDay3StackLayMilestone()
     if (this.day >= 3)
       this._maybeDay3WindStripAfterTinderPlaced(state, zoneId, opts)
+  }
+
+  /** Day 2 ignite — one-shot Ren when dragging kindling/fuel reserve before tinder phase allows it (mechanics running). */
+  _maybeDay2IgniteRenWrongReserveCategoryHint(state) {
+    if (this.day !== 2 || this.step !== 'ignite') return
+    if (this._igniteMechanicsPhase == null) return
+    if (!state || state.phase !== 'sorted' || !state.isSortable || state.quality === 'BAD') return
+    const cat = correctSortZoneForMatId(state.id)
+    if (cat === 'kindling') {
+      if (this.registry.get('day2IgniteWrongTypeKindlingShown')) return
+      this.registry.set('day2IgniteWrongTypeKindlingShown', true)
+      this._dialogue.showSequence(
+        [{ speaker: 'Ren', text: 'Not yet—those go in once the tinder catches.' }],
+        () => this._dialogue.hide(),
+      )
+      return
+    }
+    if (cat === 'fuel_wood') {
+      if (this.registry.get('day2IgniteWrongTypeFuelShown')) return
+      this.registry.set('day2IgniteWrongTypeFuelShown', true)
+      this._dialogue.showSequence(
+        [{ speaker: 'Ren', text: 'Too big for now. The fire is not ready for those.' }],
+        () => this._dialogue.hide(),
+      )
+    }
   }
 
   _bounceToStackOrHome(state) {
@@ -7482,7 +8544,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     if (this.day <= 2) {
       this._igniteSmokeThresholdPct = tinderN >= 3 ? 25 : tinderN === 2 ? 40 : 55
     } else {
-      this._igniteSmokeThresholdPct = tinderN >= 3 ? 40 : tinderN === 2 ? 55 : 70
+      this._igniteSmokeThresholdPct = tinderN >= 3 ? 32 : tinderN === 2 ? 48 : 65
     }
 
     const kindN = Math.max(
@@ -7492,13 +8554,32 @@ export class FireBuildingMinigame extends Phaser.Scene {
     if (this.day <= 2) {
       this._igniteBlowGain = kindN >= 3 ? 22 : kindN === 2 ? 18 : 14
     } else {
-      this._igniteBlowGain = kindN >= 3 ? 18 : kindN === 2 ? 14 : 10
+      this._igniteBlowGain = kindN >= 3 ? 20 : kindN === 2 ? 16 : 12
     }
     /** Blow mistake penalty — fewer kindling → larger dip (§4.5). */
     if (this.day <= 2) {
       this._igniteBlowPenalty = kindN >= 3 ? 5 : kindN === 2 ? 7 : 10
     } else {
       this._igniteBlowPenalty = kindN >= 3 ? 3 : kindN === 2 ? 5 : 8
+    }
+
+    this._igniteSparkObstructionPenalty = 0
+    if (this.day >= 3 && this.step === 'ignite') {
+      const k = Math.max(
+        this._stackDropCount.kindling || 0,
+        this._stackPlacedCountInLayer('middle'),
+      )
+      const f = Math.max(
+        this._stackDropCount.fuel_wood || 0,
+        this._stackPlacedCountInLayer('top'),
+      )
+      const extraK = Math.max(0, k - 1)
+      const extraF = Math.max(0, f - 1)
+      this._igniteSparkObstructionPenalty = Phaser.Math.Clamp(
+        extraK * 0.085 + extraF * 0.1,
+        0,
+        0.3,
+      )
     }
   }
 
@@ -7550,6 +8631,81 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
   }
 
+  _destroyDay3SustainWindCullPicker() {
+    for (const o of this._day3SustainCullPickerObjs ?? []) {
+      try {
+        o?.destroy?.()
+      } catch (_) {
+        /* noop */
+      }
+    }
+    this._day3SustainCullPickerObjs = []
+  }
+
+  /**
+   * Per-gust optional facing pick — halves gust delta when matching `windward` (ceil(abs/2)), same hotspots as ignite.
+   */
+  _mountDay3SustainWindCullPicker() {
+    if (this.day < 3 || this.step !== 'sustain' || this._nightComplete) return
+
+    this._destroyDay3SustainWindCullPicker()
+    this._ensureDay3WindDirection()
+    if (!this._windSlotCenters) this._buildDay3WindSlots()
+    const centers = this._windSlotCenters
+    if (!centers) return
+
+    const W = this.scale.width
+    const prompt = this.add
+      .text(W / 2, this._pitY - STACK_TOP_R - 48, 'Crouch with your back to the wind.', {
+        fontSize: '14px',
+        fontFamily: 'Georgia, serif',
+        fill: '#d8cbb8',
+      })
+      .setOrigin(0.5)
+      .setDepth(4002)
+    this._day3SustainCullPickerObjs.push(prompt)
+
+    const r = DAY3_SPARK_DIRECTION_HOTSPOT_R
+    const dimFill = 0.22
+    const hoverFill = 0.45
+    for (const id of DAY3_WIND_CARDINALS) {
+      const c = centers[id]
+      if (!c) continue
+      const arc = this.add
+        .circle(c.x, c.y, r, 0xc8e0ff, dimFill)
+        .setStrokeStyle(2, 0xa8cce8, 0.52)
+        .setDepth(4003)
+        .setInteractive(new Phaser.Geom.Circle(0, 0, r), Phaser.Geom.Circle.Contains)
+
+      arc.setFillStyle(0xc8e0ff, dimFill)
+      const hud = { fa: dimFill }
+      arc.on('pointerover', () => {
+        gsap.killTweensOf(hud)
+        gsap.to(hud, {
+          fa: hoverFill,
+          duration: 0.12,
+          onUpdate: () => arc.setFillStyle(0xc8e0ff, hud.fa),
+        })
+      })
+      arc.on('pointerout', () => {
+        gsap.killTweensOf(hud)
+        gsap.to(hud, {
+          fa: dimFill,
+          duration: 0.18,
+          onUpdate: () => arc.setFillStyle(0xc8e0ff, hud.fa),
+        })
+      })
+      arc.on('pointerup', () => {
+        if (this.step !== 'sustain' || this._nightComplete) return
+        this.registry.set('day3SustainCullFacing', id)
+        this._ensureDay3SustainWindwardSilhouette()
+        this._destroyDay3SustainWindCullPicker()
+      })
+
+      this._day3SustainCullPickerObjs.push(arc)
+    }
+  }
+
   _destroyDay3SparkDirectionPicker() {
     for (const arc of this._day3SparkDirHoverTargets) {
       const hud = arc?.getData?.('sparkDirHud')
@@ -7569,13 +8725,18 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
   _resetDay3IgniteStrikeDirectionGate() {
     if (this.day < 3) return
+    this._day3WindPickWrongStreakForStamina = 0
     this._destroyDay3SparkDirectionPicker()
     this._sparkDirection = null
     this._igniteAwaitDay3DirectionPick = true
     this._clearIgniteDecayRainTimersOnly()
   }
 
-  _mountDay3SparkDirectionPicker() {
+  /**
+   * @param {{ showIntro?: boolean }} [opts] showIntro false skips opening Aiden + long hint (remount without tutorial).
+   */
+  _mountDay3SparkDirectionPicker(opts = {}) {
+    const showIntro = opts.showIntro !== false
     if (this.day < 3 || this.step !== 'ignite') return
     if (this._day3SparkDirPromptText?.scene) return
 
@@ -7587,22 +8748,46 @@ export class FireBuildingMinigame extends Phaser.Scene {
     if (!centers) return
 
     const W = this.scale.width
-    const hint = this.add
-      .text(W / 2, this._pitY - STACK_TOP_R - 52, 'Choose where to strike.', {
-        fontSize: '15px',
-        fontFamily: 'Georgia, serif',
-        fill: '#e8dcc8',
-      })
-      .setOrigin(0.5)
-      .setDepth(145)
-    this._day3SparkDirPromptText = hint
-    this._day3SparkDirPickerObjs.push(hint)
+    if (showIntro) {
+      const hint = this.add
+        .text(
+          W / 2,
+          this._pitY - STACK_TOP_R - 52,
+          'Crouch with your back to the wind.',
+          {
+            fontSize: '15px',
+            fontFamily: 'Georgia, serif',
+            fill: '#e8dcc8',
+          },
+        )
+        .setOrigin(0.5)
+        .setDepth(145)
+      this._day3SparkDirPromptText = hint
+      this._day3SparkDirPickerObjs.push(hint)
 
-    this._dialogue.show({
-      speaker: 'Aiden',
-      text: 'I need to strike where the wind cannot reach. Watch which way it blows.',
-      onComplete: () => this._dialogue.hide(),
-    })
+      this._dialogue.show({
+        speaker: 'Aiden',
+        text:
+          'I need to crouch on the side the wind comes from and block it with my body—then strike over the tinder.',
+        onComplete: () => this._dialogue.hide(),
+      })
+    } else {
+      const hint = this.add
+        .text(
+          W / 2,
+          this._pitY - STACK_TOP_R - 52,
+          'Try again—crouch on the side the wind comes from.',
+          {
+            fontSize: '15px',
+            fontFamily: 'Georgia, serif',
+            fill: '#e8dcc8',
+          },
+        )
+        .setOrigin(0.5)
+        .setDepth(145)
+      this._day3SparkDirPromptText = hint
+      this._day3SparkDirPickerObjs.push(hint)
+    }
 
     const r = DAY3_SPARK_DIRECTION_HOTSPOT_R
     const dimFill = 0.28
@@ -7648,7 +8833,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
       this._day3SparkDirPickerObjs.push(arc)
     }
 
-    this._titleText.setText('Choose a side of the pit to strike from, then tap STRIKE.')
+    this._titleText.setText(
+      showIntro
+        ? 'Pick the side to crouch on—block the wind with your body. Then tap STRIKE.'
+        : 'Try again—put your back to the wind. Then tap STRIKE.',
+    )
   }
 
   /**
@@ -7657,25 +8846,112 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _onDay3SparkDirectionChosen(dir) {
     if (this.day < 3 || this.step !== 'ignite') return
 
-    this._sparkDirection = dir
-    this._destroyDay3SparkDirectionPicker()
+    const roles = this._windDirection
+      ? day3WindSlotRoles(this._windDirection)
+      : null
+    const windward = roles?.windward
+    const leeward = roles?.leeward
+    const sideA = roles?.sideA
+    const sideB = roles?.sideB
 
-    const windward =
-      this._windDirection && day3WindSlotRoles(this._windDirection).windward
-    if (windward && dir === windward) {
-      this._dialogue.show({
-        speaker: 'Aiden',
-        text: 'Wind blew it straight out. Wrong side.',
-        onComplete: () => this._dialogue.hide(),
-      })
+    const isWindward = !!(windward && dir === windward)
+    if (isWindward) {
+      this._day3WindPickWrongStreakForStamina = 0
+      this._sparkDirection = dir
+      this._destroyDay3SparkDirectionPicker()
+      this._igniteAwaitDay3DirectionPick = false
+
+      if (!this.registry.get('day3IgniteWindwardSparkPraiseDone')) {
+        this.registry.set('day3IgniteWindwardSparkPraiseDone', true)
+        this._dialogue.show({
+          speaker: 'Aiden',
+          text:
+            'Back to the wind—my body shields the tinder. The sparks might actually catch.',
+          onComplete: () => this._dialogue.hide(),
+        })
+      }
+
+      this._startIgniteDecayAndRainAfterDay3Direction()
+      this._titleText.setText(
+        'Ignite — Phase 1: Tap STRIKE to build heat (watch both bars).',
+      )
+      this._refreshIgniteStrikeAvailability()
+      return
     }
 
-    this._igniteAwaitDay3DirectionPick = false
-    this._startIgniteDecayAndRainAfterDay3Direction()
-    this._titleText.setText(
-      'Ignite — Phase 1: Tap STRIKE to build heat (watch both bars).',
-    )
-    this._refreshIgniteStrikeAvailability()
+    this._day3WindPickWrongStreakForStamina++
+    const triggerStaminaPenalty = this._day3WindPickWrongStreakForStamina >= 2
+    if (triggerStaminaPenalty) {
+      this._day3WindPickWrongStreakForStamina = 0
+    }
+
+    let reflectionText
+    if (leeward && dir === leeward) {
+      reflectionText =
+        'Wind blew the sparks off the tinder before they could catch. I should put my back to the wind.'
+    } else if (sideA && sideB && (dir === sideA || dir === sideB)) {
+      if (!this.registry.get('day3IgniteSideWindLessonDone')) {
+        this.registry.set('day3IgniteSideWindLessonDone', true)
+        reflectionText = Phaser.Utils.Array.GetRandom([
+          'Wind is hitting me from the side—sparks keep drifting off. I need my back fully to it.',
+          'Crouching sideways does not block enough. The wind still gets through.',
+        ])
+      } else {
+        reflectionText =
+          'Still sideways—the wind keeps snatching the sparks.'
+      }
+    } else {
+      reflectionText =
+        'Wind blew the sparks off the tinder before they could catch. I should put my back to the wind.'
+    }
+
+    this._dialogue.show({
+      speaker: 'Aiden',
+      text: reflectionText,
+      onComplete: () => {
+        this._dialogue.hide()
+        if (!triggerStaminaPenalty) {
+          this._titleText.setText(
+            'Try again—put your back to the wind. Then tap STRIKE.',
+          )
+          this._refreshIgniteStrikeAvailability()
+          return
+        }
+
+        const stamina = this.registry.get('stamina')
+        const deductReturn = stamina?.deduct(1)
+        const alive = deductReturn ?? true
+        if (import.meta.env.DEV) {
+          console.log('[StaminaDebug] Day3 wind pick stamina penalty', {
+            deductReturn,
+            after: stamina?.getState?.()?.current,
+          })
+        }
+        if (!alive) {
+          this._destroyDay3SparkDirectionPicker()
+          this._igniteAwaitDay3DirectionPick = false
+          this._sparkDirection = null
+          this._stopIgniteTimers()
+          this.time.delayedCall(800, () => this._emitDayFail('fire_campsite'))
+          return
+        }
+
+        const tiredText = Phaser.Utils.Array.GetRandom(
+          DAY3_WIND_PICK_STAMINA_TIRED_LINES,
+        )
+        this._dialogue.show({
+          speaker: 'Aiden',
+          text: tiredText,
+          onComplete: () => {
+            this._dialogue.hide()
+            this._titleText.setText(
+              'Try again—put your back to the wind. Then tap STRIKE.',
+            )
+            this._refreshIgniteStrikeAvailability()
+          },
+        })
+      },
+    })
   }
 
   /** Live pit bottom-layer rows matching `_syncStackLayRegistry` → `stackData.bottom` shape (`{ id, quality }`). */
@@ -7994,7 +9270,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
   }
 
   /** After first STRIKE — Spark-at chips (path B = only Base/tinder selectable). */
-  _mountIgniteSparkPickUi() {
+  /**
+   * Chip UI after first STRIKE in ignite (Day 2 path A/B).
+   * @param {{ restoreSparkTargetZone?: 'tinder'|'kindling'|'fuel_wood'|null }} [opts]
+   */
+  _mountIgniteSparkPickUi(opts = {}) {
     if (this.step !== 'ignite') return
 
     this._igniteAwaitFirstStrikeForSparkUi = false
@@ -8002,6 +9282,13 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     const pathB = this._igniteProposalPath === 'pathB'
     this._igniteSparkTargetZone = pathB ? 'tinder' : (this._stackSparkTargetZone ?? 'tinder')
+
+    const rz = opts?.restoreSparkTargetZone
+    if (rz === 'tinder' || rz === 'kindling' || rz === 'fuel_wood') {
+      if (!pathB || rz === 'tinder') {
+        this._igniteSparkTargetZone = rz
+      }
+    }
 
     this._destroyIgniteSparkPickPhaseUi()
     this._destroyStackPitTapPrompt()
@@ -8119,13 +9406,13 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._dialogue.showSequence(lines, afterPick)
   }
 
-  /** Day 1–2: bright 1.5s / dark 1.0s (~60% good blow window); tighter on later days. */
+  /** Day 1–2: bright 1.5s / dark 1.0s (~60% good blow window); Day 3: 50/50 bright/dark. */
   _igniteSmokePulseBrightMs() {
-    return this.day >= 3 ? 800 : 1500
+    return this.day >= 3 ? 1000 : 1500
   }
 
   _igniteSmokePulseDarkMs() {
-    return this.day >= 3 ? 1200 : 1000
+    return this.day >= 3 ? 1000 : 1000
   }
 
   _stopIgniteSmokePulse() {
@@ -8234,9 +9521,13 @@ export class FireBuildingMinigame extends Phaser.Scene {
     })
   }
 
-  _startIgniteSmokePulse() {
+  /**
+   * @param {{ initialPhase?: 'bright'|'dark' }} [opts] — resumed blow phase from forest snapshot.
+   */
+  _startIgniteSmokePulse(opts = {}) {
     this._stopIgniteSmokePulse()
-    this._igniteSmokePulsePhase = 'bright'
+    this._igniteSmokePulsePhase =
+      opts.initialPhase === 'dark' ? 'dark' : 'bright'
     this._refreshIgniteSmokePulseVisual()
     this._scheduleIgniteSmokePulseTick()
   }
@@ -8414,7 +9705,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
   }
 
   /**
-   * Spread: sorted sprites hidden except remediation lane; Day 3 clean spread matches ignite (spare bucket visibility).
+   * Spread: remediation lane shows dragged lane; clean spread (D2 & D3): spare-bucket visibility like ignite.
    * Ignite: sorted piles visible at zone positions (single `_matStates` view).
    * Sustain: sorted spare piles styled via `_applySustainReserveSpritePresentation` — skipped here.
    */
@@ -8434,19 +9725,14 @@ export class FireBuildingMinigame extends Phaser.Scene {
           const a = dim ? 0.3 : 1
           st.sprite.setVisible(true).setAlpha(a)
           st.label?.setVisible(true).setAlpha(a)
-        } else if (this.day >= 3) {
-          if (this._sortZoneSpareBucketForMatState(st) == null) {
-            st.sprite.setVisible(false)
-            st.label?.setVisible(false)
-          } else {
-            const dim = st.greyed || st.quality === 'BAD'
-            const a = dim ? 0.3 : 1
-            st.sprite.setVisible(true).setAlpha(a)
-            st.label?.setVisible(true).setAlpha(a)
-          }
-        } else {
+        } else if (this._sortZoneSpareBucketForMatState(st) == null) {
           st.sprite.setVisible(false)
           st.label?.setVisible(false)
+        } else {
+          const dim = st.greyed || st.quality === 'BAD'
+          const a = dim ? 0.3 : 1
+          st.sprite.setVisible(true).setAlpha(a)
+          st.label?.setVisible(true).setAlpha(a)
         }
         continue
       }
@@ -8456,8 +9742,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
           st.sprite.setVisible(false)
           st.label?.setVisible(false)
         } else {
-          const dim = st.greyed || st.quality === 'BAD'
-          const a = dim ? 0.3 : 1
+          const a = this._igniteSortedReserveFootprintAlpha(st)
           st.sprite.setVisible(true).setAlpha(a)
           st.label?.setVisible(true).setAlpha(a)
         }
@@ -8496,11 +9781,13 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
   /**
    * Read-only placeholders matching `_buildMaterialPile`: MAT_COLOR rects + Georgia labels.
-   * Steps: sort / spread only (`SORT_ZONE_LAY_PREVIEW_STEPS`). Ignite shows pit sprites via presenter.
-   * Day 3 spread: reserves only — pit lay is compact-stick sprites, not duplicated in cards.
+   * Sort + spread (remediation only): shows pit lay + spare chips from state. Clean spread (D2 & D3)
+   * skips this — live sorted sprites use `_syncSortZoneHudSortedSpriteVisibility` spare-bucket rules.
    */
   _buildSortZoneLayPreview() {
-    if (this.day >= 3 && this.step === 'spread' && !this._spreadAwaitingRemediation) {
+    // Day 2 & 3: clean spread uses live `_matStates` chips filtered by `_sortZoneSpareBucketForMatState`
+    // (same as `_syncSortZoneHudSortedSpriteVisibility`); no duplicate lay-preview cards.
+    if (this.step === 'spread' && !this._spreadAwaitingRemediation) {
       this._destroySortZoneLayPreview()
       return
     }
@@ -8597,7 +9884,6 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
   _enterIgnite() {
     if (this.day >= 3) {
-      this.registry.set('day3IgniteNonTinderPitMonologueDone', false)
       this._igniteDay3NonTinderPitDebuffUntil = 0
       this._day3IgniteHeatPulsePlayed = false
       this._refreshDay3WindRockInput()
@@ -8640,6 +9926,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
     this._igniteEnsureReserveHud(W, H)
     this._ensureCampsiteForestButton(W, H)
+    this._syncStackEditLayForIgnite(W, H)
     this._ensureIgniteMechanicsHud(W, H)
 
     const forestResume = this._igniteResumeFromForest
@@ -8680,7 +9967,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
       this._stepProposalShown.ignite = true
       this._destroyIgniteLayerPickUi()
       this._maybeShowIgniteForestReturnHint(forestResume)
-      this._beginIgniteMechanics()
+      this._maybeResumeIgniteFromForestTail(forestResume)
       return
     }
 
@@ -8721,7 +10008,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
               this._dialogue.showSequence(
                 [
                   {
-                speaker: 'Ren',
+                    speaker: 'Ren',
                     text: 'Bottom. The tinder. It is the only thing fine enough to catch a spark — everything else is too thick.',
                   },
                 ],
@@ -8737,23 +10024,129 @@ export class FireBuildingMinigame extends Phaser.Scene {
     )
   }
 
-  _beginIgniteMechanics() {
+  /** `irForest`: supported ignite snapshot from `_buildIgniteResumeSnapshot`, or omit/`null` for a fresh ignite mechanics start. */
+  _beginIgniteMechanics(irForest) {
+    const ir =
+      irForest != null &&
+      typeof irForest === 'object' &&
+      this._isIgniteForestResumeSupported(irForest)
+        ? irForest
+        : null
+
     this._igniteAwaitingLayerStrike = false
     this._igniteAwaitFirstStrikeForSparkUi = false
     this._destroyIgniteSparkPickPhaseUi()
     this._stopIgniteTimers()
 
-    this._igniteDecayHoldUntilNextBlow = false
+    if (!ir) this._igniteDecayHoldUntilNextBlow = false
     this._stopIgniteBlowHintPulse()
 
     this._configureIgniteDifficultyParams()
     this._igniteClickBudget = this._computeIgniteClickBudget()
-    this._igniteRenTinderLowShown = false
 
-    this._igniteMechanicsPhase = 'spark'
-    this._igniteProgress = Math.min(this._igniteProgress, IGNITE_PROGRESS_MAX)
+    let sz = normalizeStackSortZoneId(ir?.igniteSparkTargetZone)
+    if (!(sz === 'tinder' || sz === 'kindling' || sz === 'fuel_wood')) sz = null
+    if (
+      typeof ir?.igniteProposalPath === 'string' &&
+      this.day < 3 &&
+      ir.igniteProposalPath === 'pathB' &&
+      sz &&
+      sz !== 'tinder'
+    ) {
+      sz = null
+    }
+    if (sz) this._igniteSparkTargetZone = sz
+
+    const budget = Math.max(0, this._igniteClickBudget ?? 0)
+
+    if (!ir) {
+      this._igniteRenTinderLowShown = false
+      this._igniteMechanicsPhase = 'spark'
+      this._igniteProgress = Math.min(this._igniteProgress, IGNITE_PROGRESS_MAX)
+      this._igniteTotalClicks = Phaser.Math.Clamp(
+        this._igniteTotalClicks ?? 0,
+        0,
+        Math.max(budget, this._igniteTotalClicks ?? 0),
+      )
+    } else {
+      const rawClicks = Math.max(0, Math.floor(Number(ir.igniteTotalClicks) || 0))
+      this._igniteTotalClicks = Phaser.Math.Clamp(rawClicks, 0, Math.max(budget, rawClicks))
+      this._igniteProgress = Phaser.Math.Clamp(
+        Number(ir.igniteProgress) || 0,
+        0,
+        IGNITE_PROGRESS_MAX,
+      )
+
+      let phase =
+        ir.igniteMechanicsPhase === 'blow' || ir.igniteMechanicsPhase === 'spark'
+          ? ir.igniteMechanicsPhase
+          : 'spark'
+      if (phase === 'blow' && this._igniteProgress < this._igniteSmokeThresholdPct) {
+        phase = 'spark'
+      }
+      this._igniteMechanicsPhase = phase
+      if (phase === 'spark') {
+        this._igniteDecayHoldUntilNextBlow = false
+      } else {
+        this._igniteDecayHoldUntilNextBlow = !!ir.igniteDecayHoldUntilNextBlow
+      }
+
+      const midBlowShown = this.day >= 2 && phase === 'blow'
+      this._igniteSmokeRenShown = midBlowShown
+
+      if (
+        this.day >= 3 &&
+        this._igniteMechanicsPhase === 'blow' &&
+        !(
+          typeof ir.day3SparkDirection === 'string' &&
+          DAY3_WIND_CARDINALS.includes(ir.day3SparkDirection)
+        )
+      ) {
+        this._igniteMechanicsPhase = 'spark'
+        this._igniteDecayHoldUntilNextBlow = false
+        this._igniteSmokeRenShown = false
+      }
+    }
+
+    /** Head Back: retain pit wood + igniteTotalClicks; smolder dies — cold spark phase. */
+    if (ir && ir.igniteForestHeatExtinguished === true) {
+      this._igniteProgress = 0
+      this._igniteMechanicsPhase = 'spark'
+      this._igniteDecayHoldUntilNextBlow = false
+      if (this.day >= 2) this._igniteSmokeRenShown = true
+    }
+
     this._igniteLastClick = this.time.now
     this._igniteLastBlowTime = 0
+
+    if (this.day >= 3) {
+      const snapAwaitPick = !!(ir && ir.day3AwaitDirectionPick === true)
+      let cardinal =
+        ir &&
+        !snapAwaitPick &&
+        typeof ir.day3SparkDirection === 'string' &&
+        DAY3_WIND_CARDINALS.includes(ir.day3SparkDirection)
+          ? ir.day3SparkDirection
+          : null
+
+      if (
+        cardinal == null &&
+        !snapAwaitPick &&
+        typeof this._sparkDirection === 'string' &&
+        DAY3_WIND_CARDINALS.includes(this._sparkDirection)
+      )
+        cardinal = this._sparkDirection
+
+      if (cardinal) {
+        this._igniteAwaitDay3DirectionPick = false
+        this._sparkDirection = cardinal
+      } else {
+        this._igniteAwaitDay3DirectionPick = true
+        this._sparkDirection = null
+      }
+
+      this._destroyDay3SparkDirectionPicker()
+    }
 
     const W = this.scale.width
     const cx = W / 2
@@ -8763,18 +10156,41 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._setIgniteMechanicsHudVisible(true)
     this._refreshIgniteProgressUi()
 
-    this._titleText.setText(
-      'Ignite — Phase 1: Tap STRIKE to build heat (watch both bars).',
-    )
+    const applySparkPhaseHud = () => {
+      this._titleText.setText(
+        'Ignite — Phase 1: Tap STRIKE to build heat (watch both bars).',
+      )
+      this._tinderSprite?.setAlpha(0.72)
+      this._setIgniteBlowInteractive(false)
+      this._setFlintActive(true)
+      if (this._igniteMechanicsPhase === 'spark') this._stopIgniteSmokePulse()
+      this._stopIgniteBlowHintPulse()
+    }
 
-    this._tinderSprite?.setAlpha(0.72)
-    this._setIgniteBlowInteractive(false)
+    const applyBlowPhaseHud = () => {
+      this._setFlintActive(false, { igniteSparkingDisabled: true })
+      this._setIgniteBlowInteractive(true)
+      const pulse = ir?.igniteSmokePulsePhase === 'dark' ? 'dark' : 'bright'
+      this._startIgniteSmokePulse({ initialPhase: pulse })
+      this._titleText.setText(
+        'Ignite — Phase 2: Blow when smoke glows bright (warm tint), not when dim (grey).',
+      )
+      if (this.day >= 3) {
+        this._startIgniteBlowHintPulse()
+      }
+    }
+
+    if (this._igniteMechanicsPhase === 'blow') {
+      applyBlowPhaseHud()
+    } else {
+      applySparkPhaseHud()
+      this._refreshIgniteSmokePulseVisual()
+    }
+
     this._refreshIgniteStrikeAvailability()
 
-    if (this.day >= 3) {
-      this._igniteAwaitDay3DirectionPick = true
-      this._sparkDirection = null
-    } else {
+    /** Day ≥3 decay/rain waits until a strike side exists (fresh) or restores after forest resume (`_buildIgniteResumeSnapshot`). */
+    if (this.day < 3) {
       this._igniteAwaitDay3DirectionPick = false
       this._decayTimer = this.time.addEvent({
         delay: this._effectiveDecayMs,
@@ -8791,6 +10207,14 @@ export class FireBuildingMinigame extends Phaser.Scene {
           loop: true,
         })
       }
+    } else {
+      this._clearIgniteDecayRainTimersOnly()
+      if (
+        typeof this._sparkDirection === 'string' &&
+        DAY3_WIND_CARDINALS.includes(this._sparkDirection)
+      ) {
+        this._startIgniteDecayAndRainAfterDay3Direction()
+      }
     }
 
     this._idleTimer = this.time.addEvent({
@@ -8799,6 +10223,12 @@ export class FireBuildingMinigame extends Phaser.Scene {
       callbackScope: this,
       loop: true,
     })
+
+    if (this.day >= 3) {
+      this._remapDay3PlacedToCentralPitGrid()
+    }
+    this._refreshFireLaySpritePresentation()
+    this._syncStackSortedDraggability()
   }
 
   _maybePromoteIgniteToBlowPhase() {
@@ -8854,12 +10284,14 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
   _exitIgnite() {
     this._hideCampsiteForestButton()
+    this._destroyStackLayerNavUi()
     if (this.day >= 3) {
       this._day3IgniteHeatPulsePlayed = false
       this._day3KillIgniteLayHeatPulseTweens()
       this._destroyDay3SparkDirectionPicker()
       this._igniteAwaitDay3DirectionPick = false
       this._sparkDirection = null
+      this._day3WindPickWrongStreakForStamina = 0
     }
     this._stopIgniteTimers()
     this._stopIgniteSmokePulse()
@@ -8985,7 +10417,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
       this.time &&
       this.time.now < (this._igniteDay3NonTinderPitDebuffUntil ?? 0)
     ) {
-      amt *= 1.42
+      amt *= 1.72
     }
     if (this._igniteMechanicsPhase === 'blow') {
       amt *= this.day <= 2 ? 0.25 : 0.5
@@ -9025,6 +10457,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
       this._destroyDay3SparkDirectionPicker()
       this._igniteAwaitDay3DirectionPick = false
       this._sparkDirection = null
+      this._day3WindPickWrongStreakForStamina = 0
     }
     this.registry.set('ignitionSuccess', true)
     /** §4.6 — final `fireQuality` set after spread (strong / weak); cleared here so sustain reads registry truth. */
@@ -9104,16 +10537,66 @@ export class FireBuildingMinigame extends Phaser.Scene {
     })
   }
 
-  _applyDay3IgniteNonTinderPitPenalty() {
+  /** Day 3 ignite — dropped kindling/fuel on the wrong concentric pit ring (no placement). */
+  _showAidenIgniteWrongPitRingReflection(correctZone, droppedZone) {
+    const cz = normalizeStackSortZoneId(correctZone)
+    const dz = normalizeStackSortZoneId(droppedZone)
+    const key = `${cz}_${dz}`
+    const FALLBACK =
+      'That ring is wrong for what I\'m holding. I need to match the lay — fine in the center, thicker outward.'
+    const table = {
+      kindling_tinder:
+        'Kindling sits above tinder — not in the spark ring. I almost buried the glow.',
+      kindling_fuel_wood:
+        'That outer ring is for fuel wood, not thin sticks. I am mixing up the rings.',
+      fuel_wood_kindling:
+        'Heavy wood belongs outside — not cramped with the kindling. Wrong ring.',
+      fuel_wood_tinder:
+        'I almost dropped fuel on the tinder nest. The spark ring has to stay open.',
+      tinder_kindling:
+        'Tinder needs the inner nest. I dragged this to the wrong ring.',
+      tinder_fuel_wood:
+        'Fine stuff dies if I push it outward. Wrong ring.',
+    }
+    const text = table[key] ?? FALLBACK
+    if (typeof this._dialogue?.show === 'function') {
+      this._dialogue.show({
+        speaker: 'Aiden',
+        text,
+        onComplete: () => this._dialogue.hide(),
+      })
+    }
+  }
+
+  /** Each legal extra kindling/fuel into the pit during Day 3 ignite — oxygen cost + repeatable reflection. */
+  _applyDay3IgniteNonTinderPitPenalty(zoneCat) {
     if (this.day < 3 || this.step !== 'ignite') return
-    if (this.time) this._igniteDay3NonTinderPitDebuffUntil = this.time.now + 10000
-    if (this.registry.get('day3IgniteNonTinderPitMonologueDone')) return
-    this.registry.set('day3IgniteNonTinderPitMonologueDone', true)
-    this._dialogue.show({
-      speaker: 'Aiden',
-      text: 'Big pieces steal air from the spark. Not ideal — I should keep the base clear.',
-      onComplete: () => this._dialogue.hide(),
-    })
+    if (!this.time) return
+    this._igniteDay3NonTinderPitDebuffUntil = this.time.now + 16000
+
+    const kindlingLines = [
+      'More kindling steals air from the ember — I stacked too thick.',
+      'Each thin layer over the nest makes the spark breathe harder.',
+    ]
+    const fuelLines = [
+      'Heavy fuel overhead — oxygen has to weave through too much.',
+      'I should not choke the pit with bigger wood while it is barely lit.',
+    ]
+    const cat = normalizeStackSortZoneId(zoneCat)
+    let text
+    if (cat === 'kindling')
+      text = kindlingLines[Phaser.Math.Between(0, kindlingLines.length - 1)]
+    else if (cat === 'fuel_wood')
+      text = fuelLines[Phaser.Math.Between(0, fuelLines.length - 1)]
+    else text = 'Adding bulk while the spark is fragile — I starve my own flame.'
+
+    if (typeof this._dialogue?.show === 'function') {
+      this._dialogue.show({
+        speaker: 'Aiden',
+        text,
+        onComplete: () => this._dialogue.hide(),
+      })
+    }
   }
 
   /** After kindling/fuel (or other sandbox) pit place during Day 3 ignite mechanics. */
@@ -9304,7 +10787,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
   // ════════════════════════════════════════════════════════════════════════════
 
   _spreadSchedule(delayMs, cb) {
-    const ev = this.time.delayedCall(delayMs, cb)
+    const ev = this.time.delayedCall(delayMs, cb, [], this)
     this._spreadTimers.push(ev)
     return ev
   }
@@ -9584,10 +11067,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
   _enterSpread() {
     if (this.day >= 3) {
       this._day3PitLayBurnOutStarted = false
-      this._stopDay3WindFx()
       this._refreshDay3WindRockInput()
       this._restoreSortZoneLabels()
       this._remapDay3PlacedToCentralPitGrid()
+      this._day3RebuildWindBlockRects()
+      if (!this._windLeafTimer) this._startDay3WindFx()
     }
 
     this._clearSpreadTimers()
@@ -9877,13 +11361,11 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._sustainPitGlowGfx = null
   }
 
-  _day3SustainWindWarnIntervalMs() {
-    return this._campsiteQuality === 'poor'
-      ? DAY3_WIND_WARN_INTERVAL_POOR_MS
-      : DAY3_WIND_WARN_INTERVAL_GOOD_MS
-  }
-
   _cancelDay3SustainWindTimers() {
+    for (const ev of this._day3SustainScheduledGustTimers) {
+      ev?.remove?.(false)
+    }
+    this._day3SustainScheduledGustTimers = []
     if (this._day3WindWarnTimer) {
       this._day3WindWarnTimer.remove(false)
       this._day3WindWarnTimer = null
@@ -9892,9 +11374,35 @@ export class FireBuildingMinigame extends Phaser.Scene {
       this._day3WindPostGustTimer.remove(false)
       this._day3WindPostGustTimer = null
     }
+    if (this._day3SustainWarnLeafLateTimer) {
+      this._day3SustainWarnLeafLateTimer.remove(false)
+      this._day3SustainWarnLeafLateTimer = null
+    }
+    if (this._day3SustainPostGustLeafTimer) {
+      this._day3SustainPostGustLeafTimer.remove(false)
+      this._day3SustainPostGustLeafTimer = null
+    }
+    if (this._day3SustainPostGustLeafFollowTimer) {
+      this._day3SustainPostGustLeafFollowTimer.remove(false)
+      this._day3SustainPostGustLeafFollowTimer = null
+    }
+    if (this._day3GustDecayTimer) {
+      this._day3GustDecayTimer.remove(false)
+      this._day3GustDecayTimer = null
+    }
+    this._day3GustDecayActive = false
+    this._destroyDay3SustainGustDecayFacingGrab()
   }
 
   _destroyDay3SustainWindFx() {
+    this._resumeDay3GlobalFromSustainTutorial()
+    this._disposeDay3GustDecayTimersOnly()
+    this._day3GustDecayActive = false
+    this._destroyDay3SustainGustDecayFacingGrab()
+    this._day3DrainPausedForGust = false
+    this._destroyDay3SustainGustWarnHud()
+    this._destroyDay3SustainWindCullPicker()
+    this._destroyDay3SustainWindwardSilhouette()
     for (const spr of this._day3SustainWindTreeSprites) {
       if (spr?.scene) gsap.killTweensOf(spr)
       spr?.destroy()
@@ -9918,42 +11426,94 @@ export class FireBuildingMinigame extends Phaser.Scene {
         .setDepth(4000)
         .setAlpha(0)
     }
-    if (this._day3SustainWindTreeSprites.length > 0) return
-    const y = H * 0.12
-    for (let i = 0; i < 5; i++) {
-      const x = W * (0.12 + i * 0.19)
-      const t = this.add.text(x, y, '🌲', { fontSize: '38px' }).setOrigin(0.5).setDepth(4001)
-      this._day3SustainWindTreeSprites.push(t)
+    // Commit 3+: treeline sprites removed — leaf streaks cover sustain; flash only.
+    if (this._day3SustainWindTreeSprites?.length) {
+      for (const spr of this._day3SustainWindTreeSprites) {
+        if (spr?.scene) spr.destroy()
+      }
+      this._day3SustainWindTreeSprites = []
     }
   }
 
   _startDay3WindEventSchedule() {
     if (this.day < 3 || this.step !== 'sustain') return
     this._cancelDay3SustainWindTimers()
-    const iv = this._day3SustainWindWarnIntervalMs()
-    this._day3WindWarnTimer = this.time.delayedCall(iv, () => {
-      this._day3WindWarnTimer = null
-      this._runDay3WindWarningPhase()
-    })
+    /** @type {number} gustOrdinal 0..2 */
+    for (let gustOrdinal = 0; gustOrdinal < DAY3_WIND_GUST_AT_MS.length; gustOrdinal++) {
+      const abs = DAY3_WIND_GUST_AT_MS[gustOrdinal]
+      const warnAt = Math.max(0, abs - DAY3_WIND_WARN_LEAD_MS)
+      const ev = this.time.delayedCall(warnAt, () => {
+        if (this.day < 3 || this.step !== 'sustain' || this._nightComplete) return
+        this._runDay3WindWarningPhase(gustOrdinal)
+      })
+      this._day3SustainScheduledGustTimers.push(ev)
+    }
   }
 
-  _runDay3WindWarningPhase() {
+  _runDay3WindWarningPhase(gustOrdinal = 0) {
     if (this.day < 3 || this.step !== 'sustain' || this._nightComplete) return
 
+    if (
+      gustOrdinal === 0 &&
+      !this.registry.get('day3SustainTutorialShown')
+    ) {
+      this._pauseDay3GlobalForSustainTutorial()
+      showDay3SustainInfoModal(this, {
+        title: 'Before the gusts hit',
+        bodyLines: [
+          'Wind comes in timed waves.',
+          'Rocks dropped in the guide ring blunt the worst of it.',
+          'Tap the hotspots to face the breeze — body between wind and flame.',
+        ],
+        confirmLabel: 'Got it',
+        onConfirm: () => {
+          this.registry.set('day3SustainTutorialShown', true)
+          this._resumeDay3GlobalFromSustainTutorial()
+          this._runDay3WindWarningPhaseContinue(gustOrdinal)
+        },
+      })
+      return
+    }
+
+    this._runDay3WindWarningPhaseContinue(gustOrdinal)
+  }
+
+  _runDay3WindWarningPhaseContinue(gustOrdinal = 0) {
+    if (this.day < 3 || this.step !== 'sustain' || this._nightComplete) return
+
+    this.registry.remove('lastSustainGustCullMatchedWindward')
+
+    this._rollSustainGustWindDirection(gustOrdinal)
+
+    this._mountDay3SustainWindCullPicker()
     this._ensureDay3SustainWindFxNodes()
 
-    if (!this._day3SustainWindWarnIntroShown) {
-      this._day3SustainWindWarnIntroShown = true
-      this._dialogue.showSequence(
-        [
-          {
-            speaker: 'Aiden',
-            text: 'Wind is building. I can see the trees. It is about to hit.',
-          },
-        ],
-        () => this._dialogue.hide(),
-      )
+    const gustWarnLines = [
+      'Wind is building ahead.',
+      'Here it comes again.',
+      'Hope this is the last one.',
+    ]
+    const gustWarnLine =
+      gustWarnLines[
+        Math.min(Math.max(gustOrdinal, 0), gustWarnLines.length - 1)
+      ]
+
+    this._destroyDay3SustainGustWarnHud()
+    this._mountDay3SustainGustWarnHud()
+
+    this._setDay3SustainLeafPhase('warn_early')
+    if (this._day3SustainWarnLeafLateTimer) {
+      this._day3SustainWarnLeafLateTimer.remove(false)
+      this._day3SustainWarnLeafLateTimer = null
     }
+    this._day3SustainWarnLeafLateTimer = this.time.delayedCall(
+      DAY3_WIND_WARN_LEAD_MS / 2,
+      () => {
+        this._day3SustainWarnLeafLateTimer = null
+        if (this.day >= 3 && this.step === 'sustain')
+          this._setDay3SustainLeafPhase('warn_late')
+      },
+    )
 
     for (const spr of this._day3SustainWindTreeSprites) {
       if (!spr?.scene) continue
@@ -9986,55 +11546,366 @@ export class FireBuildingMinigame extends Phaser.Scene {
     }
     this._day3WindPostGustTimer = this.time.delayedCall(DAY3_WIND_WARN_LEAD_MS, () => {
       this._day3WindPostGustTimer = null
-      this._applyDay3WindGust()
+      this._applyDay3WindGust(gustOrdinal)
+    })
+
+    this._dialogue.showSequence(
+      [{ speaker: 'Aiden', text: gustWarnLine }],
+      () => this._dialogue.hide(),
+    )
+  }
+
+  _clearDay3CameraShakeFxForNewGust() {
+    try {
+      const cam = /** @type {Phaser.Cameras.Scene2D.Camera & { shakeEffect?: { reset: () => void } }} */ (
+        this.cameras.main
+      )
+      const sh = cam.shakeEffect
+      if (typeof sh?.reset === 'function') sh.reset()
+    } catch (_) {
+      try {
+        this.cameras.main?.resetFX?.()
+      } catch (_2) {
+        /* noop */
+      }
+    }
+  }
+
+  _disposeDay3GustDecayTimersAndFacingInternal() {
+    if (this._day3GustDecayTimer) {
+      this._day3GustDecayTimer.remove(false)
+      this._day3GustDecayTimer = null
+    }
+    this._day3GustDecayActive = false
+    this._destroyDay3SustainGustDecayFacingGrab()
+  }
+
+  /** When a new gust lands while decay state is unfinished (timetable glitch / overlap). */
+  _abortDay3GustDecayForOverlap() {
+    this._disposeDay3GustDecayTimersAndFacingInternal()
+    if (this._day3SustainPostGustLeafFollowTimer) {
+      this._day3SustainPostGustLeafFollowTimer.remove(false)
+      this._day3SustainPostGustLeafFollowTimer = null
+    }
+    if (this._day3SustainPostGustLeafTimer) {
+      this._day3SustainPostGustLeafTimer.remove(false)
+      this._day3SustainPostGustLeafTimer = null
+    }
+  }
+
+  _pauseSustainDrainForDay3Gust() {
+    if (this._day3DrainPausedForGust) return
+    this._day3DrainPausedForGust = true
+    if (this._drainTimer) {
+      this._drainTimer.remove(false)
+      this._drainTimer = null
+    }
+  }
+
+  _resumeSustainDrainAfterDay3Gust() {
+    if (!this._day3DrainPausedForGust) return
+    this._day3DrainPausedForGust = false
+    if (this.day >= 3 && this.step === 'sustain' && !this._nightComplete && this._sustainTimersStarted)
+      this._scheduleNextDrainTick()
+  }
+
+  /** Base tick spacing from shield tier **locked at gust landing**. */
+  _day3LockedGustShieldBaseTickMs(ws) {
+    if (ws === 'good') return 2000
+    if (ws === 'partial') return 1500
+    return 800
+  }
+
+  /**
+   * Current effective spacing (windward ⇒ **×2**), using live `day3SustainCullFacing` vs windward slot.
+   * Gust shield pacing uses `_day3GustDecayShieldTier` for `base`; windward halves **rate**.
+   */
+  _day3GustDecayEffectiveSpacingMsNow() {
+    const base = this._day3LockedGustShieldBaseTickMs(this._day3GustDecayShieldTier)
+    let windwardMatched = false
+    if (this._windDirection) {
+      const { windward } = day3WindSlotRoles(this._windDirection)
+      const faced = this.registry.get('day3SustainCullFacing')
+      if (windward && typeof faced === 'string' && faced === windward) windwardMatched = true
+    }
+    return windwardMatched ? base * 2 : base
+  }
+
+  /**
+   * @returns {number | null} delay until next gust tick (`null` if decay window exhausted).
+   */
+  _day3NextGustDecayDelayMsNow() {
+    if (!this._day3GustDecayActive) return null
+    const now = this.time.now
+    const remain = this._day3GustDecayDeadlineMs - now
+    if (remain <= 0) return null
+    const eff = this._day3GustDecayEffectiveSpacingMsNow()
+    return Math.min(eff, remain)
+  }
+
+  _tickDay3GustFireBumpFromWind() {
+    const wd = this._windDirection
+    if (!this._fireIcon?.scene || !wd || !DAY3_WIND_CARDINALS.includes(wd)) return
+    const { leeward } = day3WindSlotRoles(wd)
+    const leeDisp =
+      /** @type {Record<'north'|'south'|'east'|'west', { x: number, y: number }>} */ ({
+      north: { x: 0, y: 1 },
+      south: { x: 0, y: -1 },
+      east: { x: -1, y: 0 },
+      west: { x: 1, y: 0 },
+    })
+    /** @type {'north'|'south'|'east'|'west'|undefined} */
+    const lee = /** @type {'north'|'south'|'east'|'west'|undefined} */ (leeward)
+    const imp = lee ? leeDisp[lee] : null
+    if (!imp) return
+    gsap.killTweensOf(this._fireIcon)
+    const bx = this._fireIcon.x
+    const by = this._fireIcon.y
+    const kick = Phaser.Math.Between(4, 7)
+    gsap.timeline().to(this._fireIcon, {
+      x: bx + imp.x * kick + Phaser.Math.Between(-1, 1),
+      y: by + imp.y * kick + Phaser.Math.Between(-1, 1),
+      duration: 0.1,
+      ease: 'power2.out',
+      onComplete: () => {
+        if (!this._fireIcon?.scene) return
+        gsap.to(this._fireIcon, {
+          x: bx,
+          y: by,
+          duration: 0.1,
+          ease: 'sine.out',
+        })
+      },
     })
   }
 
-  _applyDay3WindGust() {
+  _destroyDay3SustainGustDecayFacingGrab() {
+    for (const o of this._day3SustainGustDecayFacingObjs ?? []) {
+      try {
+        o?.destroy?.()
+      } catch (_) {
+        /* noop */
+      }
+    }
+    this._day3SustainGustDecayFacingObjs = []
+  }
+
+  /**
+   * Draggable hotspots (no caption) — tap to re-seat `day3SustainCullFacing` mid-gust; windward pacing updates next tick.
+   */
+  _mountDay3SustainGustDecayFacingGrab() {
+    if (this.day < 3 || this.step !== 'sustain') return
+    this._destroyDay3SustainGustDecayFacingGrab()
+    this._ensureDay3WindDirection()
+    if (!this._windSlotCenters) this._buildDay3WindSlots()
+    const centers = this._windSlotCenters
+    if (!centers) return
+    const r = DAY3_SPARK_DIRECTION_HOTSPOT_R * 1.06
+    const dimFill = 0.06
+    for (const id of DAY3_WIND_CARDINALS) {
+      const c = centers[id]
+      if (!c) continue
+      const arc = this.add
+        .circle(c.x, c.y, r, 0xc8e0ff, dimFill)
+        .setStrokeStyle(2, 0xa8cce8, 0.22)
+        .setDepth(4588)
+        .setScrollFactor(0)
+        .setInteractive(new Phaser.Geom.Circle(0, 0, r), Phaser.Geom.Circle.Contains)
+      arc.on('pointerup', () => {
+        if (this.step !== 'sustain' || this._nightComplete || !this._day3GustDecayActive) return
+        this.registry.set('day3SustainCullFacing', id)
+        this._ensureDay3SustainWindwardSilhouette()
+        this._disposeDay3GustDecayTimersOnly()
+        this._scheduleDay3GustDecayTickChain()
+      })
+      this._day3SustainGustDecayFacingObjs.push(arc)
+    }
+  }
+
+  _scheduleDay3GustDecayTickChain() {
+    this._disposeDay3GustDecayTimersOnly()
+    const d = this._day3NextGustDecayDelayMsNow()
+    if (d === null) {
+      this._finishDay3GustDecayPhase(this._day3GustDecayOrdinal ?? 0)
+      return
+    }
+    const wait = Math.max(1, Math.floor(d))
+    this._day3GustDecayTimer = this.time.delayedCall(wait, () => {
+      this._day3GustDecayTimer = null
+      this._runScheduledDay3GustDecayStrengthTick()
+    })
+  }
+
+  _disposeDay3GustDecayTimersOnly() {
+    if (this._day3GustDecayTimer) {
+      this._day3GustDecayTimer.remove(false)
+      this._day3GustDecayTimer = null
+    }
+  }
+
+  _runScheduledDay3GustDecayStrengthTick() {
+    if (!(this.day >= 3 && this.step === 'sustain') || this._nightComplete || !this._day3GustDecayActive) {
+      this._disposeDay3GustDecayTimersAndFacingInternal()
+      this._resumeSustainDrainAfterDay3Gust()
+      return
+    }
+
+    if (this.time.now >= this._day3GustDecayDeadlineMs) {
+      this._finishDay3GustDecayPhase(this._day3GustDecayOrdinal ?? 0)
+      return
+    }
+
+    const prev = this._fireStrength
+    const snap = Phaser.Math.Clamp(prev - 1, 0, this._strengthCeiling)
+    const lethalGustKill = prev > 0 && snap === 0
+    const opts = lethalGustKill
+      ? { deferFireOutMs: DAY3_WIND_GUST_FIREOUT_DELAY_MS, cause: 'day3_gust' }
+      : /** @type {{ cause: string, deferFireOutMs?: number }} */ ({ cause: 'day3_gust' })
+
+    this._adjustStrength(-1, opts)
+
+    // Deferred lethal fire-out (~1.25 s `_onFireOut`): gust machinery stops now — drain resumes only after `_stopSustainTimers`.
+    if (this._fireStrength <= 0 && lethalGustKill && typeof opts.deferFireOutMs === 'number') {
+      this._disposeDay3GustDecayTimersAndFacingInternal()
+      return
+    }
+
+    // Synchronous `_onFireOut` path on lethal tick without defer — `_adjustStrength` nested `_onFireOut` exited sustain.
+    if (!(this.day >= 3 && this.step === 'sustain') || this._nightComplete || !this._day3GustDecayActive) return
+
+    if (this._windDirection) {
+      const { windward } = day3WindSlotRoles(this._windDirection)
+      const faced = this.registry.get('day3SustainCullFacing')
+      if (windward && typeof faced === 'string' && faced === windward)
+        this.registry.set('lastSustainGustCullMatchedWindward', true)
+    }
+
+    this._tickDay3GustFireBumpFromWind()
+
+    if (!(this.day >= 3 && this.step === 'sustain') || this._nightComplete || !this._day3GustDecayActive) return
+
+    if (this.time.now >= this._day3GustDecayDeadlineMs || this._fireStrength <= 0) {
+      const ord = this._day3GustDecayOrdinal ?? 0
+      this._finishDay3GustDecayPhase(ord)
+      return
+    }
+
+    this._scheduleDay3GustDecayTickChain()
+  }
+
+  /**
+   * Ends sustained gust decay timer, restores drain, resumes leaf cadence, optional A2 line (gust1).
+   */
+  _finishDay3GustDecayPhase(gustOrdinal) {
+    this._disposeDay3GustDecayTimersAndFacingInternal()
+    this._clearDay3CameraShakeFxForNewGust()
+    this._resumeSustainDrainAfterDay3Gust()
+
+    if (this.day >= 3 && this.step === 'sustain' && !this._nightComplete && this._fireStrength > 0) {
+      this._queueDay3WindLeafBatch()
+
+      if (this._day3SustainPostGustLeafFollowTimer) {
+        this._day3SustainPostGustLeafFollowTimer.remove(false)
+        this._day3SustainPostGustLeafFollowTimer = null
+      }
+      if (this._day3SustainPostGustLeafTimer) {
+        this._day3SustainPostGustLeafTimer.remove(false)
+        this._day3SustainPostGustLeafTimer = null
+      }
+      this._day3SustainPostGustLeafTimer = this.time.delayedCall(380, () => {
+        this._day3SustainPostGustLeafTimer = null
+        if (!(this.day >= 3 && this.step === 'sustain')) return
+        this._setDay3SustainLeafPhase('post_gust')
+        this._day3SustainPostGustLeafFollowTimer = this.time.delayedCall(820, () => {
+          this._day3SustainPostGustLeafFollowTimer = null
+          if (this.day >= 3 && this.step === 'sustain') this._setDay3SustainLeafPhase('calm')
+        })
+      })
+
+      if (
+        gustOrdinal === 1 &&
+        !this.registry.get('day3SustainShieldAttributionShown')
+      ) {
+        const wsAtt = this.registry.get('windShield')
+        const tier =
+          wsAtt === 'good' || wsAtt === 'partial' || wsAtt === 'none' ? wsAtt : 'none'
+        const shieldLine =
+          tier === 'good'
+            ? 'The rocks held.'
+            : tier === 'partial'
+              ? "Wind's still finding its way in."
+              : 'Nothing in its way.'
+        this.registry.set('day3SustainShieldAttributionShown', true)
+        this._dialogue.showSequence([{ speaker: 'Aiden', text: shieldLine }], () => this._dialogue.hide())
+      }
+    }
+  }
+
+  /** @param gustOrdinal Sustain night gust index 0, 1, or 2 (absolute 8 / 16 / 24 s timetable). */
+  _applyDay3WindGust(gustOrdinal = 0) {
     if (this.day < 3 || this.step !== 'sustain' || this._nightComplete) return
 
-    const ws = this.registry.get('windShield')
-    if (ws === 'good' || ws === 'partial' || ws === 'none') this._windShield = ws
+    const wsR = this.registry.get('windShield')
+    if (wsR === 'good' || wsR === 'partial' || wsR === 'none') this._windShield = wsR
 
-    const delta =
-      this._windShield === 'good' ? -1 : this._windShield === 'partial' ? -2 : -3
+    this.registry.remove('lastSustainGustCullMatchedWindward')
 
-    this._adjustStrength(delta)
+    const hadStaleDecay = !!(this._day3GustDecayActive || this._day3GustDecayTimer)
+    if (hadStaleDecay) this._abortDay3GustDecayForOverlap()
 
-    if (this._fireStrength === 0 || this._nightComplete) return
+    this._destroyDay3SustainGustWarnHud()
 
-    if (this._fireIcon?.scene) {
-      gsap.killTweensOf(this._fireIcon)
-      this._fireIcon.setScale(1)
-      gsap
-        .timeline()
-        .to(this._fireIcon, { scale: 1.18, duration: 0.06 })
-        .to(this._fireIcon, { scale: 1, duration: 0.12, ease: 'power2.out' })
+    if (this._day3SustainPostGustLeafFollowTimer) {
+      this._day3SustainPostGustLeafFollowTimer.remove(false)
+      this._day3SustainPostGustLeafFollowTimer = null
+    }
+    if (this._day3SustainPostGustLeafTimer) {
+      this._day3SustainPostGustLeafTimer.remove(false)
+      this._day3SustainPostGustLeafTimer = null
     }
 
-    if (!this._day3SustainWindGustHitShown) {
-      this._day3SustainWindGustHitShown = true
-      this._dialogue.showSequence(
-        [{ speaker: 'Aiden', text: 'Should have added fuel before that gust.' }],
-        () => this._dialogue.hide(),
-      )
+    this._pauseSustainDrainForDay3Gust()
+
+    this._clearDay3CameraShakeFxForNewGust()
+    const gOrd = Math.min(2, Math.max(0, gustOrdinal))
+    const durMs = gOrd >= 2 ? DAY3_GUST_DECAY_MS_LAST : DAY3_GUST_DECAY_MS_PAIR
+    try {
+      this.cameras.main.shake(durMs, 0.002)
+    } catch (_) {
+      try {
+        this.cameras.main.shake(durMs, 0.002)
+      } catch (_2) {
+        /* noop */
+      }
     }
 
-    if (this._nightComplete || this.step !== 'sustain') return
+    this._day3GustDecayShieldTier =
+      wsR === 'good' || wsR === 'partial' || wsR === 'none' ? wsR : 'none'
+    this._day3GustDecayOrdinal = gOrd
+    this._day3GustDecayDeadlineMs = this.time.now + durMs
+    this._day3GustDecayActive = true
 
-    const iv = this._day3SustainWindWarnIntervalMs()
-    const delayNext = Math.max(400, iv - DAY3_WIND_WARN_LEAD_MS)
-    this._day3WindWarnTimer = this.time.delayedCall(delayNext, () => {
-      this._day3WindWarnTimer = null
-      this._runDay3WindWarningPhase()
-    })
+    this._setDay3SustainLeafPhase('gust_burst')
+    if (this._windLeafTimer) {
+      this._windLeafTimer.remove(false)
+      this._windLeafTimer = null
+    }
+    this._spawnDay3WindLeafBatch()
+    this._queueDay3WindLeafBatch()
+
+    this._mountDay3SustainGustDecayFacingGrab()
+    this._scheduleDay3GustDecayTickChain()
   }
 
   _enterSustain() {
     if (this.day >= 3) {
-      this._stopDay3WindFx()
       this._refreshDay3WindRockInput()
       this._remapDay3PlacedToCentralPitGrid()
+      this._day3RebuildWindBlockRects()
+      if (!this._windLeafTimer) this._startDay3WindFx()
+      this.registry.remove('day3SustainCullFacing')
+      this.registry.remove('lastSustainGustCullMatchedWindward')
+      this.registry.remove('day3SustainShieldAttributionShown')
     }
 
     const W = this.scale.width
@@ -10058,15 +11929,18 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._nightComplete = false
     this._nightBarProgressFloor = 0
 
-    this._nightTotalMs = SUSTAIN_NIGHT_TOTAL_MS
+    this._nightTotalMs =
+      this.day >= 3 ? SUSTAIN_NIGHT_TOTAL_MS_DAY3 : SUSTAIN_NIGHT_TOTAL_MS_DAY2
     this._sustainTinderBurdenUntil = 0
     this._sustainFuelSlowUntil = 0
     this._sustainFuelUsedCount = 0
     this._sustainRenHintThreeShown = false
     this._sustainRenFloodIntroShown = false
-    this._day3SustainWindWarnIntroShown = false
-    this._day3SustainWindGustHitShown = false
     this._day3SustainFuelWasteEarlyShown = false
+    if (this.day >= 3) {
+      this._day3SustainLeafPhase = 'calm'
+      this._day3SustainTookWindwardLineShown = false
+    }
 
     this._syncStackLayRegistry()
     this._rebuildSustainBackupKeysFromSortedMatStates()
@@ -10160,12 +12034,14 @@ export class FireBuildingMinigame extends Phaser.Scene {
     this._applySustainReserveSpritePresentation()
     this._refreshFireLaySpritePresentation()
     beginTimers()
+    if (this.day >= 3) this._ensureDay3SustainWindwardSilhouette()
     this._refreshSustainBackupUi()
   }
 
   _exitSustain() {
     this._stopSustainTimers()
     this._sustainTimersStarted = false
+    this._destroyDay3SustainWindCullPicker()
     this._destroyDay3SustainWindFx()
     this._destroySustainBackupUi()
     this._hideSortZonesUnderSustainReservePanels(false)
@@ -10210,11 +12086,14 @@ export class FireBuildingMinigame extends Phaser.Scene {
 
   _drainStrength() {
     if (this._nightComplete) return
-    this._adjustStrength(-1)
+    this._adjustStrength(-1, { cause: 'sustain_drain' })
   }
 
-  _adjustStrength(delta) {
+  _adjustStrength(delta, opts) {
     const prev = this._fireStrength
+    if (delta < 0 && opts?.cause) {
+      this._lastNegativeStrengthCause = opts.cause
+    }
     this._fireStrength = Phaser.Math.Clamp(
       this._fireStrength + delta, 0, this._strengthCeiling
     )
@@ -10240,7 +12119,20 @@ export class FireBuildingMinigame extends Phaser.Scene {
       })
     }
 
-    if (this._fireStrength === 0) this._onFireOut()
+    if (this._fireStrength === 0 && prev !== 0) {
+      const def = opts?.deferFireOutMs
+      if (typeof def === 'number' && def > 0 && this.day >= 3 && this.step === 'sustain') {
+        this.time.delayedCall(def, () => {
+          if (!this.sys) return
+          if (this.step !== 'sustain' || this._nightComplete) return
+          if (this._fireStrength !== 0) return
+          this._onFireOut()
+        })
+        return
+      }
+      this._onFireOut()
+      return
+    }
   }
 
   _tickNight() {
@@ -10275,7 +12167,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
       if (this.step === 'sustain') this._refreshSustainBackupUi()
     })
 
-    this._adjustStrength(-1)
+    this._adjustStrength(-1, { cause: 'flood' })
   }
 
   _onFireOut() {
@@ -10309,8 +12201,21 @@ export class FireBuildingMinigame extends Phaser.Scene {
             goRelightFromBackup()
           },
         )
-      } else {
-        goRelightFromBackup()
+      } else if (this.day >= 3) {
+        const c = this._lastNegativeStrengthCause
+        const line =
+          c === 'day3_gust'
+            ? 'Wind sheared it.\nThere is scrap left — tuck in quick.'
+            : c === 'sustain_drain'
+              ? 'Gone thin before I could steal more.\nFuel from the reserve.'
+              : 'Out cold.\nScrap left if you hurry.'
+        this._dialogue.showSequence(
+          [{ speaker: 'Aiden', text: line }],
+          () => {
+            this._dialogue.hide()
+            goRelightFromBackup()
+          },
+        )
       }
       return
     }
@@ -10320,13 +12225,13 @@ export class FireBuildingMinigame extends Phaser.Scene {
         [{ speaker: 'Ren', text: 'No fuel, no fire. That is it.' }],
         () => {
           this._dialogue.hide()
-    stamina?.deduct(2)
+          stamina?.deduct(2)
           this.time.delayedCall(1000, () => this._emitDayFail('fire_campsite'))
         },
       )
     } else {
-    stamina?.deduct(2)
-    this.time.delayedCall(1000, () => this._emitDayFail('fire_campsite'))
+      stamina?.deduct(2)
+      this.time.delayedCall(1000, () => this._emitDayFail('fire_campsite'))
     }
   }
 
@@ -10384,7 +12289,13 @@ export class FireBuildingMinigame extends Phaser.Scene {
       return
     }
 
-    finishOutcome()
+    this._dialogue.showSequence(
+      [{ speaker: 'Aiden', text: 'Still standing. Thin, but dawn.' }],
+      () => {
+        this._dialogue.hide()
+        finishOutcome()
+      },
+    )
   }
 
   _stopSustainTimers() {
@@ -10392,6 +12303,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
     if (this._nightTimer) { this._nightTimer.remove(); this._nightTimer = null }
     if (this._floodTimer) { this._floodTimer.remove(); this._floodTimer = null }
     this._cancelDay3SustainWindTimers()
+    if (this._day3DrainPausedForGust) this._day3DrainPausedForGust = false
     if (this.day >= 3) {
       for (const spr of this._day3SustainWindTreeSprites) {
         if (spr?.scene) gsap.killTweensOf(spr)
@@ -10405,6 +12317,7 @@ export class FireBuildingMinigame extends Phaser.Scene {
   shutdown() {
     this._cancelDay3SustainWindTimers()
     this._destroyDay3SustainWindFx()
+    this._destroyDay3WindRingGfx()
     this._cleanupDay3WindStripAnimations(true)
     this._stopDay3WindFx()
   }
