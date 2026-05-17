@@ -139,7 +139,10 @@ export class BootScene extends Phaser.Scene {
     }
 
     if (DEV_MOCK_FIRE_BUILDING) {
-      seedFireBuildingMockRegistry(this.registry)
+      seedFireBuildingMockRegistry(this.registry, {
+        width:  this.scale.width,
+        height: this.scale.height,
+      })
       this.scene.launch('HUDScene')
       const payload = getFireBuildingMockPayload()
       // `collect` lives in FireBuildingCollect — campsite flow scene key is FireCampsiteMinigame.

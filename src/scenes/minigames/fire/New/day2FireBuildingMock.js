@@ -6,13 +6,116 @@
  *   2. Set MOCK_CONFIG.startStep — collect launches FireBuildingCollect; others → FireCampsiteMinigame.
  *   3. Optional MOCK_CONFIG.day — use `3` with `startStep: 'ignite'` for Day 3 cold-start from registry stack/sort.
  *   4. Use mockPreset `'ideal' | 'mixed' | 'bad'` for quantity‑consistent stacks / reserves / qualities.
+ *   5. When active, FireBuildingMinigame emits DAY_ADVANCE so HUD shows the same day as MOCK_CONFIG.day.
+ *   6. Day 3: `mockWindRingStones` seeds `day3WindRingRockPositions` (12 rocks); `mockExtraReserves` overrides
+ *      reserve pile counts for sustain testing (when `startStep` ≥ ignite).
  *
  * Data flow (registry): Collect → collectedMaterials → Sort → sortedMaterials → Stack → stackData +
  * reserveMaterials → Ignite / Spread / Sustain (reserveMaterials stays live via `_syncStackLayRegistry`).
  */
 
+/** Keep in sync with `DAY3_WIND_RING_INNER_R` / `DAY3_WIND_RING_OUTER_R` in FireBuildingMinigame.js */
+const DAY3_WIND_RING_INNER_R = 148
+const DAY3_WIND_RING_OUTER_R = 195
+
+/**
+ * Default scatter XY for rocks 0–11 — keep in sync with `_buildDay3Rocks` in FireBuildingMinigame.js
+ * (pit-centred, `cx = W/2`, `cy = H * 0.46`).
+ */
+function _day3RockScatterPositions(W, H) {
+  const cx = W / 2
+  const cy = H * 0.46
+  return [
+    { x: cx - 400, y: cy + 135 },
+    { x: cx - 315, y: cy + 198 },
+    { x: cx - 230, y: cy + 152 },
+    { x: cx - 135, y: cy + 225 },
+    { x: cx - 40, y: cy + 188 },
+    { x: cx + 55, y: cy + 232 },
+    { x: cx + 150, y: cy + 168 },
+    { x: cx + 238, y: cy + 215 },
+    { x: cx + 330, y: cy + 158 },
+    { x: cx + 418, y: cy + 198 },
+    { x: cx - 360, y: cy + 95 },
+    { x: cx + 360, y: cy + 102 },
+  ]
+}
+
+/**
+ * @param {number} W
+ * @param {number} H
+ * @param {number} nInRing 0 | 4 | 8
+ * @returns {{ index: number, x: number, y: number }[]}
+ */
+function _buildDay3WindRingRockPositionsForMock(W, H, nInRing) {
+  const scatter = _day3RockScatterPositions(W, H)
+  const cx = W / 2
+  const cy = H * 0.46
+  const midR = (DAY3_WIND_RING_INNER_R + DAY3_WIND_RING_OUTER_R) / 2
+  const out = []
+  const ringIndices =
+    nInRing === 8 ? [0, 1, 2, 3, 4, 5, 6, 7] : nInRing === 4 ? [0, 1, 2, 3] : []
+  const scatterIndices = []
+  for (let i = 0; i < 12; i++) {
+    if (!ringIndices.includes(i)) scatterIndices.push(i)
+  }
+  for (let k = 0; k < ringIndices.length; k++) {
+    const idx = ringIndices[k]
+    const theta = (k / Math.max(ringIndices.length, 1)) * Math.PI * 2 - Math.PI / 2
+    out.push({
+      index: idx,
+      x: cx + Math.cos(theta) * midR,
+      y: cy + Math.sin(theta) * midR,
+    })
+  }
+  for (const idx of scatterIndices) {
+    const p = scatter[idx]
+    out.push({ index: idx, x: p.x, y: p.y })
+  }
+  out.sort((a, b) => a.index - b.index)
+  return out
+}
+
+/**
+ * @param {{ tinder?: number, kindling?: number, fuel_wood?: number }} extra
+ * @returns {Array<{ id: string, type: string, quality: string }>}
+ */
+function _buildMockExtraReserveMaterials(extra) {
+  const tinder = extra.tinder ?? 0
+  const kindling = extra.kindling ?? 0
+  const fuel = extra.fuel_wood ?? 0
+  /** @type {Array<{ id: string, type: string, quality: string }>} */
+  const arr = []
+  const tIds = ['dry_leaves', 'dry_grass', 'dry_grass_2', 'dry_leaves_rsv4', 'dry_grass_rsv5']
+  for (let i = 0; i < tinder; i++) {
+    arr.push({
+      id: tIds[i] ?? `dry_grass_rsv_${i}`,
+      type: 'tinder',
+      quality: 'GOOD',
+    })
+  }
+  const kIds = ['dry_twigs', 'thin_branch', 'thin_branch_2', 'thin_branch_rsv3', 'thin_branch_rsv4', 'thin_branch_rsv5']
+  for (let i = 0; i < kindling; i++) {
+    arr.push({
+      id: kIds[i] ?? `thin_branch_rsv_${i}`,
+      type: 'kindling',
+      quality: 'GOOD',
+    })
+  }
+  const fIds = ['thick_branch', 'pine_cone', 'pine_cone_rsv2', 'pine_cone_rsv3', 'pine_cone_rsv4']
+  for (let i = 0; i < fuel; i++) {
+    const id = fIds[i] ?? `pine_cone_rsv_${i}`
+    arr.push({
+      id,
+      type: 'fuel_wood',
+      quality: id.includes('pine') ? 'MID' : 'GOOD',
+    })
+  }
+  return arr
+}
+
 /** Master switch — set true to bypass OnboardingScene and jump straight to the minigame. */
-export const DEV_MOCK_FIRE_BUILDING = true
+export const DEV_MOCK_FIRE_BUILDING = false
 
 const STEP_ORDER = ['ren_intro', 'clear', 'collect', 'sort', 'stack', 'ignite', 'spread', 'sustain']
 // Ink day2/day3: `# minigame:fire_campsite` → ren_intro → clear; collect only inside campsite (`devFireBuildChain`), not an Ink minigame tag.
@@ -182,7 +285,7 @@ export const MOCK_PRESETS = {
 export const MOCK_CONFIG = {
   /** `2` | `3` — set to 3 to run Day 3 flow. */
   day: 3,
-  startStep: 'stack',
+  startStep: 'ignite',
   /** `'ideal'` | `'mixed'` | `'bad'` — drives collected / sorted / stack / reserve coherence. */
   mockPreset: 'ideal',
   campsiteQuality: 'good',
@@ -198,6 +301,20 @@ export const MOCK_CONFIG = {
   windDirection: null,
   /** Dev-only sustain tests: freeze windShield outcome (`'good'` | `'partial'` | `'none'`). */
   mockWindShield: null,
+  /**
+   * Seeds `day3WindRingRockPositions` when day 3 and `startStep` ≥ ignite — rock layout for wind ring QA.
+   * `'full'` (8 in ring) | `'partial'` (4) | `'none'` | `null` (skip, legacy behavior).
+   */
+  mockWindRingStones: /** @type {'full' | 'partial' | 'none' | null} */ ('full'),
+  /**
+   * Overrides preset `reserveMaterials` with explicit counts (unique reserve ids for hydration).
+   * Default gives 7 pieces for 45s sustain tests: tinder 2, kindling 3, fuel 2.
+   */
+  mockExtraReserves: /** @type {{ tinder: number, kindling: number, fuel_wood: number } | null} */ ({
+    tinder:    2,
+    kindling:  3,
+    fuel_wood: 2,
+  }),
 }
 
 // ── Registry seeding ──────────────────────────────────────────────────────────
@@ -206,8 +323,9 @@ export const MOCK_CONFIG = {
  * Write mock state into the Phaser registry before launching the scene.
  * Called from BootScene.create() when DEV_MOCK_FIRE_BUILDING is true.
  * @param {Phaser.Data.DataManager} registry
+ * @param {{ width: number, height: number }} [view] — pass `this.scale.width/height` so ring rock XY match the campsite pit.
  */
-export function seedFireBuildingMockRegistry(registry) {
+export function seedFireBuildingMockRegistry(registry, view) {
   const cfg = MOCK_CONFIG
   const idx = STEP_ORDER.indexOf(cfg.startStep)
   const presetKey = cfg.mockPreset ?? 'ideal'
@@ -245,7 +363,24 @@ export function seedFireBuildingMockRegistry(registry) {
       ]
     }
     registry.set('stackData', sd)
-    registry.set('reserveMaterials', _deepClone(preset.reserveMaterials))
+    let reserves = _deepClone(preset.reserveMaterials)
+    if (day >= 3 && cfg.mockExtraReserves && typeof cfg.mockExtraReserves === 'object') {
+      reserves = _buildMockExtraReserveMaterials(cfg.mockExtraReserves)
+    }
+    registry.set('reserveMaterials', reserves)
+  }
+
+  if (
+    day >= 3 &&
+    idx >= STEP_ORDER.indexOf('ignite') &&
+    cfg.mockWindRingStones !== null &&
+    typeof cfg.mockWindRingStones === 'string'
+  ) {
+    const W = view?.width ?? 1280
+    const H = view?.height ?? 720
+    const mode = cfg.mockWindRingStones
+    const nInRing = mode === 'full' ? 8 : mode === 'partial' ? 4 : 0
+    registry.set('day3WindRingRockPositions', _buildDay3WindRingRockPositionsForMock(W, H, nInRing))
   }
 
   if (idx >= STEP_ORDER.indexOf('spread')) {
@@ -273,13 +408,15 @@ export function getFireBuildingMockPayload() {
     WIND_DIRS[Math.floor(Math.random() * WIND_DIRS.length)]
 
   return {
-    day:               MOCK_CONFIG.day ?? 2,
-    startStep:         MOCK_CONFIG.startStep,
-    campsiteQuality:   MOCK_CONFIG.campsiteQuality,
-    spreadDevScenario: MOCK_CONFIG.spreadDevScenario ?? null,
-    mockPreset:        MOCK_CONFIG.mockPreset ?? 'ideal',
-    windDirection:     (MOCK_CONFIG.day ?? 2) >= 3 ? windDirection : undefined,
-    mockWindShield:    (MOCK_CONFIG.day ?? 2) >= 3 ? MOCK_CONFIG.mockWindShield : undefined,
+    day:                 MOCK_CONFIG.day ?? 2,
+    startStep:           MOCK_CONFIG.startStep,
+    campsiteQuality:     MOCK_CONFIG.campsiteQuality,
+    spreadDevScenario:   MOCK_CONFIG.spreadDevScenario ?? null,
+    mockPreset:          MOCK_CONFIG.mockPreset ?? 'ideal',
+    windDirection:       (MOCK_CONFIG.day ?? 2) >= 3 ? windDirection : undefined,
+    mockWindShield:      (MOCK_CONFIG.day ?? 2) >= 3 ? MOCK_CONFIG.mockWindShield : undefined,
+    mockWindRingStones:  (MOCK_CONFIG.day ?? 2) >= 3 ? MOCK_CONFIG.mockWindRingStones : undefined,
+    mockExtraReserves:   (MOCK_CONFIG.day ?? 2) >= 3 ? MOCK_CONFIG.mockExtraReserves : undefined,
   }
 }
 

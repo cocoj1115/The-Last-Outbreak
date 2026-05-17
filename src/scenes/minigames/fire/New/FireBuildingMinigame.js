@@ -381,7 +381,7 @@ const SORT_PACK_HUD_Y_FROM_BOTTOM  = 48
 
 const ZONE_W        = 210
 const ZONE_H        = 100
-/** Lay-preview steps (Day 3+ / dev); Day 2 skips static preview — uses `_layoutDay2SortZoneReserveChipGrid` + live rects only. */
+/** Lay-preview placeholders (`sort` tutorial; `spread` remediation layout). Ignite uses live `_matStates` sprites only. */
 const SORT_ZONE_LAY_PREVIEW_STEPS = ['sort', 'spread']
 /** Concentric pit ring graphics — below placed wood + cross-section. */
 const STACK_PIT_RINGS_GRAPHIC_DEPTH = 2
@@ -9831,12 +9831,6 @@ export class FireBuildingMinigame extends Phaser.Scene {
   /** Show lay preview on these steps; hide and destroy nodes when leaving the fire-lay HUD. */
   _refreshSortZoneLayPreview() {
     this._syncSortZoneHudSortedSpriteVisibility()
-    if (
-      this.day === 2 &&
-      ['sort', 'stack', 'ignite', 'spread', 'sustain'].includes(this.step)
-    ) {
-      this._layoutDay2SortZoneReserveChipGrid()
-    }
     if (SORT_ZONE_LAY_PREVIEW_STEPS.includes(this.step)) {
       this._buildSortZoneLayPreview()
     } else {
@@ -9931,89 +9925,6 @@ export class FireBuildingMinigame extends Phaser.Scene {
   }
 
   /**
-   * Day 2 — grid spare piles per bucket using the same geometry as `_buildSortZoneLayPreview` reserves (no ±16 jitter).
-   * Stack/ignite used only two X offsets → overlapping rects when spare > 1; keep layout stable across phases.
-   */
-  _layoutDay2SortZoneReserveChipGrid() {
-    const padX = 12
-    const gap = 8
-    const rowGap = 10
-    const zoneBottomPad = 8
-    const labelBelow = 4
-
-    const sortedInZoneBucket = (defId) =>
-      Object.values(this._matStates).filter((s) => {
-        if (s.phase !== 'sorted' || !s.isSortable || !s.sprite?.scene) return false
-        if (isDay3ZeroFireMaterial(s.id) || s.quality === 'BAD') return false
-        const cat = normalizeStackSortZoneId(s.sortZoneId || correctSortZoneForMatId(s.id))
-        if (cat !== defId) return false
-        if (this._sortZoneSpareBucketForMatState(s) === defId) return true
-        return (
-          this.step === 'spread' &&
-          this._spreadAwaitingRemediation &&
-          this._spreadRemediationZone === defId &&
-          correctSortZoneForMatId(s.id) === defId
-        )
-      })
-
-    for (const def of SORT_ZONE_DEFS) {
-      const zone = this._sortZones[def.id]
-      if (!zone) continue
-      const chips = sortedInZoneBucket(def.id)
-      chips.sort((a, b) => this._pileKeySortOrder(a, b))
-      const n = chips.length
-      if (!n) continue
-
-      const innerW = ZONE_W - padX * 2
-      let cols = n
-      let rows = 1
-      let scale = innerW / (cols * ITEM_W + (cols - 1) * gap)
-      if (scale < 0.38 && n > 2) {
-        rows = 2
-        cols = Math.ceil(n / 2)
-        scale = innerW / (cols * ITEM_W + (cols - 1) * gap)
-      }
-      scale = Phaser.Math.Clamp(scale, 0.32, 0.68)
-
-      const w = ITEM_W * scale
-      const h = ITEM_H * scale
-      const fontPx = Math.max(8, Math.min(11, Math.round(11 * scale)))
-      const wrapW = Math.ceil(w + gap)
-      const rowLaneH = h + labelBelow + fontPx + 2
-      const zoneBottom = zone.y + ZONE_H / 2 - zoneBottomPad
-      const blockH = rows * rowLaneH + (rows - 1) * rowGap
-
-      for (let r = 0; r < rows; r++) {
-        const rowItems = chips.slice(r * cols, r * cols + cols)
-        const rowLen = rowItems.length
-        const rowW = rowLen * w + (rowLen - 1) * gap
-        const rowCenterY =
-          zoneBottom - blockH + r * (rowLaneH + rowGap) + h / 2
-
-        for (let c = 0; c < rowLen; c++) {
-          const st = rowItems[c]
-          const cx = zone.x - rowW / 2 + w / 2 + c * (w + gap)
-          st.zonePos = { x: cx, y: rowCenterY }
-          const spr = st.sprite
-          spr.setPosition(cx, rowCenterY)
-          if (typeof spr.setSize === 'function') spr.setSize(w, h)
-          else if (typeof spr.setDisplaySize === 'function') spr.setDisplaySize(w, h)
-          const lb = st.label
-          if (lb) {
-            lb.setPosition(cx, rowCenterY + h / 2 + labelBelow)
-            lb.setStyle({
-              fontSize: `${fontPx}px`,
-              fontFamily: 'Georgia, serif',
-              fill: '#d8c898',
-              wordWrap: { width: wrapW },
-            })
-          }
-        }
-      }
-    }
-  }
-
-  /**
    * Read-only placeholders matching `_buildMaterialPile`: MAT_COLOR rects + Georgia labels.
    * Sort + spread (remediation only): shows pit lay + spare chips from state. Clean spread (D2 & D3)
    * skips this — live sorted sprites use `_syncSortZoneHudSortedSpriteVisibility` spare-bucket rules.
@@ -10022,10 +9933,6 @@ export class FireBuildingMinigame extends Phaser.Scene {
     // Day 2 & 3: clean spread uses live `_matStates` chips filtered by `_sortZoneSpareBucketForMatState`
     // (same as `_syncSortZoneHudSortedSpriteVisibility`); no duplicate lay-preview cards.
     if (this.step === 'spread' && !this._spreadAwaitingRemediation) {
-      this._destroySortZoneLayPreview()
-      return
-    }
-    if (this.day === 2) {
       this._destroySortZoneLayPreview()
       return
     }
