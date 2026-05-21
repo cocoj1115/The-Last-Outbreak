@@ -4,7 +4,9 @@
 # scene:village_day1
 # portrait:aiden
 # speaker:Aiden
-Three people nearby.
+A small village. Quiet. The kind of place that does not get many visitors.
+
+Someone here must know the forest well enough to help me.
 -> village_hub
 
 === village_hub ===
@@ -34,7 +36,7 @@ Three people nearby.
         You are not from here. What do you want?
         # portrait:aiden
         # speaker:Aiden
-        My name is Aiden. I am looking for the Shimmerleaf.
+        My name is Aiden. I am looking for the Shimmerleaf. Lives depend on it.
         # portrait:mara
         # speaker:Mara
         Shimmerleaf. Long way to come for a plant.
@@ -43,7 +45,7 @@ Three people nearby.
         It is important. Do you know it?
         # portrait:mara
         # speaker:Mara
-        You will need to survive in the forest. Ask me what you need.
+        I know the forest. I have camped out there more nights than I can count. Ask me what you need.
         ~ talked_to_mara = true
         -> mara_questions
 }
@@ -57,6 +59,8 @@ Three people nearby.
 === mara_campsite ===
 # portrait:mara
 # speaker:Mara
+I have pulled people out of flooded tents before. Two of them last season alone. So listen carefully.
+
 Ground first. Always ground first.
 
 Find somewhere high — not a hilltop, just higher than what surrounds it. Water runs downhill. Sleep in a low spot and you wake up wet. Or you do not wake up at all.
@@ -76,16 +80,16 @@ Now tell me — flat ground right beside a stream, or a slight rise thirty steps
     { not has_dried_berries:
         ~ has_dried_berries = true
         # item:dried_berries
-        Here. You will need the energy.
+        Here. Keep your strength up.
     }
     -> mara_questions
 
 === mara_shimmerleaf ===
 # portrait:mara
 # speaker:Mara
-It grows near water but not in it. 
+It grows near water but not in it. The north-facing edges of the forest, mostly — less sun, more shade. The plant does not like direct light.
 
-The north-facing edges of the forest, mostly. Less sun. The plant likes the shade.
+You will not find it on a dry night. The rain brings it out.
 -> mara_questions
 
 === mara_others ===
@@ -93,7 +97,7 @@ The north-facing edges of the forest, mostly. Less sun. The plant likes the shad
 # speaker:Mara
 Two, last week. One camped by the river bend. Gone before sunrise — tent half-buried in mud by morning.
 # speaker:Mara
-The other listened. She is probably doing fine out there.
+The other one took what I said seriously. Checked the ground, checked the water, left well prepared.
 # speaker:Mara
 Some people learn from others. Some learn from the mud.
 -> mara_questions
@@ -116,10 +120,10 @@ Some people learn from others. Some learn from the mud.
         You look lost. First time out here?
         # portrait:aiden
         # speaker:Aiden
-        I am looking for the Shimmerleaf.
+        I am looking for the Shimmerleaf. I need to camp in the forest tonight.
         # portrait:finn
         # speaker:Finn
-        Then you will need to survive in the forest. Ask away.
+        Then you need to know a few things first. Ask away.
         ~ talked_to_finn = true
         -> finn_questions
 }
@@ -131,6 +135,8 @@ Some people learn from others. Some learn from the mud.
 === finn_overhead ===
 # portrait:finn
 # speaker:Finn
+I lost a tent to a falling branch my first winter out here. Middle of the night, no warning. Lucky it missed me.
+
 The trees will kill you before the cold does — trust me. Dead branches. Widowmakers, we call them. Always look up before you pitch your tent. Always.
 
 And never build fire under a canopy. One spark into dry leaves overhead and it all comes down on you. Open sky above your fire. No exceptions.
@@ -139,17 +145,16 @@ Two spots. One under a big oak — sheltered. One in a clearing — open sky but
 + [Under the oak — better shelter]
     # portrait:finn
     # speaker:Finn
-    That oak has three dead branches I can see from here. Any one comes down in the night... Always choose the clearing, which is the open area.
+    That oak has three dead branches I can see from here. Any one of them comes down in the night and you are done. Take the clearing.
     -> finn_questions
 + [The clearing — open sky is safer]
     # portrait:finn
     # speaker:Finn
     Exactly. Wind you can deal with. A branch through your tent you cannot.
-
     { not has_rope:
         ~ has_rope = true
         # item:rope
-        Here. It will boost your energy.
+        Here. Useful for securing your shelter if the wind picks up.
     }
     -> finn_questions
 
@@ -171,10 +176,10 @@ Two spots. One under a big oak — sheltered. One in a clearing — open sky but
         You have the look of someone who has come a long way.
         # portrait:aiden
         # speaker:Aiden
-        I have. I am looking for the Shimmerleaf.
+        I have. I am looking for the Shimmerleaf. I need to camp in the forest tonight.
         # portrait:isla
         # speaker:Isla
-        Then sit for a moment. There are things worth knowing.
+        Then sit for a moment. There are things worth knowing before you go.
         ~ talked_to_isla = true
         -> isla_questions
 }
@@ -187,6 +192,8 @@ Two spots. One under a big oak — sheltered. One in a clearing — open sky but
 === isla_camp ===
 # portrait:isla
 # speaker:Isla
+My husband camped in a hollow once. Came back with a fever that lasted three weeks. He thought the shelter was worth it. It was not.
+
 Wind is the one people forget. They think about rain, they think about cold. Not wind — until it is three in the morning and their fire is ash and their blankets are wet.
 
 Face your shelter away from the wind. Find something solid at your back. A boulder, a bank, a hill.
@@ -194,13 +201,14 @@ Face your shelter away from the wind. Find something solid at your back. A bould
 And cold air flows downhill just like water. Hollows fill up with cold before anywhere else. Sleep high. Sleep dry. Sleep warm.
 # speaker:Isla
 A hollow between two hills — sheltered, soft ground. Or a flat open space on the hillside — exposed, higher up. Where do you sleep?
-+  [The hollow — sheltered and quiet]
++ [The hollow — sheltered and quiet]
     # portrait:isla
     # speaker:Isla
-    Cold air pools in hollows like water in a bowl. By midnight shivering. By dawn sick. 
+    Cold air pools in hollows like water in a bowl. By midnight shivering. By dawn sick.
+
     Cold flows downhill — remember that.
     -> isla_questions
-+  [The hillside — higher and better air]
++ [The hillside — higher and better air]
     # portrait:isla
     # speaker:Isla
     You understand. Most people do not until they have spent a night in a hollow.
@@ -216,8 +224,7 @@ A hollow between two hills — sheltered, soft ground. Or a flat open space on t
 # speaker:Isla
 My grandmother collected it. Said the rain wakes something in the leaf. Half an hour after a storm passes, they glow — pale green. Easy to spot. But only for a short while.
 
-You need to already be there when the rain stops. Camped and waiting.
-
+You need to already be there when the rain stops. Camped and waiting. That is the only way.
 -> isla_questions
 
 
@@ -228,5 +235,7 @@ You need to already be there when the rain stops. Camped and waiting.
 === day1_end ===
 # portrait:aiden
 # speaker:Aiden
-I know where to go. I'll head to the north edge of the forest tomorrow. 
+I have what I need. The north edge of the forest, after the rain.
+
+Time to move.
 -> day2_transition

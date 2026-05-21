@@ -289,17 +289,6 @@ export class CampsiteMinigame extends Phaser.Scene {
   _buildInspectHeader(siteName, W, H, dpr) {
     const y = 60 * dpr
 
-    const backBtn = this.add.text(24 * dpr, y, '← Back to both sites', {
-      fontFamily: '"IM Fell English", serif',
-      fontSize:   `${16 * dpr}px`,
-      color:      '#c4a060',
-      stroke:     '#000000',
-      strokeThickness: 3 * dpr,
-    }).setOrigin(0, 0.5).setInteractive({ useHandCursor: true }).setDepth(300)
-    backBtn.on('pointerover', () => backBtn.setColor('#f0d890'))
-    backBtn.on('pointerout',  () => backBtn.setColor('#c4a060'))
-    backBtn.on('pointerup',   () => this._goBack())
-
     const nameText = this.add.text(W / 2, y, siteName, {
       fontFamily: '"IM Fell English", serif',
       fontSize:   `${18 * dpr}px`,
@@ -308,7 +297,7 @@ export class CampsiteMinigame extends Phaser.Scene {
       strokeThickness: 3 * dpr,
     }).setOrigin(0.5, 0.5).setDepth(300)
 
-    this._inspectGroup.push(backBtn, nameText)
+    this._inspectGroup.push(nameText)
 
     if (this.day === 3) {
       // Clue counter on a second row, centred
@@ -340,8 +329,10 @@ export class CampsiteMinigame extends Phaser.Scene {
   _buildInspectBottom(W, H, dpr) {
     const panelH = 78 * dpr
     const panelY = H - panelH - 16 * dpr
-    const panelW = W * 0.62
-    const panelX = W * 0.03
+    const retW   = W * 0.11
+    const retX   = W * 0.008 + retW / 2
+    const panelW = W * 0.55
+    const panelX = W * 0.13
 
     // Info panel background
     const panelBg = this.add.rectangle(
@@ -404,6 +395,22 @@ export class CampsiteMinigame extends Phaser.Scene {
     this._chooseBtnBg    = btnBg
     this._chooseBtnLabel = btnLabel
     this._inspectGroup.push(btnBg, btnLabel)
+
+    // ── Return button (bottom-left, same height as bottom strip) ─────────────
+    const retBtnY = panelY + panelH / 2
+    const retBg = this.add.rectangle(retX, retBtnY, retW, panelH, 0x140a02, 0.90)
+      .setStrokeStyle(1.5 * dpr, 0xb8943c, 0.60).setDepth(400)
+      .setInteractive({ useHandCursor: true })
+    const retLabel = this.add.text(retX, retBtnY, '← Return', {
+      fontFamily: '"IM Fell English", serif',
+      fontSize:   `${15 * dpr}px`,
+      color:      '#c4a060',
+      align:      'center',
+    }).setOrigin(0.5, 0.5).setDepth(401)
+    retBg.on('pointerover', () => { retBg.setFillStyle(0x2a1806, 0.95); retLabel.setColor('#f0d890') })
+    retBg.on('pointerout',  () => { retBg.setFillStyle(0x140a02, 0.90); retLabel.setColor('#c4a060') })
+    retBg.on('pointerup',   () => this._goBack())
+    this._inspectGroup.push(retBg, retLabel)
   }
 
   _showClue(clue) {

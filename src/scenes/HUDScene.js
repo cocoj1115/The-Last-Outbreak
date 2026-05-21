@@ -54,9 +54,9 @@ export class HUDScene extends Phaser.Scene {
     const W    = this.scale.width
     const H    = this.scale.height
 
-    // Invisible hit zone over the 5 flames
-    const zoneW = (16 + 4 * 18 + 16) * dpr
-    const zoneH = 52 * dpr
+    // Invisible hit zone over the 5 flames (positions match _buildFlames percentages)
+    const zoneW = W * 0.12
+    const zoneH = H * 0.08
     const zone  = this.add.zone(zoneW / 2, zoneH / 2, zoneW, zoneH)
       .setInteractive({ useHandCursor: true }).setDepth(5000)
 
@@ -119,10 +119,11 @@ export class HUDScene extends Phaser.Scene {
   // ── Stamina flames ───────────────────────────────────────────────────────
 
   _buildFlames() {
-    const dpr = window.devicePixelRatio || 1
-    const startX = 16 * dpr
-    const startY = 18 * dpr
-    const spacing = 18 * dpr
+    const W       = this.scale.width
+    const H       = this.scale.height
+    const startX  = W * 0.013
+    const startY  = H * 0.033
+    const spacing = W * 0.02
 
     for (let i = 0; i < 5; i++) {
       const flame = this._drawFlame(startX + i * spacing, startY, true)
@@ -142,18 +143,16 @@ export class HUDScene extends Phaser.Scene {
 
   _renderFlame(g, x, y, lit) {
     const dpr = window.devicePixelRatio || 1
+    const sz  = 12 * dpr
     g.clear()
     if (lit) {
-      // Outer flame
       g.fillStyle(0xff6600, 0.9)
-      g.fillTriangle(x, y - 5 * dpr, x - 4 * dpr, y + 4 * dpr, x + 4 * dpr, y + 4 * dpr)
-      // Inner flame
+      g.fillTriangle(x, y - sz, x - sz * 0.75, y + sz * 0.75, x + sz * 0.75, y + sz * 0.75)
       g.fillStyle(0xffcc00, 0.95)
-      g.fillTriangle(x, y - 3 * dpr, x - 2 * dpr, y + 3 * dpr, x + 2 * dpr, y + 3 * dpr)
+      g.fillTriangle(x, y - sz * 0.5, x - sz * 0.35, y + sz * 0.6, x + sz * 0.35, y + sz * 0.6)
     } else {
-      // Extinguished — just a small grey ember
       g.fillStyle(0x444444, 0.6)
-      g.fillCircle(x, y + 2 * dpr, 2 * dpr)
+      g.fillCircle(x, y + sz * 0.4, sz * 0.3)
     }
   }
 
@@ -185,9 +184,10 @@ export class HUDScene extends Phaser.Scene {
 
   _buildDayCounter(W) {
     const dpr = window.devicePixelRatio || 1
+    const H   = this.scale.height
     this._moonIcon = null
 
-    this._dayText = this.add.text(W - 20 * dpr, 20 * dpr, 'Day 1 / 5', {
+    this._dayText = this.add.text(W * 0.985, H * 0.028, 'Day 1 / 5', {
       fontSize: `${16 * dpr}px`,
       fontFamily: 'monospace',
       color: '#888888',

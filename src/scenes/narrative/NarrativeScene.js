@@ -25,6 +25,8 @@ export class NarrativeScene extends Phaser.Scene {
     this._bridge = null
     this._dialogueElements = {}
     this._choiceButtons = []
+    this._advanceZone    = null
+    this._advanceChevron = null
     this._villageActive = false
     this._waitingForVillage = false
     this._villageTalkStates = {}
@@ -186,6 +188,27 @@ export class NarrativeScene extends Phaser.Scene {
     // Choice container — depth 4520 so it sits above dialogue box (4500)
     this._choiceContainer = this.add.container(W / 2, H * 0.730).setDepth(4520)
 
+    // Full-screen transparent zone at depth 4990 — catches clicks anywhere to advance dialogue.
+    // Disabled while choices are visible (they sit at depth 4520, below this zone).
+    const clickZone = this.add.zone(W / 2, H / 2, W, H)
+      .setInteractive()
+      .setDepth(4990)
+    clickZone.on('pointerup', () => this._onAdvance())
+    this._advanceZone = clickZone
+
+    // Advance arrow — bottom-right corner of dialogue box, hidden until dialogue is displayed
+    const arrowX = boxX + boxW - 32 * dpr
+    const arrowY = boxY + boxH - 20 * dpr
+    const arrow = this.add.text(arrowX, arrowY, '►', {
+      fontSize:        `${28 * dpr}px`,
+      fontFamily:      'monospace',
+      color:           '#c4a060',
+      stroke:          '#3a1e00',
+      strokeThickness: 3 * dpr,
+    }).setOrigin(1, 1).setDepth(4515).setVisible(false)
+    gsap.to(arrow, { x: arrowX + 4 * dpr, duration: 0.6, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' })
+    this._advanceChevron = arrow
+
     this._dialogueElements = { box, boxY, boxH, pad }
   }
 
@@ -310,6 +333,8 @@ export class NarrativeScene extends Phaser.Scene {
   // ── Dialogue display ────────────────────────────────────────────────────
 
   _showDialogue(speaker, text) {
+    if (this._advanceZone) this._advanceZone.setInteractive()
+    if (this._advanceChevron) this._advanceChevron.setVisible(true)
     this._speakerText.setText(speaker ?? '')
     this._dialogueText.setText('')
     // hint removed
@@ -407,6 +432,9 @@ export class NarrativeScene extends Phaser.Scene {
       this._choiceContainer.add([arrow, label])
       this._choiceButtons.push(arrow, label)
     })
+    // Disable full-screen advance zone so it doesn't eat choice clicks (depth 4990 > 4520)
+    if (this._advanceZone) this._advanceZone.disableInteractive()
+    if (this._advanceChevron) this._advanceChevron.setVisible(false)
   }
 
   _clearChoices() {
