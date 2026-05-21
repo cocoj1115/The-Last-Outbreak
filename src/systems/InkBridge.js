@@ -163,8 +163,11 @@ export class InkBridge {
     if (tags.day_advance) {
       const days    = this.scene.registry.get('days')
       const stamina = this.scene.registry.get('stamina')
-      if (days)    days.advance()
-      if (stamina) stamina.reset(days?.currentDay)
+      if (days) days.advance()
+      if (stamina) {
+        const newMax = this.story.variablesState['next_day_stamina_max'] ?? 5
+        stamina.reset(days?.currentDay, newMax)
+      }
     }
     if (tags.hide_character) {
       console.log('[InkBridge] emitting HIDE_CHARACTER')

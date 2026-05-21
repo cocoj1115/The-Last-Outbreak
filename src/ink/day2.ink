@@ -133,8 +133,8 @@ Higher ground. I will not forget that again.
 ~ buffer_days_used = buffer_days_used + 1
 ~ stamina_depleted = false
 
-{ buffer_days_used > buffer_days_total:
-    -> worst_ending
+{ buffer_days_used >= 2:
+    -> day3_transition
 }
 
 # portrait:aiden

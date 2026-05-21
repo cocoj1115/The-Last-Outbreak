@@ -44,9 +44,14 @@ export class StaminaSystem {
     return true
   }
 
-  /** Reset to effective max at the start of a new day. */
-  reset(day) {
+  /** Reset to effective max at the start of a new day.
+   * Pass newMax to override this.max from Ink's next_day_stamina_max. */
+  reset(day, newMax) {
     this._currentDay = day
+    if (newMax !== undefined) {
+      this.max = newMax
+      this._maxPenalty = 0
+    }
     this.current = this.effectiveMax
     this.events.emit(GameEvents.STAMINA_CHANGE, {
       current: this.current,

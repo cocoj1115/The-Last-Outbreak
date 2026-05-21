@@ -125,9 +125,8 @@ export class BootScene extends Phaser.Scene {
     if (DEV_PATH_B_DAY2_FIRE) {
       this.registry.set('inkBridge', createInkBridgeStub())
       this.registry.set('fuelStock', 5)
-      /** Collect only: after pack full, jumps per FireCollectMinigame (quick → ignite step in campsite). */
       this.registry.set('devQuickFireChain', true)
-      this.scene.start('FireCollectMinigame', { day: 2 })
+      this.scene.start('FireBuildingCollect', { day: 2 })
       return
     }
 

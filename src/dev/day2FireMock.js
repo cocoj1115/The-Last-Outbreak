@@ -22,7 +22,7 @@
 export const DEV_MOCK_DAY2_FIRE = false
 
 /** Phaser scene key when `fullChain` is false. Ignored when `fullChain` is true (starts at Clear). */
-export const DAY2_FIRE_MOCK_START = 'FireCollectMinigame'
+export const DAY2_FIRE_MOCK_START = 'FireBuildingCollect'
 
 /** Mock payload — edit fields here. */
 export const DAY2_FIRE_MOCK = {

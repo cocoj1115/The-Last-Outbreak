@@ -12478,11 +12478,12 @@ export class FireBuildingMinigame extends Phaser.Scene {
         fireOutCount: this._sustainFireOutCount,
       })
     }
+    const stamina = this.registry.get('stamina')
     console.log('[FireCampsite] emitting MINIGAME_COMPLETE', false)
     this.game.events.emit(GameEvents.MINIGAME_COMPLETE, {
       id,
       success:         false,
-      staminaDepleted: true,
+      staminaDepleted: stamina ? stamina.current === 0 : true,
     })
     this.scene.stop()
   }

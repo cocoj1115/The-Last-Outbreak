@@ -88,16 +88,15 @@ I need to make camp before it gets dark.
 
 
 // ═════════════════════════════════════════════════════════════════════════════
-// MINIGAME 2 — MATERIAL COLLECTION
+// FIRE COLLECT BRIDGE
 // ═════════════════════════════════════════════════════════════════════════════
 
-// Unified campsite — `# minigame:fire_campsite` → FireCampsiteMinigame (see day2.ink).
 === day3_fire_collect ===
 -> day3_fire
 
 
 // ═════════════════════════════════════════════════════════════════════════════
-// MINIGAME 3 — BUILD & SUSTAIN FIRE (wind night)
+// MINIGAME 2 — BUILD & SUSTAIN FIRE (wind night)
 // ═════════════════════════════════════════════════════════════════════════════
 
 === day3_fire ===
@@ -133,19 +132,19 @@ I need to make camp before it gets dark.
 # speaker:Aiden
 The wind dropped. Just a little.
 
-Petra said before the sun hits. That means now.
+The frost is still on the leaves. I need to move now.
 # minigame:search day:3 difficulty:easy
 + [Continue]
 - { mg_search_success:
     - true:
         # speaker:Aiden
-        Glaceweed. Still cold. Still good.
+        Glaceweed. Still frosted. Still good.
         ~ herb_count = herb_count + 1
         -> day3_morning_good
     - false:
         ~ fail_reason = "missed_herb"
         # speaker:Aiden
-        The frost is gone. I missed it.
+        The frost is gone. I was too slow.
         -> day3_buffer
 }
 
@@ -155,20 +154,20 @@ Petra said before the sun hits. That means now.
 # speaker:Aiden
 Made it through. Barely.
 
-The window. I have to move now.
+The frost — it is already starting to melt at the edges. Move.
 # minigame:search day:3 difficulty:hard
 + [Continue]
 - { mg_search_success:
     - true:
         # speaker:Aiden
-        Got it. The edges were already melting.
+        Got it. The frost was already going. Another minute and I would have missed it.
         ~ herb_count = herb_count + 1
         ~ next_day_stamina_max = 4
         -> day3_morning_good
     - false:
         ~ fail_reason = "missed_herb"
         # speaker:Aiden
-        The frost is gone. I could not get there in time.
+        The frost is gone. I was too slow.
         -> day3_buffer
 }
 
@@ -182,11 +181,11 @@ The window. I have to move now.
 # portrait:aiden
 # speaker:Aiden
 { campsite_quality == "good":
-    Three down.
+    Two down.
 
     Petra was right. Stop the wind and you can manage anything.
     - else:
-    Three down. But I fought the whole night instead of sleeping through it.
+    Two down. But I fought the whole night instead of sleeping through it.
 
     The ridge. That was the answer. I saw it and chose wrong anyway.
 }
@@ -265,7 +264,7 @@ One more night. This time I know where to stand.
 
 
 // ═════════════════════════════════════════════════════════════════════════════
-// DAY 4 PLACEHOLDER
+// DAY 4 / ENDING
 // ═════════════════════════════════════════════════════════════════════════════
 
 === day4_transition ===

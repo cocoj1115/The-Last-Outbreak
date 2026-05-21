@@ -7,6 +7,7 @@ import { MapScene } from './scenes/MapScene.js'
 import { CampsiteMinigame } from './scenes/minigames/campsite/CampsiteMinigame.js'
 /** Scene key `FireCampsiteMinigame` — Ink `# minigame:fire_campsite`. */
 import { FireBuildingMinigame } from './scenes/minigames/fire/New/FireBuildingMinigame.js'
+/** Launched programmatically by FireBuildingMinigame (not via Ink tag) — collect phase of the fire-building flow. */
 import { FireBuildingCollect } from './scenes/minigames/fire/New/FireBuildingCollect.js'
 import { SearchMinigame } from './scenes/minigames/search/SearchMinigame.js'
 import { HUDScene } from './scenes/HUDScene.js'

@@ -110,12 +110,12 @@ export class NarrativeScene extends Phaser.Scene {
       if (this._bridge) this._bridge.jumpTo('day3_transition')
     })
 
-    // ── Dev shortcut: M = directly launch FireCollectMinigame (bypass Ink) ─
+    // ── Dev shortcut: M = directly launch FireBuildingCollect (bypass Ink) ─
     this.input.keyboard.on('keydown-M', () => {
-      console.log('[DEV] M pressed — launching FireCollectMinigame directly')
+      console.log('[DEV] M pressed — launching FireBuildingCollect directly')
       if (this._mainCharacter) this._mainCharacter.setVisible(false)
       this.scene.sleep('NarrativeScene')
-      this.scene.launch('FireCollectMinigame', { day: 2 })
+      this.scene.launch('FireBuildingCollect', { day: 2 })
     })
 
     // ── Dev shortcuts: [ = day2_search_a (easy), ] = day2_search_b (hard) ──
